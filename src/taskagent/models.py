@@ -124,6 +124,14 @@ class RunResult:
     changed_files: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     worktree: str | None = None
+    # Optional auto-sync of apply changes back into the main repo worktree.
+    # All fields are optional so older persisted results still deserialize
+    # via ``RunResult(**result_data)``.
+    synced_files: list[str] = field(default_factory=list)
+    sync_deleted: list[str] = field(default_factory=list)
+    sync_skipped: list[str] = field(default_factory=list)
+    sync_backup_dir: str | None = None
+    sync_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -136,6 +144,11 @@ class RunResult:
             "changed_files": self.changed_files,
             "duration_s": round(self.duration_s, 2),
             "worktree": self.worktree,
+            "synced_files": self.synced_files,
+            "sync_deleted": self.sync_deleted,
+            "sync_skipped": self.sync_skipped,
+            "sync_backup_dir": self.sync_backup_dir,
+            "sync_error": self.sync_error,
         }
 
 
@@ -191,6 +204,7 @@ class WorkItem:
     status: ItemStatus = ItemStatus.DISCOVERED
     dedupe_key: str = ""
     exec_mode: str = "dry-run"      # dry-run | apply
+    model: str | None = None        # per-task codebuddy model; None = executor default
     attempt: int = 0
     max_attempts: int = 2
     stage: str = ""
@@ -215,6 +229,7 @@ class WorkItem:
         git_url: str = "",
         dedupe_key: str = "",
         exec_mode: str = "dry-run",
+        model: str | None = None,
     ) -> WorkItem:
         return cls(
             id=_new_id(),
@@ -226,6 +241,7 @@ class WorkItem:
             git_url=git_url.strip(),
             dedupe_key=dedupe_key or source_ref or _new_id(),
             exec_mode=exec_mode if exec_mode in {"dry-run", "apply"} else "dry-run",
+            model=model or None,
         )
 
     def touch(self) -> None:
@@ -261,6 +277,7 @@ class WorkItem:
             "repo": self.repo.name if self.repo else None,
             "status": self.status.value,
             "exec_mode": self.exec_mode,
+            "model": self.model,
             "attempt": self.attempt,
             "stage": self.stage,
             "error": self.error,
@@ -282,6 +299,7 @@ class WorkItem:
             "status": self.status.value,
             "dedupe_key": self.dedupe_key,
             "exec_mode": self.exec_mode,
+            "model": self.model,
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,
             "stage": self.stage,
@@ -315,6 +333,7 @@ class WorkItem:
             status=ItemStatus(data.get("status", ItemStatus.DISCOVERED.value)),
             dedupe_key=data.get("dedupe_key", ""),
             exec_mode=data.get("exec_mode", "dry-run"),
+            model=data.get("model") or None,
             attempt=int(data.get("attempt", 0)),
             max_attempts=int(data.get("max_attempts", 2)),
             stage=data.get("stage", ""),

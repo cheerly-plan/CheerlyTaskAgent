@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
 from taskagent.executor import CodeBuddyExecutor, _no_execution_detected
 from taskagent.gitmap import GitProjectRegistry, extract_git_urls, normalize_git_url
-from taskagent.models import ItemKind, ItemStatus, RunResult, SourceType
+from taskagent.models import ItemKind, ItemStatus, RunResult, SourceType, WorkItem
 from taskagent.sources import RawItem, parse_raw
 
 
@@ -245,6 +246,79 @@ async def test_failed_and_cancelled_can_be_re_tried(env):
         scheduler.run(skipped.id, exec_mode="dry-run")
 
 
+# ── per-task model selection ──────────────────────────────────────────────────
+def test_build_command_per_task_model_overrides_global():
+    """An item's model wins over the executor default; None falls back."""
+    ex = CodeBuddyExecutor(command="codebuddy", model="balanced-model")
+    plain = WorkItem.create(title="t", description="d", kind="task")
+    picked = WorkItem.create(title="t", description="d", kind="task", model="deepseek-v4-pro")
+
+    def model_of(item):
+        argv = ex.build_command(item)
+        return argv[argv.index("--model") + 1] if "--model" in argv else None
+
+    assert model_of(plain) == "balanced-model"       # fallback to global
+    assert model_of(picked) == "deepseek-v4-pro"      # per-task overrides
+
+
+def test_build_command_no_model_when_unset():
+    ex = CodeBuddyExecutor(command="codebuddy")
+    item = WorkItem.create(title="t", description="d", kind="task")
+    assert "--model" not in ex.build_command(item)
+
+
+def test_create_manual_persists_model(env):
+    scheduler, store, _, _, _ = env
+    item = scheduler.create_manual(
+        title="指定模型", repo_name="app-one", model="glm-5.3"
+    )
+    assert store.get(item.id).model == "glm-5.3"
+    assert item.summary()["model"] == "glm-5.3"
+
+
+async def test_run_model_override_and_clear(env):
+    """Explicit model on re-run overrides; supplying None clears to default."""
+    scheduler, store, _, _, _ = env
+    item = scheduler.create_manual(title="切模型", repo_name="app-one", exec_mode="dry-run")
+    assert item.model is None
+
+    scheduler.run(item.id, exec_mode="dry-run", model="deep-model")
+    assert store.get(item.id).model == "deep-model"
+
+    # Omit the model -> keep the stored choice.
+    scheduler.run(item.id, exec_mode="dry-run", _model_supplied=False)
+    assert store.get(item.id).model == "deep-model"
+
+    # Explicitly supply None -> clear back to global default.
+    scheduler.run(item.id, exec_mode="dry-run", model=None, _model_supplied=True)
+    assert store.get(item.id).model is None
+
+
+def test_model_roundtrip_backward_compatible():
+    data = {
+        "id": "x", "title": "t", "description": "d", "kind": "task",
+        "source": "manual", "status": "ready", "exec_mode": "dry-run",
+    }
+    assert WorkItem.from_dict(data).model is None  # old data without model
+    data["model"] = "hy4flash"
+    assert WorkItem.from_dict(data).model == "hy4flash"
+
+
+def test_model_choices_from_config():
+    from taskagent.config import Settings
+
+    s = Settings()
+    choices = {c["id"]: c["label"] for c in s.model_choices}
+    assert len(choices) >= 10
+    assert "deepseek-v4-pro" in choices
+    assert choices["fast-model"]  # has a friendly label
+
+    # TASKAGENT_MODELS restricts the offered list (env read happens in from_env;
+    # here we verify the property honors available_models directly).
+    s2 = Settings(available_models=("deepseek-v4-pro",))
+    assert [c["id"] for c in s2.model_choices] == ["deepseek-v4-pro"]
+
+
 def test_build_command_keeps_prompt_positional(env):
     scheduler, _, _, _, _ = env
     item = scheduler.create_manual(title="x", repo_name="app-one")
@@ -303,6 +377,120 @@ def test_snapshot_repo_for_non_git_directory(tmp_path):
     assert (target / "app.py").is_file()
     assert not (target / ".venv").exists()
     assert (target / ".git").is_dir()
+
+
+# ── auto-sync apply changes back into the main repo ───────────────────────────
+def test_sync_to_repo_copies_new_and_modified(tmp_path):
+    """New/modified files land in the real repo; existing files are backed up."""
+    worktree = tmp_path / "worktree"
+    repo = tmp_path / "repo"
+    worktree.mkdir()
+    repo.mkdir()
+    (worktree / "app.py").write_text("new content\n")
+    (repo / "app.py").write_text("old content\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(
+        worktree, str(repo), item_id="item-1",
+        changed=["app.py", "new.py"],
+    )
+
+    assert out["ok"] is True
+    assert (repo / "app.py").read_text() == "new content\n"
+    # new.py wasn't created in the worktree in this test, so only app.py copies.
+    assert "app.py" in out["synced_files"]
+    assert "new.py" not in out["synced_files"]
+    assert out["sync_backup_dir"]  # an existing file was overwritten -> backup
+    backup_file = Path(out["sync_backup_dir"]) / "app.py"
+    assert backup_file.is_file()
+    assert backup_file.read_text() == "old content\n"
+
+
+def test_sync_to_repo_new_file_and_nested_dir(tmp_path):
+    """A brand-new nested file is created, no backup dir needed."""
+    worktree = tmp_path / "worktree"
+    repo = tmp_path / "repo"
+    (worktree / "pkg").mkdir(parents=True)
+    repo.mkdir()
+    (worktree / "pkg" / "mod.py").write_text("x = 1\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(
+        worktree, str(repo), item_id="item-2", changed=["pkg/mod.py"]
+    )
+
+    assert (repo / "pkg" / "mod.py").read_text() == "x = 1\n"
+    assert "pkg/mod.py" in out["synced_files"]
+    assert out["sync_backup_dir"] is None  # nothing overwritten
+
+
+def test_sync_to_repo_mirrors_deletion_with_backup(tmp_path):
+    """A file deleted in the worktree is removed from the repo after backup."""
+    worktree = tmp_path / "worktree"
+    repo = tmp_path / "repo"
+    worktree.mkdir()
+    repo.mkdir()
+    (repo / "gone.py").write_text("bye\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(
+        worktree, str(repo), item_id="item-3", changed=["gone.py"]
+    )
+
+    assert not (repo / "gone.py").exists()
+    assert "gone.py" in out["sync_deleted"]
+    assert (Path(out["sync_backup_dir"]) / "gone.py").read_text() == "bye\n"
+
+
+def test_sync_to_repo_rejects_unsafe_paths(tmp_path):
+    """Absolute paths and ../ traversal never escape the repo root."""
+    worktree = tmp_path / "worktree"
+    repo = tmp_path / "repo"
+    worktree.mkdir()
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("should not touch\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(
+        worktree, str(repo), item_id="item-4",
+        changed=["../outside.py", str(outside), "ok.py/../../escape.py"],
+    )
+
+    assert out["synced_files"] == []
+    assert len(out["sync_skipped"]) == 3
+    assert outside.read_text() == "should not touch\n"
+    assert not (tmp_path / "escape.py").exists()
+
+
+def test_sync_to_repo_respects_ignore_rules(tmp_path):
+    """Secrets/runtime state are skipped even if codebuddy touched them."""
+    worktree = tmp_path / "worktree"
+    repo = tmp_path / "repo"
+    worktree.mkdir()
+    (worktree / ".env").write_text("SECRET=1")
+    (worktree / "app.py").write_text("ok\n")
+    repo.mkdir()
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(
+        worktree, str(repo), item_id="item-5", changed=[".env", "app.py"]
+    )
+
+    assert not (repo / ".env").exists()
+    assert (repo / "app.py").read_text() == "ok\n"
+    assert any(".env" in s for s in out["sync_skipped"])
+
+
+def test_sync_to_repo_missing_repo_reports_error(tmp_path):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(
+        worktree, str(tmp_path / "no-such-repo"), item_id="item-6", changed=["x.py"]
+    )
+    assert out["ok"] is False
+    assert out["sync_error"]
 
 
 def test_recover_interrupted_items_on_restart(env):

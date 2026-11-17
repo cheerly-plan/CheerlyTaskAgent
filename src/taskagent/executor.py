@@ -116,6 +116,9 @@ class CodeBuddyExecutor:
         timeout_s: float = 600.0,
         permission_mode: str = "acceptEdits",
         model: str | None = None,
+        auto_sync: bool = True,
+        backups_dir: Path | None = None,
+        sync_ignore_patterns: tuple[str, ...] = (),
     ) -> None:
         # Resolve once while we still have the full parent PATH. The subprocess
         # env is deliberately minimal, so a bare "codebuddy" may be missing
@@ -128,6 +131,17 @@ class CodeBuddyExecutor:
         self.timeout_s = timeout_s
         self.permission_mode = permission_mode
         self.model = model
+        # After a successful apply, copy codebuddy's changed files from the
+        # isolated worktree back into the real repo working tree. Defaults on
+        # so users don't have to manually cp every result. Can be disabled via
+        # TASKAGENT_AUTO_SYNC=0.
+        self.auto_sync = auto_sync
+        self.sync_ignore_patterns = tuple(sync_ignore_patterns)
+        self.backups_dir = (
+            Path(backups_dir).expanduser().resolve()
+            if backups_dir is not None
+            else self.worktrees_dir.parent / "sync-backups"
+        )
 
     # Only these vars are passed to the CLI. WorkBuddy injects 100+ vars
     # (CODEBUDDY_*, CLAUDE_*, ACC_*, ELECTRON_*, ...) that make codebuddy take a
@@ -160,8 +174,10 @@ class CodeBuddyExecutor:
             "--output-format", "json",
             "--permission-mode", self.permission_mode,
         ]
-        if self.model:
-            argv += ["--model", self.model]
+        # Per-task model wins; fall back to the executor/global default.
+        model = item.model or self.model
+        if model:
+            argv += ["--model", model]
         # Do NOT pass --add-dir here. It is variadic (<directories...>) and
         # swallows the following positional prompt, so codebuddy starts with an
         # empty prompt and treats both values as paths to open. The subprocess
@@ -272,6 +288,20 @@ class CodeBuddyExecutor:
             error = "codebuddy 未执行提示词（空结果/0 token），请查看报告 stdout"
         else:
             error = None
+
+        # Auto-sync successful apply changes back into the real repo so the
+        # user sees them in their normal checkout without a manual copy. This
+        # is best-effort: a sync failure is recorded on the result but never
+        # turns a successful codebuddy run into a failed one.
+        sync: dict[str, object] = {}
+        if ok and self.auto_sync and item.repo is not None:
+            sync = self.sync_to_repo(
+                worktree_path,
+                item.repo.path,
+                item_id=item.id,
+                changed=changed,
+            )
+
         return RunResult(
             ok=ok,
             dry_run=False,
@@ -282,6 +312,11 @@ class CodeBuddyExecutor:
             changed_files=changed,
             duration_s=duration,
             worktree=str(worktree_path),
+            synced_files=list(sync.get("synced_files") or []),
+            sync_deleted=list(sync.get("sync_deleted") or []),
+            sync_skipped=list(sync.get("sync_skipped") or []),
+            sync_backup_dir=sync.get("sync_backup_dir") if isinstance(sync.get("sync_backup_dir"), str) else None,
+            sync_error=sync.get("sync_error") if isinstance(sync.get("sync_error"), str) else None,
         )
 
     def _worktree_path(self, item: WorkItem, repo: LocalRepo) -> Path:
@@ -494,3 +529,144 @@ class CodeBuddyExecutor:
             "kept": kept,
             "staged": actually_staged,
         }
+
+    # ── auto-sync apply changes back into the main repo ───────────────────────
+    @staticmethod
+    def _sync_rel_path(raw: str) -> str:
+        """Normalize a git-reported path to a safe forward-slash relative path.
+
+        Handles rename entries (``old -> new``) by keeping the new side, matches
+        commitfilter's normalization so sync/commit agree on what is ignored.
+        Absolute paths are returned unchanged (with the leading slash intact)
+        so ``_sync_safe_target`` can reject them — _normalize would otherwise
+        strip the leading slash and disguise an absolute path as relative.
+        """
+        from .commitfilter import _normalize
+
+        stripped = raw.strip()
+        if Path(stripped).is_absolute():
+            return stripped
+        return _normalize(raw)
+
+    def _sync_safe_target(self, repo_root: Path, rel: str) -> Path | None:
+        """Resolve ``repo_root / rel`` and reject anything escaping the repo.
+
+        Guards against absolute paths, ``..`` traversal, and symlink escapes.
+        Returns None when the path is unsafe.
+        """
+        if not rel or Path(rel).is_absolute():
+            return None
+        # Reject explicit parent traversal segments before resolution.
+        if any(seg == ".." for seg in Path(rel).parts):
+            return None
+        try:
+            target = (repo_root / rel).resolve()
+            target.relative_to(repo_root)
+        except (ValueError, OSError):
+            return None
+        return target
+
+    def _sync_backup(self, target: Path, backup_root: Path, rel: str) -> bool:
+        """Copy an existing target file into the backup tree before overwrite."""
+        try:
+            dest = backup_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, dest)
+            return True
+        except OSError:
+            return False
+
+    def sync_to_repo(
+        self,
+        worktree: Path,
+        repo_path: str,
+        *,
+        item_id: str,
+        changed: list[str],
+    ) -> dict[str, object]:
+        """Copy codebuddy's changed files from the worktree into the real repo.
+
+        Safety properties:
+          - Only paths reported as changed by codebuddy are touched.
+          - Paths are normalized, checked against ignore rules, and verified to
+            stay inside the repo root (no ``..``, no absolute, no symlink escape).
+          - Any existing file that would be overwritten or deleted is backed up
+            first into ``backups_dir/<item_id>/<timestamp>/``.
+          - Failures are collected, never raised: sync is best-effort and does
+            not invalidate a successful apply.
+        """
+        from .commitfilter import CommitFileFilter
+
+        worktree = Path(worktree).expanduser().resolve()
+        repo_root = Path(repo_path).expanduser().resolve()
+        result: dict[str, object] = {
+            "ok": True,
+            "synced_files": [],
+            "sync_deleted": [],
+            "sync_skipped": [],
+            "sync_backup_dir": None,
+            "sync_error": None,
+        }
+        if not repo_root.is_dir():
+            result["ok"] = False
+            result["sync_error"] = f"主仓库目录不存在：{repo_root}"
+            return result
+
+        synced: list[str] = []
+        deleted: list[str] = []
+        skipped: list[str] = []
+        filt = CommitFileFilter(self.sync_ignore_patterns)
+
+        backup_root = self.backups_dir / item_id / time.strftime("%Y%m%d-%H%M%S")
+        backup_used = False
+
+        # Build the set of (normalized) changed paths, de-duplicated.
+        seen: set[str] = set()
+        pending: list[str] = []
+        for raw in changed:
+            rel = self._sync_rel_path(raw)
+            if rel and rel not in seen:
+                seen.add(rel)
+                pending.append(rel)
+
+        for rel in pending:
+            target = self._sync_safe_target(repo_root, rel)
+            if target is None:
+                skipped.append(f"{rel} (路径不安全)")
+                continue
+            if filt.is_ignored(rel):
+                skipped.append(f"{rel} (忽略规则)")
+                continue
+
+            src = worktree / rel
+            if src.is_file():
+                # New or modified file: back up the target if it exists,
+                # then copy the worktree version over.
+                try:
+                    if target.exists() and self._sync_backup(target, backup_root, rel):
+                        backup_used = True
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, target)
+                    synced.append(rel)
+                except OSError as error:
+                    skipped.append(f"{rel} (复制失败: {error})")
+            elif target.is_file():
+                # Deleted in the worktree but present in the repo: mirror the
+                # deletion, but only after backing the file up.
+                if self._sync_backup(target, backup_root, rel):
+                    backup_used = True
+                    try:
+                        target.unlink()
+                        deleted.append(rel)
+                    except OSError as error:
+                        skipped.append(f"{rel} (删除失败: {error})")
+                else:
+                    skipped.append(f"{rel} (备份失败，已跳过删除)")
+            # else: neither side has a real file — nothing to do.
+
+        result["synced_files"] = synced
+        result["sync_deleted"] = deleted
+        result["sync_skipped"] = skipped
+        if backup_used:
+            result["sync_backup_dir"] = str(backup_root)
+        return result

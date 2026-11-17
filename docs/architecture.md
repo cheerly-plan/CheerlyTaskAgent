@@ -14,7 +14,7 @@
 | 手动新建（选项目即执行）/ 邮件导入，规则提取标题/类型/git 地址 | 不接 LLM 自动拆任务（后续） |
 | git URL 归一化，映射到本地 checkout | 不改 git 历史、不提交、不 push |
 | 派发 `codebuddy -p` 在映射仓库执行 | 不回写邮件/TAPD（暂时只本地报告） |
-| 幂等、并发、重试、取消、事件流、Markdown 报告 | 不在主分支直接改（apply 用 worktree 隔离） |
+| 幂等、并发、重试、取消、事件流、Markdown 报告 | apply 用 worktree 隔离执行；成功后自动把改动同步到主仓库工作区（不 commit/push，不改 git 历史） |
 
 **环境事实（决定了设计）**
 - 本机可用的编码 CLI：`codex`、`@tencent-ai/codebuddy-code`（提供 `codebuddy`，用户指定为执行端）；无 `workbuddy` CLI。
@@ -52,8 +52,8 @@ flowchart LR
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`。 |
 | `scheduler.py` | 导入去重（`source_ref`）、`create_manual`（手动指定项目直接 ready）、映射、派发、幂等、并发上限、退避重试、取消、事件发射。确定性代码，无 LLM。 |
-| `executor.py` | `codebuddy -p --output-format json` 非交互执行。`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files。argv 列表拼接防命令注入。 |
-| `report.py` | 每单生成 Markdown：来源、映射仓库、提示词、命令、输出、改动文件、错误。 |
+| `executor.py` | `codebuddy -p --output-format json` 非交互执行。`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 自动同步改动回主仓库（路径校验/忽略规则/备份）。argv 列表拼接防命令注入。 |
+| `report.py` | 每单生成 Markdown：来源、映射仓库、提示词、命令、输出、改动文件、自动同步明细与备份位置、错误。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
 | `web/index.html` | 调度台：手动新建执行（一级入口）、邮件导入、项目映射配置、工作项看板、dry-run/apply/report。 |
 
@@ -63,15 +63,15 @@ flowchart LR
 
 **手动新建**：`create_manual(title, description, kind, repo_name)` → 用户显式指定类型与项目 → 项目映射优先解析为 `LocalRepo` → 直接置 `ready`；`dedupe_key` 为随机值，因此同名手动任务不会互相去重。界面三个入口对应：创建草稿（`run_now=false`）、创建并 dry-run、创建并 apply（`approved=true`）。
 
-**执行**：`run(id, exec_mode)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`codebuddy -p` 在 worktree cwd 执行，收集 stdout/改动文件。只重试可重试错误（timeout/429/5xx）。
+**执行**：`run(id, exec_mode, model)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`codebuddy -p` 在 worktree cwd 执行，收集 stdout/改动文件。**模型**：`WorkItem.model` 为按任务选择的模型（`build_command` 里 `item.model or executor.model`），新建时可选、卡片上可随时切换；`model=None` 回退全局 `CODEBUDDY_MODEL`。候选由 `config.CODEBUDDY_MODELS`（`codebuddy --help` 真实列表）提供，`TASKAGENT_MODELS` 可收窄。apply 成功后 `sync_to_repo()` 把改动文件**自动同步回主仓库工作区**：归一化路径→忽略规则过滤（复用 commit 规则）→拒绝绝对路径/`..`/符号链接逃逸→覆盖或删除前先备份到 `<data_dir>/sync-backups/<item>/<时间>/`；结果写入 RunResult 与报告，失败不否定 apply 本身。`TASKAGENT_AUTO_SYNC=0` 可关闭。只重试可重试错误（timeout/429/5xx）。
 
 **恢复**：状态与报告落盘；进程重启后可从 `data/tasks` 重建；`running` 中断的项后续可加 lease 重派（当前为手动重跑）。
 
 ## 4. 安全设计
 
 1. **默认只读**：dry-run 是默认且唯一的开箱模式；apply 必须审批。
-2. **隔离**：apply 用 `git worktree add -b taskagent/<id>`，不动主分支；失败回退到 `git archive`。
-3. **不产生 git 副作用**：提示词明确要求"不提交、不 push、不改无关文件"。
+2. **隔离执行**：apply 用 `git worktree add -b taskagent/<id>`（失败回退 `git archive`/快照）；codebuddy 只在隔离沙箱里跑。成功后改**文件**自动同步回主仓库工作区（可控、带备份），但**不产生 git 副作用**。
+3. **不产生 git 副作用**：提示词明确要求"不提交、不 push、不改无关文件"；自动同步只落工作区文件，不 stage、不 commit、不 push，由用户自行审查后提交。
 4. **防注入**：邮件文本放在 `--- TASK START/END ---` 分隔符内并要求忽略越权指令；命令用 `argv` 列表，`shell=False`。
 5. **凭证**：不入库；codebuddy 自身登录态由 CLI 管理。
 
@@ -95,7 +95,7 @@ flowchart LR
 
 | 风险 | 应对 |
 |---|---|
-| 自动改代码改错/改坏 | dry-run 默认 + worktree 隔离 + 审批 + 报告审阅，绝不自动合并 |
+| 自动改代码改错/改坏 | dry-run 默认 + worktree 隔离 + 审批 + 报告审阅；自动同步带路径校验/忽略规则/覆盖前备份，可 `TASKAGENT_AUTO_SYNC=0` 关闭；不 commit/push |
 | 邮件文本 prompt 注入 | 分隔符包裹 + 忽略越权指令 + argv 非 shell |
 | git 映射错仓库 | 归一化 + 后缀匹配；支持手动映射；报告写明映射结果 |
 | codebuddy 未安装 | 明确报错并给出安装命令；可配 npx |

@@ -57,13 +57,17 @@ class Scheduler:
                 self._seen_keys[item.dedupe_key] = item.id
 
     # ── import ─────────────────────────────────────────────────────────────────
-    def import_raw(self, raw: RawItem, *, exec_mode: str = "dry-run", auto_map: bool = True) -> tuple[WorkItem, bool]:
+    def import_raw(
+        self, raw: RawItem, *, exec_mode: str = "dry-run",
+        auto_map: bool = True, model: str | None = None,
+    ) -> tuple[WorkItem, bool]:
         """Create a WorkItem from a RawItem. Returns (item, created).
 
         Duplicate dedupe_keys are skipped (idempotent import): returns the
         existing item with created=False.
         """
         probe = parse_raw(raw, exec_mode=exec_mode)
+        probe.model = model or None
         existing_id = self._seen_keys.get(probe.dedupe_key)
         if existing_id:
             existing = self.store.get(existing_id)
@@ -87,6 +91,7 @@ class Scheduler:
         source_ref: str = "",
         git_url_hint: str = "",
         exec_mode: str = "dry-run",
+        model: str | None = None,
         auto_map: bool = True,
     ) -> WorkItem:
         """Create a WorkItem directly from user input (no email/TAPD needed).
@@ -112,6 +117,7 @@ class Scheduler:
         # Manual input is authoritative: keep the title and kind exactly as given.
         item.title = title.strip()
         item.kind = ItemKind(kind)
+        item.model = model or None
         item.dedupe_key = source_ref.strip() or f"manual:{secrets.token_hex(8)}"
 
         if repo_name:
@@ -194,7 +200,13 @@ class Scheduler:
 
     # ── run / cancel ───────────────────────────────────────────────────────────
     def run(
-        self, item_id: str, *, exec_mode: str | None = None, approved: bool = False
+        self,
+        item_id: str,
+        *,
+        exec_mode: str | None = None,
+        approved: bool = False,
+        model: str | None = None,
+        _model_supplied: bool = True,
     ) -> WorkItem:
         item = self.store.get(item_id)
         if item is None:
@@ -221,6 +233,10 @@ class Scheduler:
             if exec_mode not in {"dry-run", "apply"}:
                 raise ValueError("exec_mode must be 'dry-run' or 'apply'")
             item.exec_mode = exec_mode
+        if _model_supplied:
+            # The caller explicitly set the model for this run (None clears it
+            # back to the global default); when omitted, keep the stored choice.
+            item.model = (model or "").strip() or None
         if item.exec_mode == "apply" and not approved:
             raise ValueError("apply mode requires explicit approval (approved=true)")
         item.status = ItemStatus.QUEUED
@@ -344,7 +360,18 @@ class Scheduler:
             item.result = result
             if result.ok:
                 item.status = ItemStatus.SUCCEEDED
-                item.stage = "完成" if not result.dry_run else "完成（dry-run）"
+                if result.dry_run:
+                    item.stage = "完成（dry-run）"
+                elif result.sync_error:
+                    # Apply itself worked, but the mirror into the main repo
+                    # failed — surface it so the user doesn't assume the code
+                    # is in their checkout.
+                    item.stage = "完成（同步回主仓库失败，请查看报告）"
+                elif result.synced_files or result.sync_deleted:
+                    n = len(result.synced_files) + len(result.sync_deleted)
+                    item.stage = f"完成（已同步 {n} 个文件到主仓库）"
+                else:
+                    item.stage = "完成"
                 item.error = None
             else:
                 if item.attempt < item.max_attempts and _is_retryable(result.error):

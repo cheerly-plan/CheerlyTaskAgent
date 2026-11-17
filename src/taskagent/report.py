@@ -44,6 +44,7 @@ def render_report(item: WorkItem) -> str:
             "|---|---|",
             f"| 成功 | {'是' if result.ok else '否'} |",
             f"| dry-run | {'是' if result.dry_run else '否'} |",
+            f"| 模型 | {item.model or '执行器默认'} |",
             f"| 耗时 | {result.duration_s:.2f}s |",
             f"| worktree | {result.worktree or '—'} |",
             f"| 错误 | {result.error or '—'} |",
@@ -57,6 +58,28 @@ def render_report(item: WorkItem) -> str:
         ]
         if result.changed_files:
             lines += ["### 改动文件", ""] + [f"- `{name}`" for name in result.changed_files] + [""]
+        # Auto-sync outcome: which files landed in the main repo, what was
+        # mirrored as a deletion, and where originals were backed up.
+        if result.synced_files or result.sync_deleted or result.sync_error:
+            lines += [
+                "### 自动同步到主仓库",
+                "",
+                "| 字段 | 值 |",
+                "|---|---|",
+                f"| 已同步 | {len(result.synced_files)} 个文件 |",
+                f"| 已删除 | {len(result.sync_deleted)} 个文件 |",
+                f"| 备份目录 | {result.sync_backup_dir or '—'} |",
+                f"| 同步错误 | {result.sync_error or '—'} |",
+                "",
+            ]
+            if result.synced_files:
+                lines += ["已写入工作区："] + [f"- `{name}`" for name in result.synced_files] + [""]
+            if result.sync_deleted:
+                lines += ["已删除："] + [f"- `{name}`" for name in result.sync_deleted] + [""]
+        if result.sync_skipped:
+            lines += ["同步时跳过（忽略规则/路径不安全/失败）：", ""] + [
+                f"- `{name}`" for name in result.sync_skipped
+            ] + [""]
         if result.stdout:
             lines += ["### stdout", "", "```text", result.stdout.rstrip(), "```", ""]
         if result.stderr:

@@ -6,6 +6,32 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Model IDs exactly as advertised by `codebuddy --help` (verified 2026-11-17).
+# CLI only publishes raw IDs, no official human names, so the label is the ID
+# itself — no hand-made translations that could drift from what argv accepts.
+# The first three are routing aliases whose concrete model may change over
+# time; the rest are concrete model IDs.
+CODEBUDDY_MODELS: tuple[str, ...] = (
+    "fast-model",
+    "balanced-model",
+    "deep-model",
+    "hy4std",
+    "hy4flash",
+    "hy4flash-free",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-pro",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "kimi-k3.1-pro",
+    "kimi-k3-1",
+    "kimi-k2.8-preview",
+    "minimax-m3.1-flash",
+    "step-5-preview",
+    "mimo-v2.6-pro",
+    "space-bunny",
+)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -20,6 +46,8 @@ class Settings:
     project_map_file: Path | None = None  # project-name/alias -> folder JSON
     fs_root: Path | None = None  # read-only folder browser boundary (defaults to HOME)
     commit_rules_file: Path | None = None  # extra commit-ignore patterns (one per line)
+    auto_sync: bool = True  # copy apply changes back into the main repo worktree
+    available_models: tuple[str, ...] = ()  # allowed model ids for per-task selection
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -49,6 +77,13 @@ class Settings:
                 Path(item).expanduser()
                 if (item := os.environ.get("TASKAGENT_COMMIT_RULES_FILE"))
                 else None  # api defaults to data_dir / "commit-ignore.txt"
+            ),
+            auto_sync=os.environ.get("TASKAGENT_AUTO_SYNC", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            available_models=tuple(
+                m.strip()
+                for m in os.environ.get("TASKAGENT_MODELS", "").split(",")
+                if m.strip()
             ),
         )
 
@@ -82,4 +117,21 @@ class Settings:
             self.commit_rules_file
             if self.commit_rules_file is not None
             else self.data_dir / "commit-ignore.txt"
+        )
+
+    @property
+    def model_choices(self) -> list[dict[str, str]]:
+        """Model options for the UI: ``[{id, label}, ...]``.
+
+        When ``TASKAGENT_MODELS`` is set, only those ids are offered (in that
+        order). Label is the raw CLI ID — CodeBuddy publishes no human names.
+        """
+        ids = self.available_models or CODEBUDDY_MODELS
+        return [{"id": mid, "label": mid} for mid in ids]
+
+    @property
+    def default_model(self) -> str | None:
+        """The per-task default: CODEBUDDY_MODEL env, else first allowed option."""
+        return self.codebuddy_model or (
+            self.available_models[0] if self.available_models else None
         )

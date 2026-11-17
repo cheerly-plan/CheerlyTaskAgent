@@ -31,11 +31,13 @@ class ImportBody(BaseModel):
     source_ref: str = ""
     git_url_hint: str = ""
     exec_mode: str = "dry-run"
+    model: str | None = None
 
 
 class ImportEmailsBody(BaseModel):
     messages: list[dict[str, Any]] = Field(default_factory=list)
     exec_mode: str = "dry-run"
+    model: str | None = None
 
 
 class ManualTaskBody(BaseModel):
@@ -46,6 +48,7 @@ class ManualTaskBody(BaseModel):
     source_ref: str = ""
     git_url_hint: str = ""
     exec_mode: str = "dry-run"
+    model: str | None = None
     run_now: bool = False
     approved: bool = False
 
@@ -53,6 +56,7 @@ class ManualTaskBody(BaseModel):
 class RunBody(BaseModel):
     exec_mode: str | None = None
     approved: bool = False
+    model: str | None = None
 
 
 class CommitBody(BaseModel):
@@ -105,11 +109,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     projects = ProjectRegistry(project_store)
     browser = FolderBrowser(settings.browse_root)
     events = EventBus()
+    from .commitfilter import load_extra_patterns
+
     executor = CodeBuddyExecutor(
         command=settings.codebuddy_command,
         worktrees_dir=settings.worktrees_dir,
         timeout_s=settings.timeout_s,
         model=settings.codebuddy_model,
+        auto_sync=settings.auto_sync,
+        backups_dir=settings.data_dir / "sync-backups",
+        # Reuse the same ignore rules as commit so we never sync secrets,
+        # venvs, data/ or other runtime state back into the main checkout.
+        sync_ignore_patterns=tuple(load_extra_patterns(settings.commit_rules_path)),
     )
     scheduler = Scheduler(
         store=store,
@@ -155,6 +166,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "fs_root": str(settings.browse_root),
             "commit_rules_file": str(settings.commit_rules_path),
+            "auto_sync": settings.auto_sync,
+            "models": settings.model_choices,
+            "default_model": settings.default_model,
         }
 
     # ── read-only folder browser + on-demand scanner ────────────────────────
@@ -228,7 +242,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             source = ManualSource([raw])
             item = None
             for raw_item in source.fetch():
-                item, _ = scheduler.import_raw(raw_item, exec_mode=body.exec_mode)
+                item, _ = scheduler.import_raw(raw_item, exec_mode=body.exec_mode, model=body.model)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         return item.to_dict()  # type: ignore[union-attr]
@@ -245,10 +259,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 source_ref=body.source_ref,
                 git_url_hint=body.git_url_hint,
                 exec_mode=body.exec_mode,
+                model=body.model,
             )
             if body.run_now:
                 item = scheduler.run(
-                    item.id, exec_mode=body.exec_mode, approved=body.approved
+                    item.id, exec_mode=body.exec_mode, approved=body.approved,
+                    model=body.model,
                 )
             return item.to_dict()
         except ValueError as error:
@@ -260,7 +276,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         source = EmailSource(body.messages)
         created, skipped = 0, 0
         for raw in source.fetch():
-            _, was_created = scheduler.import_raw(raw, exec_mode=body.exec_mode)
+            _, was_created = scheduler.import_raw(raw, exec_mode=body.exec_mode, model=body.model)
             if was_created:
                 created += 1
             else:
@@ -283,9 +299,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/items/{item_id}/run")
     async def api_run_item(item_id: str, body: RunBody) -> dict[str, Any]:
+        # Distinguish "model field omitted" (keep the item's stored choice)
+        # from "model: null" (explicitly reset to the global default).
+        supplied = "model" in body.model_fields_set
         try:
             return scheduler.run(
-                item_id, exec_mode=body.exec_mode, approved=body.approved
+                item_id, exec_mode=body.exec_mode, approved=body.approved,
+                model=body.model, _model_supplied=supplied,
             ).summary()
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
