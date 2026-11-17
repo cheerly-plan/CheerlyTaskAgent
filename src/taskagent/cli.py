@@ -48,7 +48,15 @@ def serve(settings: Settings) -> None:
     import uvicorn
 
     print(f"TaskAgent → http://{settings.host}:{settings.port}")
-    uvicorn.run("taskagent.api:create_app", host=settings.host, port=settings.port, factory=True)
+    uvicorn.run(
+        "taskagent.api:create_app",
+        host=settings.host,
+        port=settings.port,
+        factory=True,
+        # Last-resort cap: even if a connection/task misbehaves during
+        # shutdown, force-exit after this many seconds instead of hanging.
+        timeout_graceful_shutdown=5,
+    )
 
 
 def scan(settings: Settings) -> None:

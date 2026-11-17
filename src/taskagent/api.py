@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -153,7 +154,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if recovered:
         logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
 
-    app = FastAPI(title="CheerlyTaskAgent", version="0.2.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Nothing to do on startup; cleanup on graceful shutdown so uvicorn
+        # doesn't hang waiting for SSE streams and in-flight exec tasks.
+        yield
+        logger.info("关闭中：断开 SSE、取消后台任务…")
+        events.close()
+        await scheduler.shutdown()
+
+    app = FastAPI(title="CheerlyTaskAgent", version="0.2.0", lifespan=lifespan)
     app.state.ctx = SimpleNamespace(
         settings=settings, store=store, gitmap=gitmap, projects=projects,
         browser=browser, events=events, executor=executor, scheduler=scheduler,
@@ -410,7 +420,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 for event in events.replay():
                     yield sse_frame(event)
-                while True:
+                while not events.closed:
                     if await request.is_disconnected():
                         break
                     try:
@@ -418,6 +428,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     except TimeoutError:
                         yield ": keepalive\n\n"
                         continue
+                    if event is None:  # shutdown sentinel from EventBus.close()
+                        break
                     yield sse_frame(event)
             finally:
                 events.unsubscribe(queue)

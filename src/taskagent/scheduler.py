@@ -52,9 +52,30 @@ class Scheduler:
         self._sem = asyncio.Semaphore(self.settings.max_concurrent)
         self._cancel_flags: dict[str, bool] = {}
         self._seen_keys: dict[str, str] = {}
+        self._tasks: set[asyncio.Task] = set()
         for item in self.store.list(limit=2000):
             if item.dedupe_key:
                 self._seen_keys[item.dedupe_key] = item.id
+
+    def _spawn(self, coro, *, name: str) -> asyncio.Task:
+        """Track a background task so it can be cancelled on server shutdown."""
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def shutdown(self) -> None:
+        """Cancel in-flight execution tasks and let them settle (best effort).
+
+        Cancelled tasks raise CancelledError inside ``_execute``; the work item
+        remains persisted as queued/running and ``recover_interrupted()`` reaps
+        it on the next start.
+        """
+        pending = [t for t in self._tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # ── import ─────────────────────────────────────────────────────────────────
     def import_raw(
@@ -243,7 +264,7 @@ class Scheduler:
         item.error = None
         self.store.save(item)
         self._cancel_flags[item_id] = False
-        asyncio.create_task(self._execute(item_id), name=f"work-{item_id}")
+        self._spawn(self._execute(item_id), name=f"work-{item_id}")
         self.events.publish(Event("item_queued", item_id, {"exec_mode": item.exec_mode}))
         return item
 
@@ -389,7 +410,7 @@ class Scheduler:
                     self.store.save(item)
                     self.events.publish(Event("item_retry", item_id, {"delay": delay}))
                     await asyncio.sleep(delay)
-                    asyncio.create_task(self._execute(item_id), name=f"work-{item_id}-retry")
+                    self._spawn(self._execute(item_id), name=f"work-{item_id}-retry")
                     return
                 item.status = ItemStatus.FAILED
                 item.stage = "失败"
