@@ -196,7 +196,6 @@
 
 <nav class="top-tabs" id="top-tabs">
   <button data-page="tasks" class="active">任务列表</button>
-  <button data-page="new">新建任务</button>
   <button data-page="mapping">项目映射</button>
   <button data-page="settings">系统设置</button>
 </nav>
@@ -209,7 +208,11 @@
         <h2>任务列表</h2>
         <div class="section-note" style="margin:0">默认表格视图；按来源 / 状态 / 项目筛选排序，点击条目查看报告，支持重试、删除与卡片视图切换。</div>
       </div>
-      <button class="btn-sm" id="refresh">刷新</button>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        <button class="btn-sm" id="import-email">导入邮件</button>
+        <button class="btn-sm" id="new-task" style="background:var(--purple);color:#fff;border-color:var(--purple)">+ 新建任务</button>
+        <button class="btn-sm" id="refresh">刷新</button>
+      </div>
     </div>
     <div class="filters">
       <label for="f-source">来源</label>
@@ -234,73 +237,6 @@
       <span class="count" id="count">0 个工作项</span>
     </div>
     <div id="items"></div>
-  </section>
-
-  <!-- ───────────────────────── 新建任务 ───────────────────────── -->
-  <section class="page" id="page-new">
-    <div class="page-head">
-      <div>
-        <h2>新建任务</h2>
-        <div class="section-note" style="margin:0">现阶段支持手动录入与邮件两类工单；TAPD 接入为预留扩展点。</div>
-      </div>
-    </div>
-    <div class="sub-tabs" id="new-subtabs">
-      <button data-sub="manual" class="active">手动新建</button>
-      <button data-sub="email">邮件导入</button>
-      <button data-sub="tapd" disabled title="预留扩展，暂未启用">TAPD（预留）</button>
-    </div>
-
-    <div class="subpage active" id="sub-manual">
-      <div class="card">
-        <h2>手动新建执行</h2>
-        <div class="section-note">不依赖邮件/TAPD。选好项目，直接写需求或 bug，创建后即可执行。</div>
-        <div class="form-grid">
-          <div>
-            <label for="m-repo">目标项目（来自项目映射）</label>
-            <select id="m-repo"><option value="">选择项目…</option></select>
-            <div class="hint">没有项目？到「项目映射」Tab 添加 ai_task 等本地文件夹。</div>
-            <label for="m-kind">类型</label>
-            <select id="m-kind">
-              <option value="task">任务 task</option>
-              <option value="feature">需求 feature</option>
-              <option value="bug">缺陷 bug</option>
-            </select>
-            <label for="m-model">模型 <span class="hint" style="font-weight:400">（本任务执行所用，默认跟随全局）</span></label>
-            <select id="m-model"><option value="">默认（跟随全局）</option></select>
-          </div>
-          <div>
-            <label for="m-title">标题</label>
-            <textarea id="m-title" style="min-height:50px" placeholder="例如：调整 ai_task 调度台，新增顶部 Tab"></textarea>
-            <label for="m-body">需求 / Bug 描述</label>
-            <textarea id="m-body" placeholder="写清要改什么、验收标准、注意事项…"></textarea>
-          </div>
-          <div class="span-2">
-            <div class="create-actions">
-              <button class="btn-sm wide" id="m-draft">创建草稿（稍后选执行）</button>
-              <button class="btn-sm" id="m-dry">创建并 dry-run</button>
-              <button class="btn-sm apply" id="m-apply">创建并 apply</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="subpage" id="sub-email">
-      <div class="card">
-        <h2>从邮件导入</h2>
-        <div class="section-note">粘贴邮件主题/正文，自动识别 bug/需求并提取 git 地址；IMAP 凭证在「系统设置」中维护。</div>
-        <label for="f-title">标题 / 邮件主题</label>
-        <textarea id="f-title" style="min-height:50px" placeholder="【BUG】登录 500 - cheerly-plan/CheerlyAgent"></textarea>
-        <label for="f-body">描述 / 邮件正文</label>
-        <textarea id="f-body" placeholder="问题描述、复现步骤、git 地址…"></textarea>
-        <label for="f-mode">执行模式</label>
-        <select id="f-mode">
-          <option value="dry-run">dry-run（只生成命令，不改动）</option>
-          <option value="apply">apply（真实执行，需审批）</option>
-        </select>
-        <button class="btn-primary" id="import-btn">导入邮件</button>
-      </div>
-    </div>
   </section>
 
   <!-- ───────────────────────── 项目映射 ───────────────────────── -->
@@ -395,6 +331,66 @@
     </div>
   </section>
 </main>
+
+<!-- 新建任务弹窗（原「新建任务」Tab 合并而来） -->
+<div class="modal-backdrop" id="new-task-modal" style="display:none">
+  <div class="modal" style="width:min(640px,100%)">
+    <div class="modal-head"><span>新建任务</span><button class="modal-x" id="nt-close">×</button></div>
+    <div class="modal-body">
+      <div class="sub-tabs" id="new-subtabs">
+        <button data-sub="manual" class="active">手动新建</button>
+        <button data-sub="email">邮件导入</button>
+        <button data-sub="tapd" disabled title="预留扩展，暂未启用">TAPD（预留）</button>
+      </div>
+      <div class="subpage active" id="sub-manual">
+        <div class="section-note">不依赖邮件/TAPD。选好项目，直接写需求或 bug，创建后即可执行。</div>
+        <div class="form-grid">
+          <div>
+            <label for="m-repo">目标项目（来自项目映射）</label>
+            <select id="m-repo"><option value="">选择项目…</option></select>
+            <div class="hint">没有项目？到「项目映射」Tab 添加 ai_task 等本地文件夹。</div>
+            <label for="m-kind">类型</label>
+            <select id="m-kind">
+              <option value="task">任务 task</option>
+              <option value="feature">需求 feature</option>
+              <option value="bug">缺陷 bug</option>
+            </select>
+            <label for="m-model">模型 <span class="hint" style="font-weight:400">（本任务执行所用，默认跟随全局）</span></label>
+            <select id="m-model"><option value="">默认（跟随全局）</option></select>
+          </div>
+          <div>
+            <label for="m-title">标题</label>
+            <textarea id="m-title" style="min-height:50px" placeholder="例如：调整 ai_task 调度台，新增顶部 Tab"></textarea>
+            <label for="m-body">需求 / Bug 描述</label>
+            <textarea id="m-body" placeholder="写清要改什么、验收标准、注意事项…"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="subpage" id="sub-email">
+        <div class="section-note">粘贴邮件主题/正文，自动识别 bug/需求并提取 git 地址；IMAP 凭证在「系统设置」中维护。</div>
+        <label for="f-title">标题 / 邮件主题</label>
+        <textarea id="f-title" style="min-height:50px" placeholder="【BUG】登录 500 - cheerly-plan/CheerlyAgent"></textarea>
+        <label for="f-body">描述 / 邮件正文</label>
+        <textarea id="f-body" placeholder="问题描述、复现步骤、git 地址…"></textarea>
+        <label for="f-mode">执行模式</label>
+        <select id="f-mode">
+          <option value="dry-run">dry-run（只生成命令，不改动）</option>
+          <option value="apply">apply（真实执行，需审批）</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-foot" id="nt-foot-manual">
+      <button class="btn-sm" id="nt-cancel">取消</button>
+      <button class="btn-sm" id="m-draft">创建草稿</button>
+      <button class="btn-sm" id="m-dry">创建并 dry-run</button>
+      <button class="btn-sm apply" id="m-apply">创建并 apply</button>
+    </div>
+    <div class="modal-foot" id="nt-foot-email" style="display:none">
+      <button class="btn-sm" id="nt-cancel-email">取消</button>
+      <button class="btn-primary" id="import-btn" style="width:auto;margin-top:0">导入邮件</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-backdrop" id="fs-modal" style="display:none">
   <div class="modal">
@@ -501,7 +497,14 @@ function switchPage(name){
 function switchSub(name){
   $('new-subtabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
   document.querySelectorAll('.subpage').forEach(p=>p.classList.toggle('active',p.id==='sub-'+name));
+  $('nt-foot-manual').style.display = name==='email' ? 'none' : 'flex';
+  $('nt-foot-email').style.display  = name==='email' ? 'flex' : 'none';
 }
+function openNewTask(sub){
+  switchSub(sub||'manual');
+  $('new-task-modal').style.display='flex';
+}
+function closeNewTask(){ $('new-task-modal').style.display='none'; }
 
 function fillModelSelect(sel, withDefault){
   if(!sel) return;
@@ -817,7 +820,7 @@ function render(){
     : list.length+' / '+items.length+' 个工作项';
   const box=$('items');
   if(!list.length){
-    box.innerHTML='<div class="card empty">没有符合条件的工作项。可调整上方筛选，或到「新建任务」创建。</div>';
+    box.innerHTML='<div class="card empty">没有符合条件的工作项。可调整上方筛选，或点右上角「+ 新建任务」创建。</div>';
     return;
   }
   if(viewMode==='table') renderTable(list,box);
@@ -969,8 +972,8 @@ async function createManual(mode){
       approved:mode==='apply',
     })});
     $('m-title').value='';$('m-body').value='';
+    closeNewTask();
     await loadItems();
-    switchPage('tasks');
     toast(mode==='draft'?'草稿已创建':'工单已创建并提交执行');
   }catch(e){alert('创建失败：'+e.message)}
 }
@@ -987,8 +990,8 @@ $('import-btn').onclick=async()=>{
       title, body:$('f-body').value, source:'email', exec_mode:$('f-mode').value
     })});
     $('f-title').value='';$('f-body').value='';
+    closeNewTask();
     await loadItems();
-    switchPage('tasks');
     toast('邮件已导入');
   }catch(e){alert('导入失败：'+e.message)}
 };
@@ -996,6 +999,11 @@ $('import-btn').onclick=async()=>{
 // ── static event wiring ─────────────────────────────────────────────────────
 $('top-tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>switchPage(b.dataset.page));
 $('new-subtabs').querySelectorAll('button').forEach(b=>{ if(!b.disabled) b.onclick=()=>switchSub(b.dataset.sub); });
+$('new-task').onclick=()=>openNewTask('manual');
+$('import-email').onclick=()=>openNewTask('email');
+$('nt-close').onclick=closeNewTask;
+$('nt-cancel').onclick=closeNewTask;
+$('nt-cancel-email').onclick=closeNewTask;
 document.querySelectorAll('.view-toggle button').forEach(b=>b.onclick=()=>{
   viewMode=b.dataset.view;
   document.querySelectorAll('.view-toggle button').forEach(x=>x.classList.toggle('active',x===b));
@@ -1034,6 +1042,7 @@ $('confirm-cancel').onclick=()=>closeConfirm(false);
 $('confirm-ok').onclick=()=>closeConfirm(true);
 $('confirm-close').onclick=()=>closeConfirm(false);
 
+$('new-task-modal').onclick=(e)=>{ if(e.target===$('new-task-modal')) closeNewTask(); };
 $('map-modal').onclick=(e)=>{ if(e.target===$('map-modal')) $('map-modal').style.display='none'; };
 $('fs-modal').onclick=(e)=>{ if(e.target===$('fs-modal')) $('fs-modal').style.display='none'; };
 $('scan-modal').onclick=(e)=>{ if(e.target===$('scan-modal')) $('scan-modal').style.display='none'; };

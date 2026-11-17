@@ -55,7 +55,7 @@ flowchart LR
 | `executor.py` | `codebuddy -p --output-format json` 非交互执行。`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 以 worktree HEAD 为 base 做三方比较同步回主仓库（主仓库未分叉才覆盖，分叉则尝试干净合并、否则记冲突并备份双方；路径校验/忽略规则）。argv 列表拼接防命令注入。 |
 | `report.py` | 每单生成 Markdown：来源、映射仓库、提示词、命令、输出、改动文件、自动同步明细与备份位置、错误。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
-| `web/index.html` | 调度台：手动新建执行（一级入口）、邮件导入、项目映射配置、工作项看板、dry-run/apply/report。 |
+| `web/index.html` | 调度台三 Tab（任务列表 / 项目映射 / 系统设置）：新建任务已合并进任务列表，由右上角「+ 新建任务」「导入邮件」按钮打开弹窗（内嵌手动新建 / 邮件导入 / TAPD 预留子 Tab）；含工作项看板、dry-run/apply/report。 |
 
 ## 3. 关键流程
 
@@ -104,7 +104,7 @@ flowchart LR
 
 ## 8. 落地状态与下一步
 
-**已完成**：规则解析、git 映射、项目映射配置、手动新建执行（选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、测试全绿、demo 闭环跑通。
+**已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、测试全绿、demo 闭环跑通。
 
 **下一步（按优先级）**：
 1. 开通 Agent Mail，接真实 `ListMessages`/`SearchMessages` → `/api/import/emails`。
