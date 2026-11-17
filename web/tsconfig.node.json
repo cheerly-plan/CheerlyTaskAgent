@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2023"
+    ],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "composite": true,
+    "types": [
+      "node"
+    ],
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "outDir": "./.tsbuild"
+  },
+  "include": [
+    "vite.config.ts",
+    "tailwind.config.ts"
+  ]
+}

@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import Settings
@@ -108,6 +109,40 @@ class UISettingsBody(BaseModel):
     imap: dict[str, Any] = Field(default_factory=dict)
 
 
+def web_not_built_page() -> str:
+    """界面尚未构建时的引导页：给出可直接复制的命令，而不是一句 503 文本。"""
+    return """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>TaskAgent · 界面未构建</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#f6f6f9;
+         font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+         color:#24263a; }
+  main { width:min(580px, calc(100vw - 48px)); background:#fff; border:1px solid #e6e6ee;
+         border-radius:14px; padding:28px; box-shadow:0 16px 48px -12px rgb(24 26 48 / .18); }
+  h1 { margin:0 0 6px; font-size:17px; letter-spacing:-.01em; }
+  p { margin:0 0 14px; font-size:13px; line-height:1.7; color:#5f6273; }
+  pre { margin:0 0 14px; padding:12px 14px; background:#f7f7fb; border:1px solid #ededf3;
+        border-radius:9px; font-size:12.5px; line-height:1.7; overflow:auto;
+        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .hint { font-size:12px; color:#9698a9; }
+  code { background:#efeffa; color:#4b44ad; padding:1px 5px; border-radius:4px;
+         font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
+</style></head>
+<body><main>
+  <h1>界面尚未构建</h1>
+  <p>后端 API 已就绪，但 <code>web/</code> 的前端产物还不存在。
+     前端是 Vite 工程，构建产物不会提交到仓库，需要先执行一次构建：</p>
+  <pre>cd web
+pnpm install
+pnpm build</pre>
+  <p>或者用封装好的命令（在仓库根目录执行）：</p>
+  <pre>uv run taskagent web-build</pre>
+  <p class="hint">构建完成后刷新本页即可。开发者可用 <code>pnpm dev</code> 启动带热更新的前端，
+     它会把 <code>/api</code> 代理到 127.0.0.1:8010。</p>
+</main></body></html>"""
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -169,11 +204,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         browser=browser, events=events, executor=executor, scheduler=scheduler,
     )
 
+    # 前端由 `web/` 的 Vite 工程构建到 web_dir；产物不入仓，因此首次运行需先 build。
+    assets_dir = settings.web_dir / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
     @app.get("/", include_in_schema=False, response_model=None)
     def index() -> HTMLResponse | FileResponse:
         page = settings.web_dir / "index.html"
         if not page.is_file():
-            return HTMLResponse("<h1>TaskAgent</h1><p>web/index.html is missing.</p>", 503)
+            return HTMLResponse(web_not_built_page(), status_code=503)
         return FileResponse(page, media_type="text/html")
 
     @app.get("/api/config")

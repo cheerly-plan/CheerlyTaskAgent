@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from pathlib import Path
 
 from .config import Settings
 from .events import EventBus
@@ -57,6 +58,25 @@ def serve(settings: Settings) -> None:
         # shutdown, force-exit after this many seconds instead of hanging.
         timeout_graceful_shutdown=5,
     )
+
+
+def build_web() -> None:
+    """构建前端（web/ → src/taskagent/web/）。产物不入仓，首次运行前需要执行一次。"""
+    import shutil
+    import subprocess
+
+    web_src = Path(__file__).resolve().parents[2] / "web"
+    if not (web_src / "package.json").is_file():
+        raise SystemExit(f"未找到前端工程：{web_src}")
+    pnpm = shutil.which("pnpm") or shutil.which("npm")
+    if not pnpm:
+        raise SystemExit("未找到 pnpm / npm，请先安装 Node.js 18+ 后再构建前端。")
+    for command in ([pnpm, "install"], [pnpm, "run", "build"]):
+        print("$", " ".join(command), f"(cwd={web_src})")
+        result = subprocess.run(command, cwd=web_src, check=False)
+        if result.returncode != 0:
+            raise SystemExit(f"构建失败（退出码 {result.returncode}）")
+    print("\n前端已构建到 src/taskagent/web/，重启 `taskagent serve` 后刷新页面即可。")
 
 
 def scan(settings: Settings) -> None:
@@ -135,7 +155,7 @@ async def demo(settings: Settings) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="taskagent")
-    parser.add_argument("command", choices=["serve", "scan", "demo"])
+    parser.add_argument("command", choices=["serve", "scan", "demo", "web-build"])
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
@@ -153,6 +173,9 @@ def main() -> None:
         project_map_file=base.project_map_file,
     )
 
+    if args.command == "web-build":
+        build_web()
+        return
     if args.command == "serve":
         serve(settings)
     elif args.command == "scan":

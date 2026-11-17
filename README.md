@@ -8,9 +8,11 @@
 
 ```sh
 uv sync
+uv run taskagent web-build # 构建前端（首次运行 / 每次改前端后；需要 Node 18+ 与 pnpm）
 uv run taskagent scan      # 扫描本地 git 仓库（~/.Desktop/code/projects）
 uv run taskagent demo      # 用 3 封样例邮件跑通 邮件→映射→执行→报告
-uv run taskagent serve     # http://127.0.0.1:8010 打开调度台
+uv run taskagent serve     # http://127.0.0.1:8010 
+uv run taskagent serve + cd web && pnpm dev --host 127.0.0.1
 # 点任务列表右上角「+ 新建任务」选项目、写需求，点「创建并 dry-run」即可；
 # 确认提示词无误后再点工作项上的 apply（或在创建时直接点「创建并 apply」）。
 ```
@@ -45,9 +47,15 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 
 ## 界面
 
+前端是 `web/` 下的独立工程：**Vite + React 18 + TypeScript + Tailwind CSS + shadcn/ui**（组件由 shadcn CLI 生成并纳入源码，按需增删）。构建产物输出到 `src/taskagent/web/` 并由 FastAPI 托管，**该目录不入仓**，所以首次运行前要执行一次 `uv run taskagent web-build`（等价于在 `web/` 里 `pnpm install && pnpm build`）；没构建时后端会返回一页带命令的引导，而不是空白 503。
+
+- 前端热更新：后端先 `uv run taskagent serve`，再 `cd web && pnpm dev --host 127.0.0.1`（`/api` 与 SSE 自动代理到 `127.0.0.1:8010`），打开 `http://127.0.0.1:5173`。
+- 加组件：`cd web && pnpm dlx shadcn@latest add <component>`，组件落在 `web/src/components/ui/`。
+- 类型检查：`cd web && pnpm typecheck`。
+
 顶部 Tab 划分三个主页面，新建任务已合并进任务列表（按钮 + 弹窗）：
 
-1. **任务列表**：右上角「+ 新建任务」按钮打开弹窗，弹窗内嵌「手动新建 / 邮件导入 / TAPD 预留」子 Tab（邮件导入在此切换）。列表默认表格视图，按来源 / 状态 / 项目筛选，按创建时间 / 状态 / 来源 / 项目 / 标题排序；点击条目查看报告（无报告时显示工单详情），配套重试、apply、取消、删除、按任务切换模型等操作，可切换卡片视图。
+1. **任务列表**：右上角「+ 新建任务」按钮打开弹窗，弹窗内嵌「手动新建 / 邮件导入 / TAPD 预留」子 Tab（邮件导入在此切换）。列表默认表格视图，按来源 / 状态 / 项目筛选；**点击表头**即可按标题 / 类型 / 来源 / 项目 / 状态 / 创建时间升序或降序（再次点击切换方向，卡片视图用工具栏的「排序」下拉 + 方向按钮）；点击条目查看报告（无报告时显示工单详情），配套重试、apply、取消、删除、按任务切换模型等操作，可切换卡片视图。
 2. **项目映射**：以配置表格统一管理项目名 / 别名 / 本地路径 / 仓库信息，支持「选择文件夹」逐级点选、「扫描文件夹」批量勾选与手动新增、编辑、启停、删除。
 3. **系统设置**：集中维护 CodeBuddy CLI 命令、DSH / WorkBuddy CLI 路径（预留执行端）、默认模型、并发与自动同步，以及 IMAP 邮箱凭证。凭证明文保存在本机 `data/settings.json`，密码留空表示保持原值；部分参数保存后需重启服务生效。
 
@@ -110,7 +118,21 @@ src/taskagent/
 ├── store.py        JSON 原子写持久化
 ├── events.py       事件总线 + SSE
 ├── api.py / cli.py
-└── web/index.html  调度台 UI
+└── web/            构建产物（Vite 输出，不入仓）
+```
+
+```
+web/                    前端工程源码
+├── index.html        Vite 入口
+├── components.json    shadcn/ui 配置
+├── tailwind.config.ts 设计令牌（品牌紫 + 语义色）
+└── src/
+    ├── App.tsx       三个 Tab 的壳
+    ├── app-context.tsx 数据加载 / SSE / 全局弹窗与动作
+    ├── components/ui/  shadcn 组件（button / dialog / select / table …）
+    ├── components/dialogs/  新建任务 / 选文件夹 / 扫描 / 映射 / 报告 / 确认
+    ├── pages/        任务列表 / 项目映射 / 系统设置
+    └── lib/          API 契约、状态字典、Markdown 报告渲染
 ```
 
 ## 开发
@@ -118,4 +140,12 @@ src/taskagent/
 ```sh
 uv run pytest
 uv run ruff check src tests
+
+# 前端（web/）
+pnpm --dir web install
+pnpm --dir web typecheck   # tsc --noEmit
+pnpm --dir web build       # 产物 → src/taskagent/web/
+pnpm --dir web dev         # 开发模式，需同时跑 taskagent serve
 ```
+
+> `web/.npmrc` 里固定了 npmmirror 源（本机默认源证书失效时用）。若你的 npm 源正常，可直接删掉该文件。
