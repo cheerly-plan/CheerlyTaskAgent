@@ -93,6 +93,19 @@ class BulkMappingBody(BaseModel):
     items: list[MappingBody] = Field(default_factory=list)
 
 
+class UISettingsBody(BaseModel):
+    """Values edited in the 系统设置 tab; unknown keys are ignored on save."""
+
+    executor: str = "codebuddy"
+    codebuddy_command: str = "codebuddy"
+    workbuddy_cli_path: str = ""
+    dsh_path: str = ""
+    default_model: str = ""
+    max_concurrent: int = Field(default=1, ge=1)
+    auto_sync: bool = True
+    imap: dict[str, Any] = Field(default_factory=dict)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +183,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "models": settings.model_choices,
             "default_model": settings.default_model,
         }
+
+    # ── UI-managed settings (系统设置 tab) ────────────────────────────────────
+    @app.get("/api/settings")
+    def api_get_settings() -> dict[str, Any]:
+        return settings.load_ui_settings()
+
+    @app.put("/api/settings")
+    def api_put_settings(body: UISettingsBody) -> dict[str, Any]:
+        return settings.save_ui_settings(body.model_dump())
 
     # ── read-only folder browser + on-demand scanner ────────────────────────
     @app.get("/api/fs/browse")

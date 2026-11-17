@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Model IDs exactly as advertised by `codebuddy --help` (verified 2026-11-17).
 # CLI only publishes raw IDs, no official human names, so the label is the ID
@@ -31,6 +33,21 @@ CODEBUDDY_MODELS: tuple[str, ...] = (
     "mimo-v2.6-pro",
     "space-bunny",
 )
+
+# Settings managed from the UI "系统设置" tab. Stored in <data_dir>/settings.json
+# so the values survive restarts; env-derived values are used as the initial
+# defaults until the file is written. DSH / WorkBuddy are execution backends
+# reserved for later, so their paths are kept here but not yet dispatched to.
+UI_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "executor": "codebuddy",
+    "codebuddy_command": "codebuddy",
+    "workbuddy_cli_path": "",
+    "dsh_path": "",
+    "default_model": "",
+    "max_concurrent": 1,
+    "auto_sync": True,
+    "imap": {"host": "", "port": 993, "user": "", "password": "", "use_ssl": True},
+}
 
 
 @dataclass(frozen=True)
@@ -135,3 +152,52 @@ class Settings:
         return self.codebuddy_model or (
             self.available_models[0] if self.available_models else None
         )
+
+    @property
+    def ui_settings_path(self) -> Path:
+        return self.data_dir / "settings.json"
+
+    def load_ui_settings(self) -> dict[str, Any]:
+        """Return UI-managed settings, starting from env values on first run."""
+        data: dict[str, Any] = {
+            **UI_SETTINGS_DEFAULTS,
+            "codebuddy_command": self.codebuddy_command,
+            "default_model": self.default_model or "",
+            "max_concurrent": self.max_concurrent,
+            "auto_sync": self.auto_sync,
+            "imap": dict(UI_SETTINGS_DEFAULTS["imap"]),
+        }
+        path = self.ui_settings_path
+        if path.is_file():
+            try:
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(saved, dict):
+                    for key, value in saved.items():
+                        if key == "imap" and isinstance(value, dict):
+                            data["imap"].update(value)
+                        elif key in data:
+                            data[key] = value
+            except (OSError, ValueError):
+                pass  # corrupt/unreadable file -> fall back to defaults
+        return data
+
+    def save_ui_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Merge and persist UI-managed settings; blank IMAP password keeps the old one."""
+        data = self.load_ui_settings()
+        for key, value in payload.items():
+            if key == "imap" and isinstance(value, dict):
+                imap = dict(value)
+                # The UI masks the stored password; an empty submission means
+                # "unchanged" instead of clearing it.
+                if not imap.get("password"):
+                    imap["password"] = data["imap"].get("password", "")
+                data["imap"].update(imap)
+            elif key in data and key != "imap":
+                data[key] = value
+        data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
+        path = self.ui_settings_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return data

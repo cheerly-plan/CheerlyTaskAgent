@@ -379,6 +379,73 @@ class CodeBuddyExecutor:
         return cls._dir_has_content(target)
 
     @classmethod
+    def _overlay_working_tree(cls, repo_path: str, target: Path) -> bool:
+        """Overlay the repo's *current* working-tree state onto a fresh worktree.
+
+        ``git worktree add`` only checks out the committed HEAD, so any
+        uncommitted changes already synced into the real checkout (e.g. a prior
+        apply result not yet committed) would be invisible to codebuddy. That
+        makes it edit stale code and produces false three-way conflicts on
+        sync. Here we replay the repo's working-tree diff and copy untracked
+        files into the worktree, then commit as a new baseline so both the CLI
+        and the sync base see exactly what the user sees.
+
+        Best-effort: any failure leaves the plain HEAD checkout intact (still
+        safe, just possibly stale). Returns True when an overlay was applied.
+        """
+        import subprocess
+
+        def git(cwd: str | Path, *args: str, data: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.run(
+                ["git", "-C", str(cwd), *args], input=data,
+                capture_output=True, check=False,
+            )
+
+        source = Path(repo_path).resolve()
+        # Tracked changes vs HEAD (staged + unstaged, deletions, binaries).
+        diff = git(source, "diff", "HEAD", "--binary")
+        if diff.returncode != 0:
+            return False
+        # Untracked but not ignored files; skip runtime dirs defensively.
+        others = git(source, "ls-files", "--others", "--exclude-standard", "-z")
+        untracked: list[bytes] = (
+            [p for p in others.stdout.split(b"\0") if p]
+            if others.returncode == 0 else []
+        )
+
+        layered = False
+        if diff.stdout.strip():
+            applied = git(target, "apply", "--binary", "--whitespace=nowarn", data=diff.stdout)
+            if applied.returncode != 0:
+                # Patch did not apply cleanly — keep the pristine HEAD baseline.
+                return False
+            layered = True
+
+        for raw in untracked:
+            rel = raw.decode("utf-8", "surrogateescape")
+            first = rel.replace("\\", "/").split("/", 1)[0]
+            if first in cls._COPY_EXCLUDE:
+                continue
+            src = source / rel
+            if not src.is_file():
+                continue
+            dst = target / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                layered = True
+            except OSError:
+                continue
+
+        if layered:
+            git(target, "add", "-A")
+            git(
+                target, "-c", "user.name=TaskAgent", "-c", "user.email=taskagent@local",
+                "commit", "-qm", "baseline: current working tree",
+            )
+        return layered
+
+    @classmethod
     def _create_worktree(cls, repo: LocalRepo, target: Path) -> bool:
         import subprocess
 
@@ -415,6 +482,9 @@ class CodeBuddyExecutor:
             branch = f"taskagent/{target.name}"
             added = git("worktree", "add", "-b", branch, str(target), cwd=repo.path)
             if added.returncode == 0 and cls._dir_has_content(target):
+                # Replay the repo's uncommitted working-tree state onto the
+                # worktree so codebuddy edits current code, not the stale HEAD.
+                cls._overlay_working_tree(repo.path, target)
                 return True
             # Branch name collision or similar: archive HEAD into the sandbox
             # and seed a git baseline there.
@@ -433,6 +503,8 @@ class CodeBuddyExecutor:
                      "-c", "user.email=taskagent@local", "commit", "-qm", "baseline"],
                     cwd=target, capture_output=True, check=False,
                 )
+                if cls._dir_has_content(target):
+                    cls._overlay_working_tree(repo.path, target)
                 return cls._dir_has_content(target)
 
         # Not an independent git repo / nothing committed — snapshot the folder.

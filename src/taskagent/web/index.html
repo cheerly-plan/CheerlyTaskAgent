@@ -20,13 +20,23 @@
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
     font-size:14px;line-height:1.6}
   header{display:flex;align-items:center;justify-content:space-between;
-    padding:16px 28px;background:var(--surface);border-bottom:1px solid var(--border)}
+    padding:14px 28px;background:var(--surface);border-bottom:1px solid var(--border)}
   header h1{font-size:17px;font-weight:600;margin:0}
   header .sub{color:var(--muted);font-size:13px;font-weight:400;margin-left:12px}
   .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--purple);
     background:var(--purple-bg);border-radius:20px;padding:4px 12px}
   .dot{width:6px;height:6px;border-radius:50%;background:var(--purple)}
-  main{display:grid;grid-template-columns:360px 1fr;gap:20px;padding:24px 28px;max-width:1440px;margin:0 auto}
+  /* top navigation tabs */
+  .top-tabs{display:flex;gap:4px;padding:0 28px;background:var(--surface);border-bottom:1px solid var(--border)}
+  .top-tabs button{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;
+    padding:12px 18px;color:var(--muted);font-size:14px;font-weight:500}
+  .top-tabs button:hover{color:var(--text)}
+  .top-tabs button.active{color:var(--purple);border-bottom-color:var(--purple)}
+  main{padding:24px 28px;max-width:1440px;margin:0 auto}
+  .page,.subpage{display:none}
+  .page.active,.subpage.active{display:block}
+  .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+  .page-head h2{font-size:17px;font-weight:600;margin:0 0 4px}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
   .card h2{font-size:14px;font-weight:600;margin:0 0 14px}
   label{display:block;font-size:12px;color:var(--muted);margin:10px 0 5px}
@@ -37,7 +47,6 @@
   input:focus,select:focus,textarea:focus{outline:none;border-color:var(--purple);
     box-shadow:0 0 0 3px var(--purple-bg)}
   input::placeholder,textarea::placeholder{color:var(--hint)}
-  /* 自定义下拉箭头，去掉浏览器原生样式 */
   select{
     appearance:none;-webkit-appearance:none;-moz-appearance:none;cursor:pointer;
     padding-right:34px;
@@ -45,7 +54,6 @@
     background-repeat:no-repeat;background-position:right 11px center;background-size:12px;
   }
   select:hover{border-color:var(--purple)}
-  /* 自定义复选框 / 单选框 */
   input[type=checkbox],input[type=radio]{
     width:16px;height:16px;padding:0;margin:0;flex-shrink:0;vertical-align:middle;
     appearance:none;-webkit-appearance:none;-moz-appearance:none;cursor:pointer;
@@ -72,10 +80,39 @@
   .btn-sm.apply{border-color:var(--amber);color:var(--amber)}
   .create-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
   .create-actions .wide{grid-column:1 / -1}
-  .toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:12px}
+  /* sub tabs for 新建任务 */
+  .sub-tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:18px}
+  .sub-tabs button{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;
+    padding:10px 16px;color:var(--muted);font-size:13px}
+  .sub-tabs button.active{color:var(--purple);border-bottom-color:var(--purple)}
+  .sub-tabs button:disabled{opacity:.5;cursor:not-allowed}
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+  .form-grid .span-2{grid-column:1 / -1}
+  /* filters + view toggle */
+  .filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .filters label{margin:0;font-size:12px}
+  .filters select{width:auto;min-width:118px;padding:7px 30px 7px 10px;font-size:12px;background-position:right 8px center}
+  .filters .count{margin-left:auto}
+  .view-toggle{display:flex;border:1px solid var(--border-strong);border-radius:8px;overflow:hidden}
+  .view-toggle button{border:none;border-radius:0;padding:7px 13px;background:var(--surface);color:var(--muted);font-size:12px}
+  .view-toggle button.active{background:var(--purple);color:#fff}
   .count{color:var(--muted);font-size:12px}
+  /* table view */
+  .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+  th{font-size:12px;color:var(--muted);font-weight:600;background:var(--gray-bg);white-space:nowrap}
+  tbody tr{cursor:pointer;transition:background .12s}
+  tbody tr:hover{background:var(--purple-bg)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr.off-row{opacity:.55}
+  td.nowrap{white-space:nowrap}
+  .cell-title{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .row-actions{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+  .row-actions select{width:auto;padding:4px 24px 4px 8px;font-size:11px;background-position:right 6px center}
+  /* card view */
   .item{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;
-    transition:border-color .15s,box-shadow .15s}
+    transition:border-color .15s,box-shadow .15s;cursor:pointer}
   .item:hover{border-color:var(--border-strong);box-shadow:0 3px 14px rgba(0,0,0,.05)}
   .item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
   .title{font-size:14px;font-weight:500;word-break:break-word}
@@ -101,32 +138,19 @@
   .empty{text-align:center;color:var(--hint);padding:40px 0;font-size:13px}
   .hint{font-size:11px;color:var(--hint);margin-top:4px}
   .warn{background:var(--amber-bg);color:var(--amber);font-size:12px;padding:10px 12px;border-radius:8px;margin-top:12px}
+  .section-note{font-size:12px;color:var(--muted);margin-bottom:12px}
   a{color:var(--purple);text-decoration:none}
   a:hover{text-decoration:underline}
-  .section-note{font-size:12px;color:var(--muted);margin-top:-6px;margin-bottom:12px}
-  /* project mapping manager */
-  .map-item{border:1px solid var(--border);border-radius:9px;padding:10px 11px;margin-bottom:9px;background:var(--surface)}
-  .map-item.off{opacity:.55}
-  .map-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
-  .map-name{font-weight:600;font-size:13px}
-  .map-path{font-size:11px;color:var(--muted);word-break:break-all;margin-top:3px}
-  .map-path code{background:var(--gray-bg);padding:1px 5px;border-radius:4px}
-  .alias-list{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+  /* mapping config table */
+  .alias-list{display:flex;gap:4px;flex-wrap:wrap}
   .alias{font-size:10px;padding:1px 7px;border-radius:5px;background:var(--teal-bg);color:var(--teal)}
-  .map-btns{display:flex;gap:5px;flex-shrink:0}
-  .map-btns button{font-size:11px;padding:3px 8px}
-  .edit-form{border-top:1px dashed var(--border);margin-top:9px;padding-top:9px}
-  .edit-form input{margin-bottom:6px}
-  .edit-actions{display:flex;gap:7px;margin-top:4px}
-  .edit-actions button{flex:1;font-size:12px;padding:7px}
-  .switch{font-size:10px;padding:2px 7px;border-radius:5px;cursor:pointer}
+  .switch{font-size:11px;padding:2px 9px;border-radius:5px;white-space:nowrap}
   .switch.on{background:var(--teal-bg);color:var(--teal)}
   .switch.off{background:var(--gray-bg);color:var(--muted)}
-  /* folder picker + scanner */
-  .map-tools{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
-  .map-tools button{width:100%}
+  /* modals */
   .modal-backdrop{position:fixed;inset:0;background:rgba(20,20,18,.38);display:flex;align-items:center;
     justify-content:center;z-index:50;padding:20px}
+  #fs-modal,#scan-modal{z-index:60}
   .modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;width:min(560px,100%);
     max-height:82vh;display:flex;flex-direction:column;box-shadow:0 14px 44px rgba(0,0,0,.16)}
   .modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
@@ -155,77 +179,226 @@
   /* report preview */
   .report-body{margin:0;background:var(--gray-bg);border-radius:8px;padding:12px;
     font-family:var(--font-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  /* settings */
+  .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
+  .setting-group h3{font-size:13px;font-weight:600;margin:0 0 4px;color:var(--purple)}
+  .toast{position:fixed;right:24px;bottom:24px;background:var(--text);color:#fff;padding:10px 16px;
+    border-radius:8px;font-size:13px;z-index:100;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.show{opacity:1}
+  @media(max-width:900px){.form-grid,.settings-grid{grid-template-columns:1fr}main{padding:18px}}
 </style>
 </head>
 <body>
 <header>
-  <div><h1>CheerlyTaskAgent</h1><span class="sub">需求调度台 · 手动新建 / 邮箱 / TAPD → 本地 CLI</span></div>
+  <div><h1>CheerlyTaskAgent</h1><span class="sub">需求调度台 · 手动 / 邮箱 → 本地 CLI（TAPD 预留）</span></div>
   <div class="badge"><span class="dot"></span><span id="conn">连接中…</span></div>
 </header>
-<main>
-  <div>
-    <section class="card">
-      <h2>新建执行（手动）</h2>
-      <div class="section-note">不依赖邮件/TAPD。选好项目，直接写需求或 bug，创建后即可执行。</div>
-      <label>目标项目（来自映射配置）</label>
-      <select id="m-repo"><option value="">选择项目…</option></select>
-      <div class="hint" style="margin-top:4px">没有项目？到下方「项目映射配置」添加 ai_task 等本地文件夹。</div>
-      <label>类型</label>
-      <select id="m-kind">
-        <option value="task">任务 task</option>
-        <option value="feature">需求 feature</option>
-        <option value="bug">缺陷 bug</option>
-      </select>
-      <label>模型 <span class="hint" style="font-weight:400">（本任务执行所用，默认跟随全局）</span></label>
-      <select id="m-model"><option value="">默认（跟随全局）</option></select>
-      <label>标题</label>
-      <textarea id="m-title" style="min-height:50px" placeholder="例如：调整 ai_task 调度台，新增手动新建入口"></textarea>
-      <label>需求 / Bug 描述</label>
-      <textarea id="m-body" placeholder="写清要改什么、验收标准、注意事项…"></textarea>
-      <div class="create-actions">
-        <button class="btn-sm wide" id="m-draft">创建草稿（稍后选执行）</button>
-        <button class="btn-sm" id="m-dry">创建并 dry-run</button>
-        <button class="btn-sm apply" id="m-apply">创建并 apply</button>
-      </div>
-    </section>
-    <section class="card">
-      <h2>从邮件导入</h2>
-      <div class="section-note">粘贴邮件主题/正文，自动识别 bug/需求并提取 git 地址。</div>
-      <label>标题 / 邮件主题</label>
-      <textarea id="f-title" style="min-height:50px" placeholder="【BUG】登录 500 - cheerly-plan/CheerlyAgent"></textarea>
-      <label>描述 / 邮件正文</label>
-      <textarea id="f-body" placeholder="问题描述、复现步骤、git 地址…"></textarea>
-      <label>执行模式</label>
-      <select id="f-mode">
-        <option value="dry-run">dry-run（只生成命令，不改动）</option>
-        <option value="apply">apply（真实执行，需审批）</option>
-      </select>
-      <button class="btn-primary" id="import-btn">导入邮件</button>
-    </section>
-    <section class="card">
-      <h2>项目映射配置</h2>
-      <div class="section-note">邮件出现别名即映射到本地文件夹。手动选择或扫描添加，增删改即时生效。</div>
-      <div class="map-tools">
-        <button class="btn-sm" id="pick-folder">选择文件夹</button>
-        <button class="btn-sm" id="scan-folder">扫描文件夹</button>
-      </div>
-      <div id="mappings"></div>
-      <button class="btn-sm" id="add-map" style="width:100%;margin-top:6px">+ 手动新增映射</button>
-    </section>
-  </div>
 
-  <section>
-    <div class="toolbar">
-      <div class="count" id="count">0 个工作项</div>
+<nav class="top-tabs" id="top-tabs">
+  <button data-page="tasks" class="active">任务列表</button>
+  <button data-page="new">新建任务</button>
+  <button data-page="mapping">项目映射</button>
+  <button data-page="settings">系统设置</button>
+</nav>
+
+<main>
+  <!-- ───────────────────────── 任务列表 ───────────────────────── -->
+  <section class="page active" id="page-tasks">
+    <div class="page-head">
+      <div>
+        <h2>任务列表</h2>
+        <div class="section-note" style="margin:0">默认表格视图；按来源 / 状态 / 项目筛选排序，点击条目查看报告，支持重试、删除与卡片视图切换。</div>
+      </div>
       <button class="btn-sm" id="refresh">刷新</button>
     </div>
+    <div class="filters">
+      <label for="f-source">来源</label>
+      <select id="f-source"><option value="">全部来源</option><option value="manual">manual</option><option value="email">email</option><option value="tapd">tapd</option></select>
+      <label for="f-status">状态</label>
+      <select id="f-status"></select>
+      <label for="f-project">项目</label>
+      <select id="f-project"></select>
+      <label for="f-sort">排序</label>
+      <select id="f-sort">
+        <option value="created:desc">创建时间 · 最新</option>
+        <option value="created:asc">创建时间 · 最早</option>
+        <option value="status:asc">状态</option>
+        <option value="source:asc">来源</option>
+        <option value="repo:asc">项目</option>
+        <option value="title:asc">标题</option>
+      </select>
+      <div class="view-toggle">
+        <button data-view="table" class="active">表格</button>
+        <button data-view="card">卡片</button>
+      </div>
+      <span class="count" id="count">0 个工作项</span>
+    </div>
     <div id="items"></div>
+  </section>
+
+  <!-- ───────────────────────── 新建任务 ───────────────────────── -->
+  <section class="page" id="page-new">
+    <div class="page-head">
+      <div>
+        <h2>新建任务</h2>
+        <div class="section-note" style="margin:0">现阶段支持手动录入与邮件两类工单；TAPD 接入为预留扩展点。</div>
+      </div>
+    </div>
+    <div class="sub-tabs" id="new-subtabs">
+      <button data-sub="manual" class="active">手动新建</button>
+      <button data-sub="email">邮件导入</button>
+      <button data-sub="tapd" disabled title="预留扩展，暂未启用">TAPD（预留）</button>
+    </div>
+
+    <div class="subpage active" id="sub-manual">
+      <div class="card">
+        <h2>手动新建执行</h2>
+        <div class="section-note">不依赖邮件/TAPD。选好项目，直接写需求或 bug，创建后即可执行。</div>
+        <div class="form-grid">
+          <div>
+            <label for="m-repo">目标项目（来自项目映射）</label>
+            <select id="m-repo"><option value="">选择项目…</option></select>
+            <div class="hint">没有项目？到「项目映射」Tab 添加 ai_task 等本地文件夹。</div>
+            <label for="m-kind">类型</label>
+            <select id="m-kind">
+              <option value="task">任务 task</option>
+              <option value="feature">需求 feature</option>
+              <option value="bug">缺陷 bug</option>
+            </select>
+            <label for="m-model">模型 <span class="hint" style="font-weight:400">（本任务执行所用，默认跟随全局）</span></label>
+            <select id="m-model"><option value="">默认（跟随全局）</option></select>
+          </div>
+          <div>
+            <label for="m-title">标题</label>
+            <textarea id="m-title" style="min-height:50px" placeholder="例如：调整 ai_task 调度台，新增顶部 Tab"></textarea>
+            <label for="m-body">需求 / Bug 描述</label>
+            <textarea id="m-body" placeholder="写清要改什么、验收标准、注意事项…"></textarea>
+          </div>
+          <div class="span-2">
+            <div class="create-actions">
+              <button class="btn-sm wide" id="m-draft">创建草稿（稍后选执行）</button>
+              <button class="btn-sm" id="m-dry">创建并 dry-run</button>
+              <button class="btn-sm apply" id="m-apply">创建并 apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="subpage" id="sub-email">
+      <div class="card">
+        <h2>从邮件导入</h2>
+        <div class="section-note">粘贴邮件主题/正文，自动识别 bug/需求并提取 git 地址；IMAP 凭证在「系统设置」中维护。</div>
+        <label for="f-title">标题 / 邮件主题</label>
+        <textarea id="f-title" style="min-height:50px" placeholder="【BUG】登录 500 - cheerly-plan/CheerlyAgent"></textarea>
+        <label for="f-body">描述 / 邮件正文</label>
+        <textarea id="f-body" placeholder="问题描述、复现步骤、git 地址…"></textarea>
+        <label for="f-mode">执行模式</label>
+        <select id="f-mode">
+          <option value="dry-run">dry-run（只生成命令，不改动）</option>
+          <option value="apply">apply（真实执行，需审批）</option>
+        </select>
+        <button class="btn-primary" id="import-btn">导入邮件</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── 项目映射 ───────────────────────── -->
+  <section class="page" id="page-mapping">
+    <div class="card">
+      <div class="page-head">
+        <div>
+          <h2>项目映射配置</h2>
+          <div class="section-note" style="margin:0">以配置表格统一管理「项目名 / 别名 → 本地路径」与仓库信息；邮件或手动输入出现别名即命中，增删改即时生效。</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <button class="btn-sm" id="pick-folder">选择文件夹</button>
+          <button class="btn-sm" id="scan-folder">扫描文件夹</button>
+          <button class="btn-sm" id="add-map">+ 手动新增</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目名</th><th>别名</th><th>本地路径</th><th>仓库信息 / 备注</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="mappings"></tbody>
+        </table>
+      </div>
+      <div class="hint">目录浏览与扫描为只读且限制在主目录内；不会改动文件系统。</div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── 系统设置 ───────────────────────── -->
+  <section class="page" id="page-settings">
+    <div class="card">
+      <div class="page-head">
+        <div>
+          <h2>系统设置</h2>
+          <div class="section-note" style="margin:0">集中维护执行后端路径、默认模型与 IMAP 邮箱凭证；DSH / WorkBuddy 为预留执行端。</div>
+        </div>
+      </div>
+      <div class="settings-grid">
+        <div class="setting-group">
+          <h3>执行后端</h3>
+          <label for="s-executor">当前执行器</label>
+          <select id="s-executor">
+            <option value="codebuddy">CodeBuddy CLI（当前启用）</option>
+            <option value="workbuddy">WorkBuddy CLI（预留）</option>
+            <option value="dsh">DSH（预留）</option>
+          </select>
+          <label for="s-codebuddy">CodeBuddy CLI 命令 / 路径</label>
+          <input id="s-codebuddy" placeholder="codebuddy">
+          <label for="s-workbuddy">WorkBuddy CLI 路径（预留）</label>
+          <input id="s-workbuddy" placeholder="/path/to/workbuddy">
+          <label for="s-dsh">DSH 路径（预留）</label>
+          <input id="s-dsh" placeholder="/path/to/dsh">
+          <label for="s-model">默认模型</label>
+          <select id="s-model"><option value="">默认（跟随全局）</option></select>
+          <div class="row">
+            <div>
+              <label for="s-concurrency">并发执行数</label>
+              <input id="s-concurrency" type="number" min="1" value="1">
+            </div>
+            <div>
+              <label for="s-autosync">执行后自动同步</label>
+              <select id="s-autosync"><option value="1">开启</option><option value="0">关闭</option></select>
+            </div>
+          </div>
+        </div>
+        <div class="setting-group">
+          <h3>IMAP 邮箱凭证</h3>
+          <label for="s-imap-host">IMAP 主机</label>
+          <input id="s-imap-host" placeholder="imap.example.com">
+          <div class="row">
+            <div>
+              <label for="s-imap-port">端口</label>
+              <input id="s-imap-port" type="number" min="1" value="993">
+            </div>
+            <div>
+              <label for="s-imap-ssl">安全连接</label>
+              <select id="s-imap-ssl"><option value="1">SSL / TLS</option><option value="0">明文 / STARTTLS</option></select>
+            </div>
+          </div>
+          <label for="s-imap-user">邮箱账号</label>
+          <input id="s-imap-user" placeholder="you@example.com">
+          <label for="s-imap-pass">密码 / 授权码</label>
+          <input id="s-imap-pass" type="password" placeholder="留空表示保持已保存值不变">
+          <div class="warn">凭证以明文保存在本机 data/settings.json，请注意文件权限；密码留空即可保留原值。</div>
+          <h3 style="margin-top:18px">扩展能力</h3>
+          <div class="section-note">当前支持邮件、手动录入两类工单，调度本地 CLI 自动处理 Bug 与需求；TAPD 连接器为预留扩展点，暂未启用。</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button class="btn-primary" id="s-save" style="width:auto;margin:0">保存设置</button>
+        <button class="btn-sm" id="s-reload">重新载入</button>
+      </div>
+      <div class="hint">说明：CLI 路径、默认模型等运行时参数在保存后需重启服务才会对新任务生效。</div>
+    </div>
   </section>
 </main>
 
 <div class="modal-backdrop" id="fs-modal" style="display:none">
   <div class="modal">
-    <div class="modal-head"><span id="fs-title">选择文件夹</span><button class="modal-x" id="fs-close">×</button></div>
+    <div class="modal-head"><span>选择文件夹</span><button class="modal-x" id="fs-close">×</button></div>
     <div class="modal-body">
       <div class="hint" style="margin-bottom:6px">逐级点选进入子文件夹，点「选择当前文件夹」确定当前路径。</div>
       <div class="fs-crumb"><code id="fs-current">…</code></div>
@@ -253,12 +426,35 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="map-modal" style="display:none">
+  <div class="modal" style="width:min(520px,100%)">
+    <div class="modal-head"><span id="map-modal-title">新增项目映射</span><button class="modal-x" id="map-close">×</button></div>
+    <div class="modal-body">
+      <label for="mf-name">项目名</label>
+      <input id="mf-name" placeholder="如 CheerlyAIChat">
+      <label for="mf-alias">别名（逗号分隔）</label>
+      <input id="mf-alias" placeholder="ai_chat, AI聊天">
+      <label for="mf-path">本地路径</label>
+      <div style="display:flex;gap:6px">
+        <input id="mf-path" placeholder="本地文件夹绝对路径" style="flex:1">
+        <button class="btn-sm" id="mf-pick">选择</button>
+      </div>
+      <label for="mf-note">仓库信息 / 备注</label>
+      <input id="mf-note" placeholder="git origin 地址或说明（可选）">
+    </div>
+    <div class="modal-foot">
+      <button class="btn-sm" id="map-cancel">取消</button>
+      <button class="btn-sm" id="map-save" style="background:var(--purple);color:#fff;border-color:var(--purple)">保存</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="report-modal" style="display:none">
   <div class="modal" style="width:min(760px,100%)">
     <div class="modal-head"><span id="report-title">执行报告</span><button class="modal-x" id="report-close">×</button></div>
     <div class="modal-body"><pre class="report-body" id="report-body">加载中…</pre></div>
     <div class="modal-foot">
-      <button class="btn-sm" id="report-download">下载 .md</button>
+      <a class="btn-sm" id="report-download" style="display:inline-block;text-decoration:none" download>下载 .md</a>
       <button class="btn-sm" id="report-done">关闭</button>
     </div>
   </div>
@@ -275,12 +471,38 @@
   </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script>
 let items=[], mappings=[], es=null;
-let modelChoices=[], defaultModel='';
+let modelChoices=[], defaultModel='', uiSettings=null;
+let viewMode='table';
+let filters={source:'',status:'',project:'',sort:'created:desc'};
 let fsPickCb=null, fsState={current:'',parent:null,at_root:true};
 let scanItems=[], scanRoot='';
+let editingMapId=null;
 const $ = id => document.getElementById(id);
+const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const kindLabel={bug:'缺陷',feature:'需求',task:'任务'};
+const statusLabel={discovered:'待映射',ready:'就绪',queued:'排队',running:'执行中',succeeded:'成功',failed:'失败',skipped:'跳过',cancelled:'已取消'};
+
+let toastTimer=null;
+function toast(msg){
+  const el=$('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>el.classList.remove('show'),2200);
+}
+
+function switchPage(name){
+  $('top-tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id==='page-'+name));
+}
+function switchSub(name){
+  $('new-subtabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.sub===name));
+  document.querySelectorAll('.subpage').forEach(p=>p.classList.toggle('active',p.id==='sub-'+name));
+}
+
 function fillModelSelect(sel, withDefault){
   if(!sel) return;
   const prev=sel.value;
@@ -292,9 +514,6 @@ function fillModelSelect(sel, withDefault){
   }
   if(prev && [...sel.options].some(o=>o.value===prev)) sel.value=prev;
 }
-const kindLabel={bug:'缺陷',feature:'需求',task:'任务'};
-const statusLabel={discovered:'待映射',ready:'就绪',queued:'排队',running:'执行中',succeeded:'成功',failed:'失败',skipped:'跳过',cancelled:'已取消'};
-const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function api(path, opts){
   const res=await fetch(path,opts);
@@ -302,20 +521,66 @@ async function api(path, opts){
   return res.status===204?null:res.json();
 }
 
-async function loadAll(){ await Promise.all([loadConfig(),loadMappings(),loadItems()]); }
+async function loadAll(){
+  // Config first: model <option> list must exist before settings sets the default.
+  await loadConfig();
+  await Promise.all([loadMappings(),loadItems(),loadSettings()]);
+}
 
 async function loadConfig(){
   const cfg=await api('/api/config');
   modelChoices=cfg.models||[];
   defaultModel=cfg.default_model||'';
   fillModelSelect($('m-model'), true);
+  fillModelSelect($('s-model'), true);
   $('conn').textContent='已连接 · 执行端 '+cfg.executor;
 }
 
+async function loadSettings(){
+  uiSettings=await api('/api/settings');
+  $('s-executor').value=uiSettings.executor||'codebuddy';
+  $('s-codebuddy').value=uiSettings.codebuddy_command||'';
+  $('s-workbuddy').value=uiSettings.workbuddy_cli_path||'';
+  $('s-dsh').value=uiSettings.dsh_path||'';
+  $('s-model').value=uiSettings.default_model||'';
+  $('s-concurrency').value=uiSettings.max_concurrent||1;
+  $('s-autosync').value=uiSettings.auto_sync===false?'0':'1';
+  const imap=uiSettings.imap||{};
+  $('s-imap-host').value=imap.host||'';
+  $('s-imap-port').value=imap.port||993;
+  $('s-imap-ssl').value=imap.use_ssl===false?'0':'1';
+  $('s-imap-user').value=imap.user||'';
+  $('s-imap-pass').value='';  // never echo a stored secret back into the DOM
+}
+
+async function saveSettings(){
+  const payload={
+    executor:$('s-executor').value,
+    codebuddy_command:$('s-codebuddy').value.trim(),
+    workbuddy_cli_path:$('s-workbuddy').value.trim(),
+    dsh_path:$('s-dsh').value.trim(),
+    default_model:$('s-model').value,
+    max_concurrent:Math.max(1,Number($('s-concurrency').value)||1),
+    auto_sync:$('s-autosync').value==='1',
+    imap:{
+      host:$('s-imap-host').value.trim(),
+      port:Number($('s-imap-port').value)||993,
+      user:$('s-imap-user').value.trim(),
+      password:$('s-imap-pass').value,
+      use_ssl:$('s-imap-ssl').value==='1',
+    },
+  };
+  try{
+    await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    await loadSettings();
+    toast('设置已保存（部分参数需重启服务后生效）');
+  }catch(e){alert('保存失败：'+e.message)}
+}
+
+// ── project mappings (config table) ──────────────────────────────────────────
 async function loadMappings(){
   mappings=(await api('/api/mappings')).mappings;
   renderMappings();
-  renderRepoOptions();
 }
 
 function renderRepoOptions(){
@@ -326,6 +591,88 @@ function renderRepoOptions(){
     `<option value="${esc(m.name)}" ${m.enabled?'':'disabled'}>${esc(m.name)}${m.enabled?'':'（停用）'}</option>`
   ).join('');
   if([...sel.options].some(o=>o.value===prev)) sel.value=prev;
+}
+
+function renderProjectFilter(){
+  const sel=$('f-project'); if(!sel)return;
+  const prev=sel.value;
+  sel.innerHTML='<option value="">全部项目</option><option value="__none__">未映射</option>'+
+    mappings.map(m=>`<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+  if([...sel.options].some(o=>o.value===prev)) sel.value=prev;
+}
+
+function renderMappings(){
+  const tb=$('mappings');
+  if(!mappings.length){
+    tb.innerHTML='<tr><td colspan="6" class="empty">暂无配置，点右上角「手动新增」或用「选择 / 扫描文件夹」添加。</td></tr>';
+  }else{
+    tb.innerHTML=mappings.map(m=>{
+      const aliases=(m.aliases||[]).map(a=>`<span class="alias">${esc(a)}</span>`).join('');
+      return `<tr data-mid="${esc(m.id)}" class="${m.enabled?'':'off-row'}">
+        <td><strong>${esc(m.name)}</strong></td>
+        <td><div class="alias-list">${aliases||'<span class="hint">用项目名匹配</span>'}</div></td>
+        <td><code>${esc(m.path)}</code></td>
+        <td>${esc(m.note||'—')}</td>
+        <td><span class="switch ${m.enabled?'on':'off'}" data-mact="toggle" data-id="${esc(m.id)}">${m.enabled?'启用':'停用'}</span></td>
+        <td><div class="row-actions">
+          <button class="btn-sm" data-mact="edit" data-id="${esc(m.id)}">编辑</button>
+          <button class="btn-sm danger" data-mact="del" data-id="${esc(m.id)}">删除</button>
+        </div></td>
+      </tr>`;
+    }).join('');
+  }
+  tb.querySelectorAll('[data-mact]').forEach(b=>b.onclick=(e)=>{
+    e.stopPropagation(); onMapAction(b.dataset.mact,b.dataset.id);
+  });
+  renderRepoOptions();
+  renderProjectFilter();
+}
+
+function openMapModal(m){
+  editingMapId=m&&m.id?m.id:null;
+  $('map-modal-title').textContent=editingMapId?'编辑项目映射':'新增项目映射';
+  $('mf-name').value=m?(m.name||''):'';
+  $('mf-alias').value=m?(m.aliases||[]).join(', '):'';
+  $('mf-path').value=m?(m.path||''):'';
+  $('mf-note').value=m?(m.note||''):'';
+  $('map-modal').style.display='flex';
+}
+
+async function saveMapFromModal(){
+  const payload={
+    name:$('mf-name').value.trim(),
+    aliases:$('mf-alias').value.split(',').map(s=>s.trim()).filter(Boolean),
+    path:$('mf-path').value.trim(),
+    note:$('mf-note').value.trim(),
+  };
+  if(!payload.name){alert('请输入项目名');return}
+  try{
+    await api(editingMapId?`/api/mappings/${editingMapId}`:'/api/mappings',{
+      method:editingMapId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)
+    });
+    $('map-modal').style.display='none';
+    await loadMappings();
+    toast('项目映射已保存');
+  }catch(e){alert('保存失败：'+e.message)}
+}
+
+async function onMapAction(act,id){
+  if(act==='add'){ openMapModal(null); return; }
+  if(act==='edit'){ openMapModal(mappings.find(x=>x.id===id)); return; }
+  if(act==='toggle'){
+    const m=mappings.find(x=>x.id===id); if(!m)return;
+    try{
+      await api(`/api/mappings/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!m.enabled})});
+      await loadMappings();
+    }catch(e){alert('操作失败：'+e.message)}
+    return;
+  }
+  if(act==='del'){
+    if(!await askConfirm('删除这条项目映射？'))return;
+    try{ await api(`/api/mappings/${id}`,{method:'DELETE'}); await loadMappings(); toast('映射已删除'); }
+    catch(e){alert('删除失败：'+e.message)}
+    return;
+  }
 }
 
 // ── folder browser + scanner ────────────────────────────────────────────────
@@ -391,7 +738,7 @@ function renderCands(){
 async function addScanned(){
   const chosen=scanItems.filter(c=>c.checked);
   if(!chosen.length){ alert('请先勾选要加入的文件夹'); return; }
-  const items=chosen.map(c=>({
+  const payload=chosen.map(c=>({
     name:c.candidate_name||c.name,
     aliases:[c.name],
     path:c.path,
@@ -401,160 +748,104 @@ async function addScanned(){
   try{
     const r=await api('/api/mappings/bulk',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({items})
+      body:JSON.stringify({items:payload})
     });
     $('scan-modal').style.display='none';
     await loadMappings();
     let msg='已加入 '+r.added.length+' 条映射';
     if(r.failed.length) msg+='\n跳过 '+r.failed.length+' 条：\n'+r.failed.map(f=>f.item.name+'（'+f.error+'）').join('\n');
-    alert(msg);
+    toast(msg);
   }catch(e){ alert('加入失败：'+e.message) }
 }
 
-function renderMappings(){
-  const box=$('mappings');
-  if(!mappings.length){ box.innerHTML='<div class="hint" style="padding:6px 0">暂无配置，点下方按钮新增。</div>'; return; }
-  box.innerHTML=mappings.map(m=>{
-    const aliases=(m.aliases||[]).map(a=>`<span class="alias">${esc(a)}</span>`).join('');
-    return `<div class="map-item ${m.enabled?'':'off'}" data-mid="${esc(m.id)}">
-      <div class="map-top">
-        <div>
-          <div class="map-name">${esc(m.name)}</div>
-          <div class="map-path"><code>${esc(m.path)}</code></div>
-        </div>
-        <div class="map-btns">
-          <button class="switch ${m.enabled?'on':'off'}" data-mact="toggle" data-id="${esc(m.id)}">${m.enabled?'启用':'停用'}</button>
-          <button class="btn-sm" data-mact="edit" data-id="${esc(m.id)}">编辑</button>
-          <button class="btn-sm danger" data-mact="del" data-id="${esc(m.id)}">删</button>
-        </div>
-      </div>
-      <div class="alias-list">${aliases||'<span class="hint">无别名（用项目名匹配）</span>'}</div>
-      <div class="edit-form" style="display:none"></div>
-    </div>`;
-  }).join('');
-  bindMapBtns(box);
-}
-
-function bindMapBtns(root){
-  root.querySelectorAll('[data-mact]').forEach(b=>b.onclick=()=>onMapAction(b.dataset.mact,b.dataset.id));
-  root.querySelectorAll('.ef-path-pick').forEach(b=>b.onclick=()=>{
-    const input=b.parentElement.querySelector('.ef-path');
-    openPicker(path=>{ if(input) input.value=path; });
-  });
-}
-
-function openNewMappingFormWithPath(path,name){
-  const host=$('mappings');
-  if(host.querySelector('.edit-form[data-new="1"]')) return;
-  const wrap=document.createElement('div');
-  wrap.innerHTML=editForm_html({name:name||'',aliases:name?[name]:[],path:path,note:''});
-  const ef=wrap.firstElementChild; ef.dataset.new='1';
-  host.prepend(ef);
-  bindMapBtns(ef);
-}
-
-function editForm_html(m){
-  m=m||{name:'',aliases:[],path:'',enabled:true,note:''};
-  const aliasStr=(m.aliases||[]).join(', ');
-  return `<div class="edit-form" style="display:block">
-    <input class="ef-name" placeholder="项目名，如 CheerlyAIChat" value="${esc(m.name)}">
-    <input class="ef-alias" placeholder="别名，逗号分隔，如 ai_chat, AI聊天" value="${esc(aliasStr)}">
-    <div style="display:flex;gap:6px;align-items:center">
-      <input class="ef-path" placeholder="本地文件夹绝对路径" value="${esc(m.path)}" style="flex:1">
-      <button type="button" class="btn-sm ef-path-pick" title="选择文件夹">选择</button>
-    </div>
-    <input class="ef-note" placeholder="备注（可选）" value="${esc(m.note)}">
-    <div class="hint">别名中任一出现在邮件文本即命中；留空则用项目名匹配。</div>
-    <div class="edit-actions">
-      <button class="btn-sm" data-mact="save" data-id="${esc(m.id||'')}">保存</button>
-      <button class="btn-sm" data-mact="cancel">取消</button>
-    </div>
-  </div>`;
-}
-
-async function onMapAction(act,id){
-  const form=id?document.querySelector(`.map-item[data-mid="${id}"] .edit-form`):null;
-  if(act==='add'){
-    const host=$('mappings');
-    if(host.querySelector('.edit-form[data-new="1"]'))return;
-    const wrap=document.createElement('div');
-    wrap.innerHTML=editForm_html(null);
-    const ef=wrap.firstElementChild; ef.dataset.new='1';
-    host.prepend(ef);
-    bindMapBtns(ef);
-    return;
-  }
-  if(act==='cancel'){
-    const target=form||document.querySelector('.edit-form[data-new="1"]');
-    if(target){ if(target.dataset.new==='1') target.remove(); else target.style.display='none'; }
-    return;
-  }
-  if(act==='edit'){
-    if(form){ form.innerHTML=editForm_html(mappings.find(x=>x.id===id)); form.style.display='block'; bindMapBtns(form); }
-    return;
-  }
-  if(act==='save'){
-    const scope=form||document.querySelector('.edit-form[data-new="1"]');
-    if(!scope)return;
-    const payload={
-      name:scope.querySelector('.ef-name').value.trim(),
-      aliases:scope.querySelector('.ef-alias').value.split(',').map(s=>s.trim()).filter(Boolean),
-      path:scope.querySelector('.ef-path').value.trim(),
-      note:scope.querySelector('.ef-note').value.trim(),
-    };
-    try{
-      const existed=!!id;
-      await api(existed?`/api/mappings/${id}`:'/api/mappings',{
-        method:existed?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)
-      });
-      await loadMappings();
-    }catch(e){alert('保存失败：'+e.message)}
-    return;
-  }
-  if(act==='toggle'){
-    const m=mappings.find(x=>x.id===id); if(!m)return;
-    try{
-      await api(`/api/mappings/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!m.enabled})});
-      await loadMappings();
-    }catch(e){alert('操作失败：'+e.message)}
-    return;
-  }
-  if(act==='del'){
-    if(!await askConfirm('删除这条项目映射？'))return;
-    try{ await api(`/api/mappings/${id}`,{method:'DELETE'}); await loadMappings(); }
-    catch(e){alert('删除失败：'+e.message)}
-    return;
-  }
-}
-
+// ── task list: filtering, sorting, table / card views ───────────────────────
 async function loadItems(){
   items=(await api('/api/items')).items;
-  $('count').textContent=items.length+' 个工作项';
   render();
 }
 
+function filteredItems(){
+  let list=items.slice();
+  if(filters.source) list=list.filter(i=>i.source===filters.source);
+  if(filters.status) list=list.filter(i=>i.status===filters.status);
+  if(filters.project){
+    list=list.filter(i=>filters.project==='__none__'? !i.repo : i.repo===filters.project);
+  }
+  const [field,dir]=filters.sort.split(':');
+  const value=it=>{
+    if(field==='created') return it.created_at||'';
+    if(field==='status')  return statusLabel[it.status]||it.status||'';
+    if(field==='source')  return it.source||'';
+    if(field==='repo')    return it.repo||'';
+    if(field==='kind')    return kindLabel[it.kind]||it.kind||'';
+    return it.title||'';
+  };
+  list.sort((a,b)=>{
+    const cmp=String(value(a)).localeCompare(String(value(b)),'zh-CN');
+    return dir==='asc'?cmp:-cmp;
+  });
+  return list;
+}
+
+function itemActionsHtml(it){
+  const dryDone=it.status==='succeeded' && it.exec_mode==='dry-run';
+  const retryable=['failed','cancelled'].includes(it.status);
+  const terminal=['succeeded','failed','skipped','cancelled'].includes(it.status) && !dryDone && !retryable;
+  const running=['running','queued'].includes(it.status);
+  const repoOpts=mappings.map(m=>`<option value="${esc(m.name)}" ${it.repo===m.name?'selected':''}>${esc(m.name)}</option>`).join('');
+  const modelOpts=`<option value="" ${!it.model?'selected':''}>默认</option>`+
+    modelChoices.map(m=>`<option value="${esc(m.id)}" ${it.model===m.id?'selected':''}>${esc(m.label)}</option>`).join('');
+  const actions=[];
+  if(!it.repo){
+    actions.push(`<select class="map-sel" data-id="${esc(it.id)}" title="选择仓库"><option value="">选仓库…</option>${repoOpts}</select>`);
+    actions.push(`<button class="btn-sm" data-act="map" data-id="${esc(it.id)}">映射</button>`);
+  }
+  if(retryable) actions.push(`<button class="btn-sm" data-act="dry" data-id="${esc(it.id)}">重试</button>`);
+  else if(!dryDone && !terminal && !running) actions.push(`<button class="btn-sm" data-act="dry" data-id="${esc(it.id)}">dry-run</button>`);
+  if(!terminal && !running) actions.push(`<button class="btn-sm apply" data-act="apply" data-id="${esc(it.id)}">apply</button>`);
+  if(running) actions.push(`<button class="btn-sm" data-act="cancel" data-id="${esc(it.id)}">取消</button>`);
+  if(!terminal && !running) actions.push(`<select class="model-sel" data-id="${esc(it.id)}" title="本任务执行模型">${modelOpts}</select>`);
+  if(it.report_path) actions.push(`<button class="btn-sm" data-act="report" data-id="${esc(it.id)}">报告</button>`);
+  actions.push(`<button class="btn-sm danger" data-act="delete" data-id="${esc(it.id)}">删除</button>`);
+  return actions.join('');
+}
+
 function render(){
+  const list=filteredItems();
+  $('count').textContent=list.length===items.length
+    ? items.length+' 个工作项'
+    : list.length+' / '+items.length+' 个工作项';
   const box=$('items');
-  if(!items.length){box.innerHTML='<div class="card empty">还没有工作项。用左侧「新建执行（手动）」建一个，或导入邮件。</div>';return}
-  box.innerHTML=items.map(it=>{
+  if(!list.length){
+    box.innerHTML='<div class="card empty">没有符合条件的工作项。可调整上方筛选，或到「新建任务」创建。</div>';
+    return;
+  }
+  if(viewMode==='table') renderTable(list,box);
+  else renderCards(list,box);
+}
+
+function renderTable(list,box){
+  box.innerHTML=`<div class="table-wrap"><table>
+    <thead><tr><th>标题</th><th>类型</th><th>来源</th><th>项目</th><th>状态</th><th>模式</th><th>模型</th><th>创建时间</th><th>操作</th></tr></thead>
+    <tbody>${list.map(it=>`<tr data-open="${esc(it.id)}" title="点击查看报告 / 详情">
+      <td><div class="cell-title">${esc(it.title)}</div><div class="hint">${esc(it.id.slice(-8))}</div></td>
+      <td class="nowrap"><span class="tag ${it.kind}">${kindLabel[it.kind]||it.kind}</span></td>
+      <td class="nowrap">${esc(it.source)}</td>
+      <td class="nowrap">${it.repo?esc(it.repo):'<span class="hint">未映射</span>'}</td>
+      <td class="nowrap"><span class="status s-${it.status}">${statusLabel[it.status]||it.status}</span></td>
+      <td class="nowrap">${esc(it.exec_mode)}</td>
+      <td class="nowrap">${it.model?esc(it.model):'<span class="hint">全局</span>'}</td>
+      <td class="nowrap hint">${esc((it.created_at||'').slice(0,16).replace('T',' '))}</td>
+      <td><div class="row-actions">${itemActionsHtml(it)}</div></td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+  bindItemInteractions(box);
+}
+
+function renderCards(list,box){
+  box.innerHTML=list.map(it=>{
     const dryDone=it.status==='succeeded' && it.exec_mode==='dry-run';
-    const retryable=['failed','cancelled'].includes(it.status);
-    const terminal=['succeeded','failed','skipped','cancelled'].includes(it.status) && !dryDone && !retryable;
-    const running=['running','queued'].includes(it.status);
-    const repoOpts=mappings.map(m=>`<option value="${esc(m.name)}" ${it.repo===m.name?'selected':''}>${esc(m.name)}</option>`).join('');
-    const modelOpts=`<option value="" ${!it.model?'selected':''}>默认</option>`+modelChoices.map(m=>`<option value="${esc(m.id)}" ${it.model===m.id?'selected':''}>${esc(m.label)}</option>`).join('');
-    const modelSel=(!terminal&&!running)?`<select class="model-sel" data-id="${esc(it.id)}" title="本任务执行模型">${modelOpts}</select>`:'';
-    const actions=[];
-    if(!it.repo) actions.push(`<select class="map-sel" data-id="${esc(it.id)}"><option value="">选仓库…</option>${repoOpts}</select><button class="btn-sm" data-act="map" data-id="${esc(it.id)}">映射</button>`);
-    // dry-run 已成功就不再重复提供「重新 dry-run」；只有草稿或失败/取消才需要 dry-run
-    if(retryable) actions.push(`<button class="btn-sm" data-act="dry" data-id="${esc(it.id)}">重试 dry-run</button>`);
-    else if(!dryDone && !terminal && !running) actions.push(`<button class="btn-sm" data-act="dry" data-id="${esc(it.id)}">dry-run</button>`);
-    // apply 对草稿、dry-run 成功、失败/取消都可用
-    if(!terminal && !running) actions.push(`<button class="btn-sm apply" data-act="apply" data-id="${esc(it.id)}">apply</button>`);
-    if(running) actions.push(`<button class="btn-sm" data-act="cancel" data-id="${esc(it.id)}">取消</button>`);
-    if(modelSel) actions.push(modelSel);
-    actions.push(`<button class="btn-sm danger" data-act="delete" data-id="${esc(it.id)}">删除</button>`);
-    return `<div class="item">
+    return `<div class="item" data-open="${esc(it.id)}">
       <div class="item-head">
         <div>
           <div class="title">${esc(it.title)}</div>
@@ -572,24 +863,52 @@ function render(){
       </div>
       ${it.stage?`<div class="stage">${esc(it.stage)}</div>`:''}
       ${it.error?`<div class="error">${esc(it.error)}</div>`:''}
-      <div class="actions">${actions.join('')}
-        ${it.report_path?`<button class="btn-sm" data-act="report" data-id="${esc(it.id)}">查看报告</button>`:''}
-      </div>
+      <div class="actions">${itemActionsHtml(it)}</div>
     </div>`;
   }).join('');
-  box.querySelectorAll('[data-act]').forEach(btn=>btn.onclick=()=>onAction(btn.dataset.act,btn.dataset.id));
+  bindItemInteractions(box);
+}
+
+function bindItemInteractions(root){
+  root.querySelectorAll('[data-act]').forEach(btn=>btn.onclick=(e)=>{
+    e.stopPropagation(); onAction(btn.dataset.act,btn.dataset.id);
+  });
+  root.querySelectorAll('select').forEach(sel=>sel.onclick=(e)=>e.stopPropagation());
+  root.querySelectorAll('[data-open]').forEach(el=>el.onclick=(e)=>{
+    if(e.target.closest('button,select,input,a')) return;
+    openReport(el.dataset.open);
+  });
 }
 
 async function openReport(id){
-  try{
-    const res=await fetch(`/api/items/${encodeURIComponent(id)}/report`);
-    if(!res.ok) throw new Error((await res.text())||res.statusText);
-    $('report-title').textContent='执行报告 · '+id.slice(-8);
-    $('report-body').textContent=await res.text();
-    $('report-download').href=`/api/items/${encodeURIComponent(id)}/report`;
-    $('report-download').download=`${id}.md`;
-    $('report-modal').style.display='flex';
-  }catch(e){alert('打开报告失败：'+e.message)}
+  const it=items.find(x=>x.id===id);
+  $('report-title').textContent='工单详情 / 报告 · '+id.slice(-8);
+  const dl=$('report-download');
+  if(it && it.report_path){
+    try{
+      const url=`/api/items/${encodeURIComponent(id)}/report`;
+      const res=await fetch(url);
+      if(!res.ok) throw new Error((await res.text())||res.statusText);
+      $('report-body').textContent=await res.text();
+      dl.style.display='';
+      dl.href=url; dl.download=`${id}.md`;
+    }catch(e){alert('打开报告失败：'+e.message);return}
+  }else{
+    const summary=it?[
+      '标题：'+it.title,
+      '状态：'+(statusLabel[it.status]||it.status),
+      '类型：'+(kindLabel[it.kind]||it.kind)+'　来源：'+it.source,
+      '项目：'+(it.repo||'未映射')+'　模式：'+it.exec_mode,
+      it.model?'模型：'+it.model:'模型：跟随全局',
+      it.stage?'阶段：'+it.stage:'',
+      it.error?'错误：'+it.error:'',
+      '',
+      '该工单还没有生成报告。执行 dry-run 或 apply 后即可查看完整报告。',
+    ].filter(Boolean).join('\n'):'工单不存在或已被删除。';
+    $('report-body').textContent=summary;
+    dl.style.display='none';
+  }
+  $('report-modal').style.display='flex';
 }
 
 let confirmResolve=null;
@@ -605,10 +924,7 @@ function closeConfirm(result){
 
 async function onAction(act,id){
   try{
-    if(act==='report'){
-      await openReport(id);
-      return;
-    }
+    if(act==='report'){ await openReport(id); return; }
     if(act==='map'){
       const sel=document.querySelector(`.map-sel[data-id="${id}"]`);
       if(!sel||!sel.value){alert('请先选择仓库');return}
@@ -623,9 +939,10 @@ async function onAction(act,id){
     } else if(act==='cancel'){
       await api(`/api/items/${id}/cancel`,{method:'POST'});
     } else if(act==='delete'){
+      if(!await askConfirm('删除这条工单及其本地记录？此操作不可撤销。'))return;
       await api(`/api/items/${id}`,{method:'DELETE'});
     }
-  }catch(e){alert('操作失败：'+e.message)}
+  }catch(e){alert('操作失败：'+e.message);return}
   loadItems();
 }
 
@@ -633,7 +950,7 @@ async function createManual(mode){
   const title=$('m-title').value.trim();
   if(!title){alert('请输入标题');return}
   const repo_name=$('m-repo').value;
-  if(!repo_name){alert('请先选择目标项目（项目映射配置中维护）');return}
+  if(!repo_name){alert('请先选择目标项目（项目映射中配置）');return}
   const run_now=mode!=='draft';
   const exec_mode=mode==='apply'?'apply':'dry-run';
   if(mode==='apply'){
@@ -653,6 +970,8 @@ async function createManual(mode){
     })});
     $('m-title').value='';$('m-body').value='';
     await loadItems();
+    switchPage('tasks');
+    toast(mode==='draft'?'草稿已创建':'工单已创建并提交执行');
   }catch(e){alert('创建失败：'+e.message)}
 }
 
@@ -668,17 +987,35 @@ $('import-btn').onclick=async()=>{
       title, body:$('f-body').value, source:'email', exec_mode:$('f-mode').value
     })});
     $('f-title').value='';$('f-body').value='';
+    await loadItems();
+    switchPage('tasks');
+    toast('邮件已导入');
   }catch(e){alert('导入失败：'+e.message)}
-  loadItems();
 };
 
+// ── static event wiring ─────────────────────────────────────────────────────
+$('top-tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>switchPage(b.dataset.page));
+$('new-subtabs').querySelectorAll('button').forEach(b=>{ if(!b.disabled) b.onclick=()=>switchSub(b.dataset.sub); });
+document.querySelectorAll('.view-toggle button').forEach(b=>b.onclick=()=>{
+  viewMode=b.dataset.view;
+  document.querySelectorAll('.view-toggle button').forEach(x=>x.classList.toggle('active',x===b));
+  render();
+});
+['source','status','project','sort'].forEach(k=>{
+  $('f-'+k).onchange=()=>{ filters[k]=$('f-'+k).value; render(); };
+});
 $('refresh').onclick=loadItems;
 $('add-map').onclick=()=>onMapAction('add','');
+$('map-save').onclick=saveMapFromModal;
+$('map-cancel').onclick=()=>{ $('map-modal').style.display='none'; };
+$('map-close').onclick=()=>{ $('map-modal').style.display='none'; };
+$('mf-pick').onclick=()=>openPicker(path=>{ $('mf-path').value=path; });
+$('s-save').onclick=saveSettings;
+$('s-reload').onclick=()=>{ loadSettings().then(()=>toast('设置已重新载入')); };
 
-// folder picker / scanner buttons
 $('pick-folder').onclick=()=>openPicker(path=>{
   const name=path.split('/').filter(Boolean).pop()||path;
-  openNewMappingFormWithPath(path,name);
+  openMapModal({name,aliases:[name],path,note:''});
 });
 $('scan-folder').onclick=()=>openPicker(path=>scanFolder(path));
 $('fs-close').onclick=()=>{ $('fs-modal').style.display='none'; };
@@ -697,7 +1034,7 @@ $('confirm-cancel').onclick=()=>closeConfirm(false);
 $('confirm-ok').onclick=()=>closeConfirm(true);
 $('confirm-close').onclick=()=>closeConfirm(false);
 
-// Close modals on backdrop click
+$('map-modal').onclick=(e)=>{ if(e.target===$('map-modal')) $('map-modal').style.display='none'; };
 $('fs-modal').onclick=(e)=>{ if(e.target===$('fs-modal')) $('fs-modal').style.display='none'; };
 $('scan-modal').onclick=(e)=>{ if(e.target===$('scan-modal')) $('scan-modal').style.display='none'; };
 $('report-modal').onclick=(e)=>{ if(e.target===$('report-modal')) $('report-modal').style.display='none'; };
@@ -710,6 +1047,9 @@ function connectSSE(){
   es.onerror=()=>{$('conn').textContent='重连中…'};
   es.onopen=()=>{$('conn').textContent='实时连接已就绪'};
 }
+
+$('f-status').innerHTML='<option value="">全部状态</option>'+
+  Object.entries(statusLabel).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
 
 (async()=>{await loadAll();connectSSE()})();
 </script>

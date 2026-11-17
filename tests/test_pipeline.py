@@ -379,6 +379,67 @@ def test_snapshot_repo_for_non_git_directory(tmp_path):
     assert (target / ".git").is_dir()
 
 
+def test_create_worktree_overlays_uncommitted_working_tree(tmp_path):
+    """New worktree sees the repo's uncommitted edits, not just stale HEAD."""
+    import subprocess
+
+    from taskagent.models import LocalRepo
+
+    repo = tmp_path / "repo"
+    _git_init_with_base(repo, {"app.py": "v1\n", "gone.py": "bye\n", "keep.py": "keep\n"})
+    # Simulate a prior apply synced in but not committed: modify, add, delete.
+    (repo / "app.py").write_text("v2 with new feature\n")
+    (repo / "gone.py").unlink()
+    (repo / "fresh.py").write_text("brand new\n")
+
+    target = tmp_path / "wts" / "task-1"
+    assert CodeBuddyExecutor._create_worktree(
+        LocalRepo(path=str(repo), origin="", name="repo"), target
+    )
+
+    # Uncommitted state is visible in the worktree.
+    assert (target / "app.py").read_text() == "v2 with new feature\n"
+    assert (target / "fresh.py").read_text() == "brand new\n"
+    assert not (target / "gone.py").exists()
+    # And it is committed as the new baseline, so git status is clean.
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    )
+    assert status.stdout.strip() == "", status.stdout
+
+
+def test_create_worktree_clean_repo_baseline_unchanged(tmp_path):
+    """A clean repo still yields a clean worktree with no extra baseline commit."""
+    import subprocess
+
+    from taskagent.models import LocalRepo
+
+    repo = tmp_path / "repo"
+    _git_init_with_base(repo, {"app.py": "v1\n"})
+    head_before = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    target = tmp_path / "wts" / "task-2"
+    assert CodeBuddyExecutor._create_worktree(
+        LocalRepo(path=str(repo), origin="", name="repo"), target
+    )
+    assert (target / "app.py").read_text() == "v1\n"
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    )
+    assert status.stdout.strip() == ""
+    # No overlay commit happened; worktree points at the same base commit.
+    head_after = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert head_after == head_before
+
+
 # ── auto-sync apply changes back into the main repo ───────────────────────────
 def test_sync_to_repo_copies_new_and_modified(tmp_path):
     """New/modified files land in the real repo; existing files are backed up."""
