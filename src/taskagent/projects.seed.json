@@ -1,0 +1,4 @@
+{
+  "_comment": "项目映射初始种子。默认留空：映射完全由用户在调度台手动选择文件夹或扫描添加。如需预置，可在 mappings 中填写（name/aliases/path/enabled/note）。",
+  "mappings": []
+}

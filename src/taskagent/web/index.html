@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CheerlyTaskAgent · 需求调度台</title>
+<style>
+  :root{
+    --bg:#F7F7F5; --surface:#FFFFFF; --border:#E4E3DE; --border-strong:#CFCDC5;
+    --text:#26251F; --muted:#6B6A62; --hint:#98968D;
+    --purple:#534AB7; --purple-bg:#EEEDFE;
+    --teal:#0F6E56; --teal-bg:#E1F5EE;
+    --amber:#854F0B; --amber-bg:#FAEEDA;
+    --red:#A32D2D; --red-bg:#FCEBEB;
+    --gray-bg:#F1EFE8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.6}
+  header{display:flex;align-items:center;justify-content:space-between;
+    padding:16px 28px;background:var(--surface);border-bottom:1px solid var(--border)}
+  header h1{font-size:17px;font-weight:600;margin:0}
+  header .sub{color:var(--muted);font-size:13px;font-weight:400;margin-left:12px}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--purple);
+    background:var(--purple-bg);border-radius:20px;padding:4px 12px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--purple)}
+  main{display:grid;grid-template-columns:360px 1fr;gap:20px;padding:24px 28px;max-width:1440px;margin:0 auto}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
+  .card h2{font-size:14px;font-weight:600;margin:0 0 14px}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 5px}
+  input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--border-strong);
+    border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit}
+  textarea{resize:vertical;min-height:90px}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--purple-bg);border-color:var(--purple)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  button{cursor:pointer;font-family:inherit;font-size:13px;border-radius:8px;padding:9px 14px;border:1px solid transparent}
+  .btn-primary{background:var(--purple);color:#fff;width:100%;margin-top:16px;font-weight:500}
+  .btn-primary:hover{background:#453DA0}
+  .btn-primary:disabled{opacity:.5;cursor:not-allowed}
+  .btn-sm{padding:5px 11px;font-size:12px;background:var(--surface);border-color:var(--border-strong);color:var(--text)}
+  .btn-sm:hover{border-color:var(--purple);color:var(--purple)}
+  .btn-sm.danger:hover{border-color:var(--red);color:var(--red)}
+  .btn-sm.apply{border-color:var(--amber);color:var(--amber)}
+  .create-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+  .create-actions .wide{grid-column:1 / -1}
+  .toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:12px}
+  .count{color:var(--muted);font-size:12px}
+  .item{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px}
+  .item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+  .title{font-size:14px;font-weight:500;word-break:break-word}
+  .meta{font-size:12px;color:var(--muted);margin-top:4px}
+  .meta code{background:var(--gray-bg);padding:1px 6px;border-radius:4px;font-size:11px}
+  .tags{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .tag{font-size:11px;padding:2px 8px;border-radius:6px;background:var(--gray-bg);color:var(--muted)}
+  .tag.bug{background:var(--red-bg);color:var(--red)}
+  .tag.feature{background:var(--purple-bg);color:var(--purple)}
+  .tag.repo{background:var(--teal-bg);color:var(--teal)}
+  .status{font-size:11px;padding:3px 10px;border-radius:20px;white-space:nowrap;font-weight:500}
+  .s-discovered{background:var(--gray-bg);color:var(--muted)}
+  .s-ready{background:var(--amber-bg);color:var(--amber)}
+  .s-queued{background:var(--amber-bg);color:var(--amber)}
+  .s-running{background:var(--purple-bg);color:var(--purple)}
+  .s-succeeded{background:var(--teal-bg);color:var(--teal)}
+  .s-failed{background:var(--red-bg);color:var(--red)}
+  .s-skipped,.s-cancelled{background:var(--gray-bg);color:var(--muted)}
+  .stage{font-size:12px;color:var(--muted);margin-top:10px}
+  .error{color:var(--red);font-size:12px;margin-top:6px}
+  .actions{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  .actions select{width:auto;padding:5px 9px;font-size:12px}
+  .empty{text-align:center;color:var(--hint);padding:40px 0;font-size:13px}
+  .hint{font-size:11px;color:var(--hint);margin-top:4px}
+  .warn{background:var(--amber-bg);color:var(--amber);font-size:12px;padding:10px 12px;border-radius:8px;margin-top:12px}
+  a{color:var(--purple);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .section-note{font-size:12px;color:var(--muted);margin-top:-6px;margin-bottom:12px}
+  /* project mapping manager */
+  .map-item{border:1px solid var(--border);border-radius:9px;padding:10px 11px;margin-bottom:9px;background:var(--surface)}
+  .map-item.off{opacity:.55}
+  .map-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .map-name{font-weight:600;font-size:13px}
+  .map-path{font-size:11px;color:var(--muted);word-break:break-all;margin-top:3px}
+  .map-path code{background:var(--gray-bg);padding:1px 5px;border-radius:4px}
+  .alias-list{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+  .alias{font-size:10px;padding:1px 7px;border-radius:5px;background:var(--teal-bg);color:var(--teal)}
+  .map-btns{display:flex;gap:5px;flex-shrink:0}
+  .map-btns button{font-size:11px;padding:3px 8px}
+  .edit-form{border-top:1px dashed var(--border);margin-top:9px;padding-top:9px}
+  .edit-form input{margin-bottom:6px}
+  .edit-actions{display:flex;gap:7px;margin-top:4px}
+  .edit-actions button{flex:1;font-size:12px;padding:7px}
+  .switch{font-size:10px;padding:2px 7px;border-radius:5px;cursor:pointer}
+  .switch.on{background:var(--teal-bg);color:var(--teal)}
+  .switch.off{background:var(--gray-bg);color:var(--muted)}
+  /* folder picker + scanner */
+  .map-tools{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+  .map-tools button{width:100%}
+  .modal-backdrop{position:fixed;inset:0;background:rgba(20,20,18,.38);display:flex;align-items:center;
+    justify-content:center;z-index:50;padding:20px}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;width:min(560px,100%);
+    max-height:82vh;display:flex;flex-direction:column;box-shadow:0 14px 44px rgba(0,0,0,.16)}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+    border-bottom:1px solid var(--border);font-weight:600;font-size:14px}
+  .modal-x{border:none;background:none;font-size:20px;color:var(--muted);line-height:1;padding:0 4px;cursor:pointer}
+  .modal-body{padding:16px 18px;overflow:auto;flex:1}
+  .modal-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border)}
+  .fs-crumb code{background:var(--gray-bg);padding:5px 9px;border-radius:6px;font-size:11px;
+    word-break:break-all;display:block}
+  .dir-list{margin-top:10px;border:1px solid var(--border);border-radius:8px;max-height:320px;overflow:auto}
+  .dir-row{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--border);
+    cursor:pointer;font-size:13px}
+  .dir-row:last-child{border-bottom:none}
+  .dir-row:hover{background:var(--purple-bg)}
+  .dir-ico{color:var(--teal);font-size:12px}
+  .dir-name{flex:1;word-break:break-all}
+  .cand-list{margin-top:10px;border:1px solid var(--border);border-radius:8px;max-height:380px;overflow:auto}
+  .cand{display:flex;gap:9px;align-items:flex-start;padding:9px 11px;border-bottom:1px solid var(--border);cursor:pointer}
+  .cand:last-child{border-bottom:none}
+  .cand:hover{background:var(--purple-bg)}
+  .cand input{margin-top:4px;width:auto}
+  .cand-name{font-weight:600;font-size:13px}
+  .cand-path{font-size:11px;color:var(--muted);word-break:break-all}
+  .cand-origin{font-size:11px;color:var(--teal)}
+  /* report preview */
+  .report-body{margin:0;background:var(--gray-bg);border-radius:8px;padding:12px;
+    font-family:var(--font-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>CheerlyTaskAgent</h1><span class="sub">需求调度台 · 手动新建 / 邮箱 / TAPD → 本地 CLI</span></div>
+  <div class="badge"><span class="dot"></span><span id="conn">连接中…</span></div>
+</header>
+<main>
+  <div>
+    <section class="card">
+      <h2>新建执行（手动）</h2>
+      <div class="section-note">不依赖邮件/TAPD。选好项目，直接写需求或 bug，创建后即可执行。</div>
+      <label>目标项目（来自映射配置）</label>
+      <select id="m-repo"><option value="">选择项目…</option></select>
+      <div class="hint" style="margin-top:4px">没有项目？到下方「项目映射配置」添加 ai_task 等本地文件夹。</div>
+      <label>类型</label>
+      <select id="m-kind">
+        <option value="task">任务 task</option>
+        <option value="feature">需求 feature</option>
+        <option value="bug">缺陷 bug</option>
+      </select>
+      <label>标题</label>
+      <textarea id="m-title" style="min-height:50px" placeholder="例如：调整 ai_task 调度台，新增手动新建入口"></textarea>
+      <label>需求 / Bug 描述</label>
+      <textarea id="m-body" placeholder="写清要改什么、验收标准、注意事项…"></textarea>
+      <div class="create-actions">
+        <button class="btn-sm wide" id="m-draft">创建草稿（稍后选执行）</button>
+        <button class="btn-sm" id="m-dry">创建并 dry-run</button>
+        <button class="btn-sm apply" id="m-apply">创建并 apply</button>
+      </div>
+    </section>
+    <section class="card">
+      <h2>从邮件导入</h2>
+      <div class="section-note">粘贴邮件主题/正文，自动识别 bug/需求并提取 git 地址。</div>
+      <label>标题 / 邮件主题</label>
+      <textarea id="f-title" style="min-height:50px" placeholder="【BUG】登录 500 - cheerly-plan/CheerlyAgent"></textarea>
+      <label>描述 / 邮件正文</label>
+      <textarea id="f-body" placeholder="问题描述、复现步骤、git 地址…"></textarea>
+      <label>执行模式</label>
+      <select id="f-mode">
+        <option value="dry-run">dry-run（只生成命令，不改动）</option>
+        <option value="apply">apply（真实执行，需审批）</option>
+      </select>
+      <button class="btn-primary" id="import-btn">导入邮件</button>
+    </section>
+    <section class="card">
+      <h2>项目映射配置</h2>
+      <div class="section-note">邮件出现别名即映射到本地文件夹。手动选择或扫描添加，增删改即时生效。</div>
+      <div class="map-tools">
+        <button class="btn-sm" id="pick-folder">选择文件夹</button>
+        <button class="btn-sm" id="scan-folder">扫描文件夹</button>
+      </div>
+      <div id="mappings"></div>
+      <button class="btn-sm" id="add-map" style="width:100%;margin-top:6px">+ 手动新增映射</button>
+    </section>
+  </div>
+
+  <section>
+    <div class="toolbar">
+      <div class="count" id="count">0 个工作项</div>
+      <button class="btn-sm" id="refresh">刷新</button>
+    </div>
+    <div id="items"></div>
+  </section>
+</main>
+
+<div class="modal-backdrop" id="fs-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head"><span id="fs-title">选择文件夹</span><button class="modal-x" id="fs-close">×</button></div>
+    <div class="modal-body">
+      <div class="hint" style="margin-bottom:6px">逐级点选进入子文件夹，点「选择当前文件夹」确定当前路径。</div>
+      <div class="fs-crumb"><code id="fs-current">…</code></div>
+      <div class="dir-list" id="fs-dirs"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-sm" id="fs-up">↑ 上一级</button>
+      <button class="btn-sm" id="fs-home">主目录</button>
+      <button class="btn-sm" id="fs-pick" style="background:var(--purple);color:#fff;border-color:var(--purple)">选择当前文件夹</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="scan-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-head"><span id="scan-title">扫描结果</span><button class="modal-x" id="scan-close">×</button></div>
+    <div class="modal-body">
+      <div class="hint" style="margin-bottom:6px" id="scan-hint"></div>
+      <div class="cand-list" id="scan-cands"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-sm" id="scan-all">全选 / 全不选</button>
+      <button class="btn-sm" id="scan-add" style="background:var(--purple);color:#fff;border-color:var(--purple)">加入映射</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="report-modal" style="display:none">
+  <div class="modal" style="width:min(760px,100%)">
+    <div class="modal-head"><span id="report-title">执行报告</span><button class="modal-x" id="report-close">×</button></div>
+    <div class="modal-body"><pre class="report-body" id="report-body">加载中…</pre></div>
+    <div class="modal-foot">
+      <button class="btn-sm" id="report-download">下载 .md</button>
+      <button class="btn-sm" id="report-done">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="confirm-modal" style="display:none">
+  <div class="modal" style="width:min(440px,100%)">
+    <div class="modal-head"><span>请确认</span><button class="modal-x" id="confirm-close">×</button></div>
+    <div class="modal-body"><div id="confirm-message" style="font-size:13px;line-height:1.7"></div></div>
+    <div class="modal-foot">
+      <button class="btn-sm" id="confirm-cancel">取消</button>
+      <button class="btn-sm apply" id="confirm-ok" style="background:var(--amber);color:#fff;border-color:var(--amber)">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let items=[], mappings=[], es=null;
+let fsPickCb=null, fsState={current:'',parent:null,at_root:true};
+let scanItems=[], scanRoot='';
+const $ = id => document.getElementById(id);
+const kindLabel={bug:'缺陷',feature:'需求',task:'任务'};
+const statusLabel={discovered:'待映射',ready:'就绪',queued:'排队',running:'执行中',succeeded:'成功',failed:'失败',skipped:'跳过',cancelled:'已取消'};
+const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, opts){
+  const res=await fetch(path,opts);
+  if(!res.ok){let msg=res.statusText;try{msg=(await res.json()).detail||msg}catch(e){}throw new Error(msg)}
+  return res.status===204?null:res.json();
+}
+
+async function loadAll(){ await Promise.all([loadConfig(),loadMappings(),loadItems()]); }
+
+async function loadConfig(){
+  const cfg=await api('/api/config');
+  $('conn').textContent='已连接 · 执行端 '+cfg.executor;
+}
+
+async function loadMappings(){
+  mappings=(await api('/api/mappings')).mappings;
+  renderMappings();
+  renderRepoOptions();
+}
+
+function renderRepoOptions(){
+  const sel=$('m-repo');
+  if(!sel)return;
+  const prev=sel.value;
+  sel.innerHTML='<option value="">选择项目…</option>'+mappings.map(m=>
+    `<option value="${esc(m.name)}" ${m.enabled?'':'disabled'}>${esc(m.name)}${m.enabled?'':'（停用）'}</option>`
+  ).join('');
+  if([...sel.options].some(o=>o.value===prev)) sel.value=prev;
+}
+
+// ── folder browser + scanner ────────────────────────────────────────────────
+function openPicker(cb){
+  fsPickCb=cb;
+  $('fs-modal').style.display='flex';
+  browseTo('');
+}
+async function browseTo(path){
+  try{
+    const d=await api('/api/fs/browse?path='+encodeURIComponent(path));
+    fsState={current:d.current,parent:d.parent,at_root:d.at_root};
+    $('fs-current').textContent=d.current;
+    $('fs-up').style.visibility=d.at_root?'hidden':'visible';
+    if(!d.dirs.length){
+      $('fs-dirs').innerHTML='<div class="hint" style="padding:12px">此文件夹下没有子文件夹</div>';
+      return;
+    }
+    $('fs-dirs').innerHTML=d.dirs.map(x=>`<div class="dir-row" data-path="${esc(x.path)}">
+      <span class="dir-ico">${x.is_git?'●':'○'}</span>
+      <span class="dir-name">${esc(x.name)}</span>
+      ${x.is_git?'<span class="alias">git</span>':''}
+    </div>`).join('');
+    $('fs-dirs').querySelectorAll('.dir-row').forEach(r=>r.onclick=()=>browseTo(r.dataset.path));
+  }catch(e){alert('浏览失败：'+e.message)}
+}
+function pickCurrent(){
+  const path=fsState.current;
+  $('fs-modal').style.display='none';
+  if(fsPickCb) fsPickCb(path);
+}
+
+async function scanFolder(path){
+  try{
+    $('scan-modal').style.display='flex';
+    $('scan-hint').textContent='扫描中…（'+path+'）';
+    $('scan-cands').innerHTML='';
+    const d=await api('/api/fs/scan',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({path,depth:2})
+    });
+    scanRoot=d.root;
+    scanItems=d.candidates.map(c=>({...c,checked:false}));
+    $('scan-title').textContent='扫描结果 · '+d.root;
+    $('scan-hint').textContent='发现 '+scanItems.length+' 个文件夹（git 仓库排在前面），勾选后批量加入映射。';
+    renderCands();
+  }catch(e){ $('scan-modal').style.display='none'; alert('扫描失败：'+e.message) }
+}
+function renderCands(){
+  if(!scanItems.length){ $('scan-cands').innerHTML='<div class="hint" style="padding:12px">未发现候选文件夹</div>'; return; }
+  $('scan-cands').innerHTML=scanItems.map((c,i)=>`<label class="cand">
+    <input type="checkbox" data-si="${i}" ${c.checked?'checked':''}>
+    <div style="flex:1">
+      <div class="cand-name">${esc(c.candidate_name||c.name)} ${c.is_git?'<span class="alias">git</span>':''}</div>
+      <div class="cand-path"><code>${esc(c.path)}</code></div>
+      ${c.origin?`<div class="cand-origin">${esc(c.origin)}</div>`:''}
+    </div>
+  </label>`).join('');
+  $('scan-cands').querySelectorAll('[data-si]').forEach(cb=>{
+    cb.onchange=()=>{ scanItems[Number(cb.dataset.si)].checked=cb.checked; };
+  });
+}
+async function addScanned(){
+  const chosen=scanItems.filter(c=>c.checked);
+  if(!chosen.length){ alert('请先勾选要加入的文件夹'); return; }
+  const items=chosen.map(c=>({
+    name:c.candidate_name||c.name,
+    aliases:[c.name],
+    path:c.path,
+    enabled:true,
+    note:c.is_git?('git: '+c.origin):'手动扫描添加',
+  }));
+  try{
+    const r=await api('/api/mappings/bulk',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({items})
+    });
+    $('scan-modal').style.display='none';
+    await loadMappings();
+    let msg='已加入 '+r.added.length+' 条映射';
+    if(r.failed.length) msg+='\n跳过 '+r.failed.length+' 条：\n'+r.failed.map(f=>f.item.name+'（'+f.error+'）').join('\n');
+    alert(msg);
+  }catch(e){ alert('加入失败：'+e.message) }
+}
+
+function renderMappings(){
+  const box=$('mappings');
+  if(!mappings.length){ box.innerHTML='<div class="hint" style="padding:6px 0">暂无配置，点下方按钮新增。</div>'; return; }
+  box.innerHTML=mappings.map(m=>{
+    const aliases=(m.aliases||[]).map(a=>`<span class="alias">${esc(a)}</span>`).join('');
+    return `<div class="map-item ${m.enabled?'':'off'}" data-mid="${esc(m.id)}">
+      <div class="map-top">
+        <div>
+          <div class="map-name">${esc(m.name)}</div>
+          <div class="map-path"><code>${esc(m.path)}</code></div>
+        </div>
+        <div class="map-btns">
+          <button class="switch ${m.enabled?'on':'off'}" data-mact="toggle" data-id="${esc(m.id)}">${m.enabled?'启用':'停用'}</button>
+          <button class="btn-sm" data-mact="edit" data-id="${esc(m.id)}">编辑</button>
+          <button class="btn-sm danger" data-mact="del" data-id="${esc(m.id)}">删</button>
+        </div>
+      </div>
+      <div class="alias-list">${aliases||'<span class="hint">无别名（用项目名匹配）</span>'}</div>
+      <div class="edit-form" style="display:none"></div>
+    </div>`;
+  }).join('');
+  bindMapBtns(box);
+}
+
+function bindMapBtns(root){
+  root.querySelectorAll('[data-mact]').forEach(b=>b.onclick=()=>onMapAction(b.dataset.mact,b.dataset.id));
+  root.querySelectorAll('.ef-path-pick').forEach(b=>b.onclick=()=>{
+    const input=b.parentElement.querySelector('.ef-path');
+    openPicker(path=>{ if(input) input.value=path; });
+  });
+}
+
+function openNewMappingFormWithPath(path,name){
+  const host=$('mappings');
+  if(host.querySelector('.edit-form[data-new="1"]')) return;
+  const wrap=document.createElement('div');
+  wrap.innerHTML=editForm_html({name:name||'',aliases:name?[name]:[],path:path,note:''});
+  const ef=wrap.firstElementChild; ef.dataset.new='1';
+  host.prepend(ef);
+  bindMapBtns(ef);
+}
+
+function editForm_html(m){
+  m=m||{name:'',aliases:[],path:'',enabled:true,note:''};
+  const aliasStr=(m.aliases||[]).join(', ');
+  return `<div class="edit-form" style="display:block">
+    <input class="ef-name" placeholder="项目名，如 CheerlyAIChat" value="${esc(m.name)}">
+    <input class="ef-alias" placeholder="别名，逗号分隔，如 ai_chat, AI聊天" value="${esc(aliasStr)}">
+    <div style="display:flex;gap:6px;align-items:center">
+      <input class="ef-path" placeholder="本地文件夹绝对路径" value="${esc(m.path)}" style="flex:1">
+      <button type="button" class="btn-sm ef-path-pick" title="选择文件夹">选择</button>
+    </div>
+    <input class="ef-note" placeholder="备注（可选）" value="${esc(m.note)}">
+    <div class="hint">别名中任一出现在邮件文本即命中；留空则用项目名匹配。</div>
+    <div class="edit-actions">
+      <button class="btn-sm" data-mact="save" data-id="${esc(m.id||'')}">保存</button>
+      <button class="btn-sm" data-mact="cancel">取消</button>
+    </div>
+  </div>`;
+}
+
+async function onMapAction(act,id){
+  const form=id?document.querySelector(`.map-item[data-mid="${id}"] .edit-form`):null;
+  if(act==='add'){
+    const host=$('mappings');
+    if(host.querySelector('.edit-form[data-new="1"]'))return;
+    const wrap=document.createElement('div');
+    wrap.innerHTML=editForm_html(null);
+    const ef=wrap.firstElementChild; ef.dataset.new='1';
+    host.prepend(ef);
+    bindMapBtns(ef);
+    return;
+  }
+  if(act==='cancel'){
+    const target=form||document.querySelector('.edit-form[data-new="1"]');
+    if(target){ if(target.dataset.new==='1') target.remove(); else target.style.display='none'; }
+    return;
+  }
+  if(act==='edit'){
+    if(form){ form.innerHTML=editForm_html(mappings.find(x=>x.id===id)); form.style.display='block'; bindMapBtns(form); }
+    return;
+  }
+  if(act==='save'){
+    const scope=form||document.querySelector('.edit-form[data-new="1"]');
+    if(!scope)return;
+    const payload={
+      name:scope.querySelector('.ef-name').value.trim(),
+      aliases:scope.querySelector('.ef-alias').value.split(',').map(s=>s.trim()).filter(Boolean),
+      path:scope.querySelector('.ef-path').value.trim(),
+      note:scope.querySelector('.ef-note').value.trim(),
+    };
+    try{
+      const existed=!!id;
+      await api(existed?`/api/mappings/${id}`:'/api/mappings',{
+        method:existed?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)
+      });
+      await loadMappings();
+    }catch(e){alert('保存失败：'+e.message)}
+    return;
+  }
+  if(act==='toggle'){
+    const m=mappings.find(x=>x.id===id); if(!m)return;
+    try{
+      await api(`/api/mappings/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!m.enabled})});
+      await loadMappings();
+    }catch(e){alert('操作失败：'+e.message)}
+    return;
+  }
+  if(act==='del'){
+    if(!await askConfirm('删除这条项目映射？'))return;
+    try{ await api(`/api/mappings/${id}`,{method:'DELETE'}); await loadMappings(); }
+    catch(e){alert('删除失败：'+e.message)}
+    return;
+  }
+}
+
+async function loadItems(){
+  items=(await api('/api/items')).items;
+  $('count').textContent=items.length+' 个工作项';
+  render();
+}
+
+function render(){
+  const box=$('items');
+  if(!items.length){box.innerHTML='<div class="card empty">还没有工作项。用左侧「新建执行（手动）」建一个，或导入邮件。</div>';return}
+  box.innerHTML=items.map(it=>{
+    const dryDone=it.status==='succeeded' && it.exec_mode==='dry-run';
+    const retryable=['failed','cancelled'].includes(it.status);
+    const terminal=['succeeded','failed','skipped','cancelled'].includes(it.status) && !dryDone && !retryable;
+    const running=['running','queued'].includes(it.status);
+    const repoOpts=mappings.map(m=>`<option value="${esc(m.name)}" ${it.repo===m.name?'selected':''}>${esc(m.name)}</option>`).join('');
+    const actions=[];
+    if(!it.repo) actions.push(`<select class="map-sel" data-id="${esc(it.id)}"><option value="">选仓库…</option>${repoOpts}</select><button class="btn-sm" data-act="map" data-id="${esc(it.id)}">映射</button>`);
+    // dry-run 已成功就不再重复提供「重新 dry-run」；只有草稿或失败/取消才需要 dry-run
+    if(retryable) actions.push(`<button class="btn-sm" data-act="dry" data-id="${esc(it.id)}">重试 dry-run</button>`);
+    else if(!dryDone && !terminal && !running) actions.push(`<button class="btn-sm" data-act="dry" data-id="${esc(it.id)}">dry-run</button>`);
+    // apply 对草稿、dry-run 成功、失败/取消都可用
+    if(!terminal && !running) actions.push(`<button class="btn-sm apply" data-act="apply" data-id="${esc(it.id)}">apply</button>`);
+    if(running) actions.push(`<button class="btn-sm" data-act="cancel" data-id="${esc(it.id)}">取消</button>`);
+    actions.push(`<button class="btn-sm danger" data-act="delete" data-id="${esc(it.id)}">删除</button>`);
+    return `<div class="item">
+      <div class="item-head">
+        <div>
+          <div class="title">${esc(it.title)}</div>
+          <div class="meta"><code>${esc(it.id.slice(-8))}</code> · 来源 ${esc(it.source)} ${esc(it.source_ref)}
+            ${it.git_url?` · git: ${esc(it.git_url)}`:''}</div>
+        </div>
+        <span class="status s-${it.status}">${statusLabel[it.status]||it.status}</span>
+      </div>
+      <div class="tags">
+        <span class="tag ${it.kind}">${kindLabel[it.kind]||it.kind}</span>
+        ${it.repo?`<span class="tag repo">仓库 ${esc(it.repo)}</span>`:'<span class="tag">未映射</span>'}
+        <span class="tag">${esc(it.exec_mode)}</span>
+        ${dryDone?'<span class="tag feature">待 apply</span>':''}
+      </div>
+      ${it.stage?`<div class="stage">${esc(it.stage)}</div>`:''}
+      ${it.error?`<div class="error">${esc(it.error)}</div>`:''}
+      <div class="actions">${actions.join('')}
+        ${it.report_path?`<button class="btn-sm" data-act="report" data-id="${esc(it.id)}">查看报告</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('[data-act]').forEach(btn=>btn.onclick=()=>onAction(btn.dataset.act,btn.dataset.id));
+}
+
+async function openReport(id){
+  try{
+    const res=await fetch(`/api/items/${encodeURIComponent(id)}/report`);
+    if(!res.ok) throw new Error((await res.text())||res.statusText);
+    $('report-title').textContent='执行报告 · '+id.slice(-8);
+    $('report-body').textContent=await res.text();
+    $('report-download').href=`/api/items/${encodeURIComponent(id)}/report`;
+    $('report-download').download=`${id}.md`;
+    $('report-modal').style.display='flex';
+  }catch(e){alert('打开报告失败：'+e.message)}
+}
+
+let confirmResolve=null;
+function askConfirm(message){
+  $('confirm-message').textContent=message;
+  $('confirm-modal').style.display='flex';
+  return new Promise(resolve=>{ confirmResolve=resolve; });
+}
+function closeConfirm(result){
+  $('confirm-modal').style.display='none';
+  if(confirmResolve){ confirmResolve(result); confirmResolve=null; }
+}
+
+async function onAction(act,id){
+  try{
+    if(act==='report'){
+      await openReport(id);
+      return;
+    }
+    if(act==='map'){
+      const sel=document.querySelector(`.map-sel[data-id="${id}"]`);
+      if(!sel||!sel.value){alert('请先选择仓库');return}
+      await api(`/api/items/${id}/map`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_name:sel.value})});
+    } else if(act==='dry'){
+      await api(`/api/items/${id}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_mode:'dry-run'})});
+    } else if(act==='apply'){
+      if(!await askConfirm('apply 会在隔离 worktree 中真实执行 codebuddy 改代码（不会提交/推送）。确认继续？'))return;
+      await api(`/api/items/${id}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_mode:'apply',approved:true})});
+    } else if(act==='cancel'){
+      await api(`/api/items/${id}/cancel`,{method:'POST'});
+    } else if(act==='delete'){
+      await api(`/api/items/${id}`,{method:'DELETE'});
+    }
+  }catch(e){alert('操作失败：'+e.message)}
+  loadItems();
+}
+
+async function createManual(mode){
+  const title=$('m-title').value.trim();
+  if(!title){alert('请输入标题');return}
+  const repo_name=$('m-repo').value;
+  if(!repo_name){alert('请先选择目标项目（项目映射配置中维护）');return}
+  const run_now=mode!=='draft';
+  const exec_mode=mode==='apply'?'apply':'dry-run';
+  if(mode==='apply'){
+    const ok=await askConfirm('apply 会在 '+repo_name+' 的隔离 worktree 中真实执行 codebuddy 改代码（不提交/推送）。确认继续？');
+    if(!ok)return;
+  }
+  try{
+    await api('/api/tasks/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      title,
+      description:$('m-body').value,
+      kind:$('m-kind').value,
+      repo_name,
+      exec_mode,
+      run_now,
+      approved:mode==='apply',
+    })});
+    $('m-title').value='';$('m-body').value='';
+    await loadItems();
+  }catch(e){alert('创建失败：'+e.message)}
+}
+
+$('m-draft').onclick=()=>createManual('draft');
+$('m-dry').onclick=()=>createManual('dry');
+$('m-apply').onclick=()=>createManual('apply');
+
+$('import-btn').onclick=async()=>{
+  const title=$('f-title').value.trim();
+  if(!title){alert('请输入标题');return}
+  try{
+    await api('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      title, body:$('f-body').value, source:'email', exec_mode:$('f-mode').value
+    })});
+    $('f-title').value='';$('f-body').value='';
+  }catch(e){alert('导入失败：'+e.message)}
+  loadItems();
+};
+
+$('refresh').onclick=loadItems;
+$('add-map').onclick=()=>onMapAction('add','');
+
+// folder picker / scanner buttons
+$('pick-folder').onclick=()=>openPicker(path=>{
+  const name=path.split('/').filter(Boolean).pop()||path;
+  openNewMappingFormWithPath(path,name);
+});
+$('scan-folder').onclick=()=>openPicker(path=>scanFolder(path));
+$('fs-close').onclick=()=>{ $('fs-modal').style.display='none'; };
+$('fs-up').onclick=()=>{ if(fsState.parent) browseTo(fsState.parent); };
+$('fs-home').onclick=()=>browseTo('');
+$('fs-pick').onclick=pickCurrent;
+$('scan-close').onclick=()=>{ $('scan-modal').style.display='none'; };
+$('scan-all').onclick=()=>{
+  const all=scanItems.length>0 && scanItems.every(c=>c.checked);
+  scanItems.forEach(c=>c.checked=!all); renderCands();
+};
+$('scan-add').onclick=addScanned;
+$('report-close').onclick=()=>{ $('report-modal').style.display='none'; };
+$('report-done').onclick=()=>{ $('report-modal').style.display='none'; };
+$('confirm-cancel').onclick=()=>closeConfirm(false);
+$('confirm-ok').onclick=()=>closeConfirm(true);
+$('confirm-close').onclick=()=>closeConfirm(false);
+
+// Close modals on backdrop click
+$('fs-modal').onclick=(e)=>{ if(e.target===$('fs-modal')) $('fs-modal').style.display='none'; };
+$('scan-modal').onclick=(e)=>{ if(e.target===$('scan-modal')) $('scan-modal').style.display='none'; };
+$('report-modal').onclick=(e)=>{ if(e.target===$('report-modal')) $('report-modal').style.display='none'; };
+$('confirm-modal').onclick=(e)=>{ if(e.target===$('confirm-modal')) closeConfirm(false); };
+
+function connectSSE(){
+  if(es)es.close();
+  es=new EventSource('/api/events');
+  es.onmessage=(e)=>{ if(e.data!=='[DONE]') loadItems(); };
+  es.onerror=()=>{$('conn').textContent='重连中…'};
+  es.onopen=()=>{$('conn').textContent='实时连接已就绪'};
+}
+
+(async()=>{await loadAll();connectSSE()})();
+</script>
+</body>
+</html>

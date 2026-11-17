@@ -1,0 +1,382 @@
+"""Scheduler for WorkItems: import -> map -> dispatch -> report.
+
+Deterministic control flow (no LLM). Owns state machine, idempotency, bounded
+concurrency, retry/backoff, cancellation, and event emission.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from .commitfilter import CommitFileFilter, load_extra_patterns
+from .events import Event, EventBus
+from .executor import CodeBuddyExecutor
+from .gitmap import GitProjectRegistry
+from .models import CommitResult, ItemKind, ItemStatus, SourceType, WorkItem
+from .projectmap import ProjectRegistry
+from .report import write_report
+from .sources import RawItem, parse_raw
+from .store import TaskStore
+
+
+@dataclass
+class SchedulerSettings:
+    max_concurrent: int = 1          # codebuddy is heavy; run one at a time by default
+    retry_delays: tuple[float, ...] = (2.0, 8.0)
+    reports_dir: Path = Path("data/reports")
+
+
+class Scheduler:
+    def __init__(
+        self,
+        *,
+        store: TaskStore,
+        gitmap: GitProjectRegistry,
+        executor: CodeBuddyExecutor,
+        events: EventBus,
+        settings: SchedulerSettings | None = None,
+        projects: ProjectRegistry | None = None,
+        commit_rules_file: Path | None = None,
+    ) -> None:
+        self.store = store
+        self.gitmap = gitmap
+        self.projects = projects
+        self.executor = executor
+        self.events = events
+        self.settings = settings or SchedulerSettings()
+        self.commit_rules_file = commit_rules_file
+        self._sem = asyncio.Semaphore(self.settings.max_concurrent)
+        self._cancel_flags: dict[str, bool] = {}
+        self._seen_keys: dict[str, str] = {}
+        for item in self.store.list(limit=2000):
+            if item.dedupe_key:
+                self._seen_keys[item.dedupe_key] = item.id
+
+    # ── import ─────────────────────────────────────────────────────────────────
+    def import_raw(self, raw: RawItem, *, exec_mode: str = "dry-run", auto_map: bool = True) -> tuple[WorkItem, bool]:
+        """Create a WorkItem from a RawItem. Returns (item, created).
+
+        Duplicate dedupe_keys are skipped (idempotent import): returns the
+        existing item with created=False.
+        """
+        probe = parse_raw(raw, exec_mode=exec_mode)
+        existing_id = self._seen_keys.get(probe.dedupe_key)
+        if existing_id:
+            existing = self.store.get(existing_id)
+            if existing:
+                return existing, False
+        item = probe
+        if auto_map:
+            self._map(item)
+        self.store.save(item)
+        self._seen_keys[item.dedupe_key] = item.id
+        self.events.publish(Event("item_imported", item.id, {"item": item.summary()}))
+        return item, True
+
+    def create_manual(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        kind: str = ItemKind.TASK.value,
+        repo_name: str = "",
+        source_ref: str = "",
+        git_url_hint: str = "",
+        exec_mode: str = "dry-run",
+        auto_map: bool = True,
+    ) -> WorkItem:
+        """Create a WorkItem directly from user input (no email/TAPD needed).
+
+        ``repo_name`` is resolved against the user-maintained project mappings
+        first, then the git scan fallback. When given, the item is ready to run
+        immediately; otherwise normal auto-mapping applies. Manual items get a
+        unique dedupe key so re-running the same request creates a new item.
+        """
+        if not title.strip():
+            raise ValueError("title is required")
+        if exec_mode not in {"dry-run", "apply"}:
+            raise ValueError("exec_mode must be 'dry-run' or 'apply'")
+
+        raw = RawItem(
+            source=SourceType.MANUAL,
+            title=title.strip(),
+            body=description,
+            source_ref=source_ref.strip(),
+            git_url_hint=git_url_hint.strip(),
+        )
+        item = parse_raw(raw, exec_mode=exec_mode)
+        # Manual input is authoritative: keep the title and kind exactly as given.
+        item.title = title.strip()
+        item.kind = ItemKind(kind)
+        item.dedupe_key = source_ref.strip() or f"manual:{secrets.token_hex(8)}"
+
+        if repo_name:
+            repo = self.projects.resolve_name(repo_name) if self.projects else None
+            repo = repo or self.gitmap.resolve(name=repo_name)
+            if repo is None:
+                raise ValueError(f"unknown repo {repo_name!r}")
+            item.repo = repo
+            item.status = ItemStatus.READY
+            item.stage = f"手动指定仓库：{repo.name}"
+        elif auto_map:
+            self._map(item)
+
+        self.store.save(item)
+        self._seen_keys[item.dedupe_key] = item.id
+        self.events.publish(Event("item_imported", item.id, {"item": item.summary()}))
+        return item
+
+    def _map(self, item: WorkItem) -> None:
+        # 1) explicit project-name/alias mapping first (user-maintained, wins)
+        if self.projects:
+            text = f"{item.title} {item.description} {item.git_url} {item.source_ref}"
+            repo = self.projects.resolve_text(text)
+            if repo:
+                item.repo = repo
+                item.status = ItemStatus.READY
+                item.stage = f"已按项目映射：{repo.name}"
+                return
+        # 2) fall back to git-origin scan
+        repo = self.gitmap.resolve(git_url=item.git_url, name=item.title)
+        if repo:
+            item.repo = repo
+            item.status = ItemStatus.READY
+            item.stage = f"已映射仓库：{repo.name}"
+        else:
+            item.status = ItemStatus.DISCOVERED
+            item.stage = "未找到本地仓库（可在界面手动指定或新增项目映射）"
+
+    def map_manually(self, item_id: str, repo_name: str) -> WorkItem:
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        # project mapping first, then git scan
+        repo = self.projects.resolve_name(repo_name) if self.projects else None
+        repo = repo or self.gitmap.resolve(name=repo_name)
+        if repo is None:
+            raise ValueError(f"unknown repo {repo_name!r}")
+        item.repo = repo
+        item.status = ItemStatus.READY
+        item.stage = f"已手动映射：{repo.name}"
+        self.store.save(item)
+        self.events.publish(Event("item_mapped", item.id, {"repo": repo.to_dict()}))
+        return item
+
+    # ── startup recovery ──────────────────────────────────────────────────────
+    def recover_interrupted(self) -> int:
+        """Reap items left in queued/running by a previous process.
+
+        In-flight asyncio tasks die together with the old server process, so an
+        item persisted as queued/running would otherwise show "执行中" forever
+        with no worker behind it. Mark it failed with a clear reason so the user
+        can simply re-run it. Returns the number of items recovered.
+        """
+        recovered = 0
+        for item in self.store.list(limit=2000):
+            if item.status not in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+                continue
+            item.status = ItemStatus.FAILED
+            item.stage = "已中断：服务重启，执行进程已退出"
+            item.error = "服务重启导致执行中断，请重新执行（非代码失败）"
+            if not item.finished_at:
+                item.finished_at = _utcnow()
+            self.store.save(item)
+            self._cancel_flags[item.id] = True
+            self.events.publish(
+                Event("item_failed", item.id, {"error": item.error, "recovered": True})
+            )
+            recovered += 1
+        return recovered
+
+    # ── run / cancel ───────────────────────────────────────────────────────────
+    def run(
+        self, item_id: str, *, exec_mode: str | None = None, approved: bool = False
+    ) -> WorkItem:
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        rearmable = item.is_dry_run_done() or item.is_retryable()
+        if item.is_terminal() and not rearmable:
+            raise ValueError(f"item {item_id} is already {item.status.value}")
+        if rearmable:
+            # Re-arm a dry-run / failed / cancelled item for a (repeated) run.
+            # Clear stale result and report so the board never shows old output
+            # while the new run is queued/running.
+            previous = "dry-run" if item.is_dry_run_done() else item.status.value
+            item.status = ItemStatus.READY
+            item.result = None
+            item.error = None
+            item.report_path = ""
+            item.started_at = None
+            item.finished_at = None
+            item.attempt = 0
+            item.stage = f"已从 {previous} 转入重新执行"
+        if item.repo is None:
+            raise ValueError("no local repo mapped; map the item first")
+        if exec_mode:
+            if exec_mode not in {"dry-run", "apply"}:
+                raise ValueError("exec_mode must be 'dry-run' or 'apply'")
+            item.exec_mode = exec_mode
+        if item.exec_mode == "apply" and not approved:
+            raise ValueError("apply mode requires explicit approval (approved=true)")
+        item.status = ItemStatus.QUEUED
+        item.error = None
+        self.store.save(item)
+        self._cancel_flags[item_id] = False
+        asyncio.create_task(self._execute(item_id), name=f"work-{item_id}")
+        self.events.publish(Event("item_queued", item_id, {"exec_mode": item.exec_mode}))
+        return item
+
+    def cancel(self, item_id: str) -> int:
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        if item.is_terminal():
+            return 0
+        self._cancel_flags[item_id] = True
+        item.status = ItemStatus.CANCELLED
+        item.stage = "已取消"
+        item.finished_at = _utcnow()
+        self.store.save(item)
+        self.events.publish(Event("item_cancelled", item.id, {}))
+        return 1
+
+    # ── filtered commit ───────────────────────────────────────────────────────
+    def _commit_filter(self) -> CommitFileFilter:
+        extra = load_extra_patterns(self.commit_rules_file)
+        return CommitFileFilter(extra_patterns=extra)
+
+    def commit_preview(self, item_id: str) -> dict[str, object]:
+        """Return the filtered commit plan for an item's worktree, no writes."""
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        worktree = item.result.worktree if item.result else None
+        if not worktree:
+            raise ValueError("工作项还没有 apply 过的 worktree，无法提交")
+        changed = self.executor._changed_files(Path(worktree))
+        plan = self._commit_filter().classify(changed)
+        return {
+            "item_id": item_id,
+            "worktree": worktree,
+            "total": len(changed),
+            **plan.to_dict(),
+        }
+
+    def commit(self, item_id: str, *, message: str = "") -> CommitResult:
+        """Commit the filtered changes of an item's worktree into its branch."""
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        worktree = item.result.worktree if item.result else None
+        if not worktree:
+            raise ValueError("工作项还没有 apply 过的 worktree，无法提交")
+        if not Path(worktree).is_dir():
+            raise ValueError(f"worktree 不存在：{worktree}")
+
+        changed = self.executor._changed_files(Path(worktree))
+        plan = self._commit_filter().classify(changed)
+        commit_message = message.strip() or f"taskagent: {item.title}"
+
+        outcome = self.executor.commit_files(
+            Path(worktree), kept=plan.kept, message=commit_message
+        )
+        result = CommitResult(
+            ok=bool(outcome.get("ok")),
+            commit=str(outcome.get("commit") or ""),
+            branch=str(outcome.get("branch") or ""),
+            message=commit_message,
+            kept=list(plan.kept),
+            skipped=list(plan.skipped),
+            skipped_reasons=dict(plan.skipped_reasons),
+            error=outcome.get("error") if isinstance(outcome.get("error"), str) else None,
+        )
+        item.commit = result
+        item.stage = f"已提交 {result.commit}" if result.ok else "提交失败"
+        self.store.save(item)
+        self.events.publish(
+            Event("item_committed" if result.ok else "item_commit_failed", item_id, {
+                "commit": result.commit,
+                "error": result.error,
+            })
+        )
+        return result
+
+    # ── execution ──────────────────────────────────────────────────────────────
+    async def _execute(self, item_id: str) -> None:
+        async with self._sem:
+            item = self.store.get(item_id)
+            if item is None or item.is_terminal():
+                return
+
+            def progress(value: float, stage: str) -> None:
+                current = self.store.get(item_id)
+                if current is None or current.status != ItemStatus.RUNNING:
+                    return
+                current.stage = stage
+                self.store.save(current)
+                self.events.publish(Event("item_progress", item_id, {"progress": value, "stage": stage}))
+
+            def should_cancel() -> bool:
+                return bool(self._cancel_flags.get(item_id))
+
+            item.status = ItemStatus.RUNNING
+            item.attempt += 1
+            item.started_at = item.started_at or _utcnow()
+            item.stage = "开始执行"
+            self.store.save(item)
+            self.events.publish(Event("item_started", item_id, {"attempt": item.attempt}))
+
+            result = await self.executor.run(item, progress=progress, should_cancel=should_cancel)
+
+            if should_cancel():
+                item.status = ItemStatus.CANCELLED
+                item.stage = "已取消"
+                item.finished_at = _utcnow()
+                self.store.save(item)
+                self.events.publish(Event("item_cancelled", item_id, {}))
+                return
+
+            item.result = result
+            if result.ok:
+                item.status = ItemStatus.SUCCEEDED
+                item.stage = "完成" if not result.dry_run else "完成（dry-run）"
+                item.error = None
+            else:
+                if item.attempt < item.max_attempts and _is_retryable(result.error):
+                    delay = self.settings.retry_delays[
+                        min(item.attempt - 1, len(self.settings.retry_delays) - 1)
+                    ]
+                    item.status = ItemStatus.READY
+                    item.stage = f"重试前等待 {delay:g}s"
+                    item.error = result.error
+                    self.store.save(item)
+                    self.events.publish(Event("item_retry", item_id, {"delay": delay}))
+                    await asyncio.sleep(delay)
+                    asyncio.create_task(self._execute(item_id), name=f"work-{item_id}-retry")
+                    return
+                item.status = ItemStatus.FAILED
+                item.stage = "失败"
+                item.error = result.error
+            item.finished_at = _utcnow()
+            item.report_path = write_report(item, self.settings.reports_dir)
+            self.store.save(item)
+            event = "item_succeeded" if result.ok else "item_failed"
+            self.events.publish(
+                Event(event, item_id, {"report_path": item.report_path, "error": item.error})
+            )
+
+
+def _is_retryable(error: str | None) -> bool:
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(word in lowered for word in ("timeout", "timed out", "rate", "429", "503", "502"))
+
+
+def _utcnow() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
