@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
@@ -17,6 +17,7 @@ from .executor import CodeBuddyExecutor
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
+from .report import render_report
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import EmailSource, ManualSource, RawItem
 from .store import TaskStore
@@ -389,14 +390,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"deleted": True}
 
     @app.get("/api/items/{item_id}/report")
-    def api_report(item_id: str) -> FileResponse:
+    def api_report(item_id: str) -> Response:
         item = store.get(item_id)
         if item is None or not item.report_path:
             raise HTTPException(404, "report not found")
         path = _safe_under(item.report_path, settings.reports_dir)
         if path is None:
             raise HTTPException(404, "report not found")
-        return FileResponse(path, media_type="text/markdown")
+        # Render from live item data so legacy reports (which embedded the
+        # entire raw codebuddy stdout) are compact too. The on-disk .md remains
+        # an untouched historical archive; downloads get this compact version.
+        return Response(render_report(item), media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/events")
     async def api_events(request: Request) -> StreamingResponse:

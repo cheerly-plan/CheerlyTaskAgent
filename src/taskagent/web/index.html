@@ -176,9 +176,29 @@
   .cand-name{font-weight:600;font-size:13px}
   .cand-path{font-size:11px;color:var(--muted);word-break:break-all}
   .cand-origin{font-size:11px;color:var(--teal)}
-  /* report preview */
-  .report-body{margin:0;background:var(--gray-bg);border-radius:8px;padding:12px;
-    font-family:var(--font-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  /* report preview (rendered markdown) */
+  .report-body{font-size:13px;line-height:1.7}
+  .report-body h2{font-size:17px;font-weight:600;margin:0 0 12px}
+  .report-body h3{font-size:14px;font-weight:600;margin:20px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  .report-body h4{font-size:13px;font-weight:600;margin:14px 0 6px}
+  .report-body p{margin:6px 0}
+  .report-body .md-table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}
+  .report-body .md-table th,.report-body .md-table td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+  .report-body .md-table th{background:var(--gray-bg);color:var(--muted);font-weight:600;white-space:nowrap}
+  .report-body .md-table td{word-break:break-word}
+  .report-body .md-code{margin:6px 0;background:var(--gray-bg);border-radius:8px;padding:11px 12px;
+    font-family:var(--font-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow:auto}
+  .report-body blockquote{margin:8px 0;padding:8px 12px;background:var(--amber-bg);color:var(--amber);
+    border-left:3px solid var(--amber);border-radius:0 6px 6px 0;font-size:12px}
+  .report-body ul{margin:6px 0;padding-left:20px}
+  .report-body li{margin:2px 0}
+  .report-body code{background:var(--gray-bg);padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:12px}
+  .report-body details{border:1px solid var(--border);border-radius:8px;margin:10px 0;padding:0 12px}
+  .report-body details>summary{cursor:pointer;padding:10px 0;font-size:12px;font-weight:600;color:var(--purple);list-style:none}
+  .report-body details>summary::-webkit-details-marker{display:none}
+  .report-body details>summary::before{content:'▸ ';display:inline-block;transition:transform .15s}
+  .report-body details[open]>summary::before{transform:rotate(90deg)}
+  .report-body details[open]{padding-bottom:12px}
   /* settings */
   .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
   .setting-group h3{font-size:13px;font-weight:600;margin:0 0 4px;color:var(--purple)}
@@ -447,7 +467,7 @@
 <div class="modal-backdrop" id="report-modal" style="display:none">
   <div class="modal" style="width:min(760px,100%)">
     <div class="modal-head"><span id="report-title">执行报告</span><button class="modal-x" id="report-close">×</button></div>
-    <div class="modal-body"><pre class="report-body" id="report-body">加载中…</pre></div>
+    <div class="modal-body"><div class="report-body" id="report-body">加载中…</div></div>
     <div class="modal-foot">
       <a class="btn-sm" id="report-download" style="display:inline-block;text-decoration:none" download>下载 .md</a>
       <button class="btn-sm" id="report-done">关闭</button>
@@ -882,6 +902,90 @@ function bindItemInteractions(root){
   });
 }
 
+// Lightweight Markdown renderer tailored to the generated reports. Handles
+// headings, tables, fenced code, <details> blocks, blockquotes, lists and
+// inline code/bold. Oversized code blocks (e.g. legacy reports' raw stdout)
+// are auto-collapsed so the dialog stays readable.
+function renderMarkdown(md){
+  const lines=String(md||'').split('\n');
+  const out=[];
+  let i=0;
+  const inline=t=>esc(t)
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  const fenced=(code, lang)=>{
+    const full=code.join('\n');
+    const body=esc(full);
+    if(full.length>2000){
+      const shown=full.slice(0,6000);
+      const tail=full.length>6000?`\n\n…（已截断，完整内容请下载 .md）`:'';
+      return `<details><summary>原始输出（${full.length} 字符，点击展开）</summary><pre class="md-code">${esc(shown)}${tail}</pre></details>`;
+    }
+    return `<pre class="md-code">${body}</pre>`;
+  };
+  while(i<lines.length){
+    const line=lines[i];
+    // native <details> block emitted by the report generator: pass through,
+    // rendering any fenced code inside it, until </details>.
+    if(/^\s*<details\b/i.test(line)){
+      const block=[];
+      while(i<lines.length){
+        block.push(lines[i]);
+        if(/^\s*<\/details>/i.test(lines[i])){i++;break;}
+        i++;
+      }
+      let inner=''; let k=0;
+      while(k<block.length){
+        if(/^\s*```/.test(block[k])){
+          k++; const code=[];
+          while(k<block.length && !/^\s*```/.test(block[k])){code.push(block[k]);k++;}
+          k++; inner+=`<pre class="md-code">${esc(code.join('\n'))}</pre>`;
+        }else{
+          // summary line -> keep as HTML; other lines escaped
+          if(/^\s*<summary>/.test(block[k])) inner+=block[k];
+          else if(block[k].trim()) inner+=`<p>${inline(block[k])}</p>`;
+          k++;
+        }
+      }
+      out.push(block[0].replace(/<details[^>]*>/i,m=>m).replace(/<summary>.*<\/summary>/i,m=>m));
+      out.push(inner);
+      out.push('</details>');
+      continue;
+    }
+    // fenced code block
+    if(/^\s*```/.test(line)){
+      const lang=line.trim().replace(/^```/,'').trim();
+      i++; const code=[];
+      while(i<lines.length && !/^\s*```/.test(lines[i])){code.push(lines[i]);i++;}
+      i++; out.push(fenced(code,lang)); continue;
+    }
+    // headings
+    const h=line.match(/^(#{1,6})\s+(.*)$/);
+    if(h){const lv=Math.min(h[1].length+1,5);out.push(`<h${lv}>${inline(h[2])}</h${lv}>`);i++;continue;}
+    // table (header row + separator row)
+    if(/^\s*\|/.test(line) && i+1<lines.length && /^\s*\|[\s:|\-]+\|\s*$/.test(lines[i+1])){
+      const cells=r=>r.split('|').slice(1,-1).map(s=>s.trim());
+      const head=cells(line); i+=2;
+      const rows=[];
+      while(i<lines.length && /^\s*\|/.test(lines[i])){rows.push(cells(lines[i]));i++;}
+      out.push('<table class="md-table"><thead><tr>'+head.map(c=>`<th>${inline(c)}</th>`).join('')+'</tr></thead><tbody>'+
+        rows.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('')+'</tbody></table>');
+      continue;
+    }
+    // blockquote
+    if(/^\s*>\s?/.test(line)){out.push(`<blockquote>${inline(line.replace(/^\s*>\s?/,''))}</blockquote>`);i++;continue;}
+    // unordered list
+    if(/^\s*[-*]\s+/.test(line)){
+      const items=[];
+      while(i<lines.length && /^\s*[-*]\s+/.test(lines[i])){items.push(inline(lines[i].replace(/^\s*[-*]\s+/,'')));i++;}
+      out.push('<ul>'+items.map(t=>`<li>${t}</li>`).join('')+'</ul>');continue;
+    }
+    if(!line.trim()){i++;continue;}
+    out.push(`<p>${inline(line)}</p>`);i++;
+  }
+  return out.join('\n');
+}
+
 async function openReport(id){
   const it=items.find(x=>x.id===id);
   $('report-title').textContent='工单详情 / 报告 · '+id.slice(-8);
@@ -891,7 +995,7 @@ async function openReport(id){
       const url=`/api/items/${encodeURIComponent(id)}/report`;
       const res=await fetch(url);
       if(!res.ok) throw new Error((await res.text())||res.statusText);
-      $('report-body').textContent=await res.text();
+      $('report-body').innerHTML=renderMarkdown(await res.text());
       dl.style.display='';
       dl.href=url; dl.download=`${id}.md`;
     }catch(e){alert('打开报告失败：'+e.message);return}
@@ -907,7 +1011,7 @@ async function openReport(id){
       '',
       '该工单还没有生成报告。执行 dry-run 或 apply 后即可查看完整报告。',
     ].filter(Boolean).join('\n'):'工单不存在或已被删除。';
-    $('report-body').textContent=summary;
+    $('report-body').innerHTML=`<pre class="md-code">${esc(summary)}</pre>`;
     dl.style.display='none';
   }
   $('report-modal').style.display='flex';
