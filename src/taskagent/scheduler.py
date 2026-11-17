@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 from .commitfilter import CommitFileFilter, load_extra_patterns
 from .events import Event, EventBus
-from .executor import BACKEND_CODEBUDDY, CodeBuddyExecutor, Executor, ExecutorRegistry
+from .executor import Executor, ExecutorRegistry
 from .gitmap import GitProjectRegistry
 from .models import CommitResult, ItemKind, ItemStatus, SourceType, WorkItem
 from .projectmap import ProjectRegistry
@@ -59,8 +59,9 @@ class Scheduler:
         else:
             self.executors = ExecutorRegistry()
         # ``self.executor`` remains the default backend for compatibility with
-        # callers that used it directly; dispatch uses ``self.executors``.
-        self.executor = self.executors.resolve(BACKEND_CODEBUDDY) if self.executors.ids() else executor
+        # callers that used it directly; dispatch uses ``self.executors``. It is
+        # the registry's default backend (or None if no backend is configured).
+        self.executor = self.executors.resolve(self.executors.default_backend_id) if self.executors.ids() else executor
         self.events = events
         self.settings = settings or SchedulerSettings()
         self.commit_rules_file = commit_rules_file
@@ -321,6 +322,8 @@ class Scheduler:
         if not worktree:
             raise ValueError("工作项还没有 apply 过的 worktree，无法提交")
         backend = self.executors.resolve(item.executor)
+        if backend is None:
+            raise ValueError("没有可用的执行后端，无法提交")
         changed = backend.changed_files(Path(worktree))
         plan = self._commit_filter().classify(changed)
         return {
@@ -342,6 +345,8 @@ class Scheduler:
             raise ValueError(f"worktree 不存在：{worktree}")
 
         backend = self.executors.resolve(item.executor)
+        if backend is None:
+            raise ValueError("没有可用的执行后端，无法提交")
         changed = backend.changed_files(Path(worktree))
         plan = self._commit_filter().classify(changed)
         commit_message = message.strip() or f"taskagent: {item.title}"
@@ -389,6 +394,14 @@ class Scheduler:
                 return bool(self._cancel_flags.get(item_id))
 
             backend = self.executors.resolve(item.executor)
+            if backend is None:
+                item.status = ItemStatus.FAILED
+                item.stage = "失败"
+                item.error = "没有可用的执行后端：请先在系统设置中配置并启用至少一个后端"
+                item.finished_at = _utcnow()
+                self.store.save(item)
+                self.events.publish(Event("item_failed", item_id, {"error": item.error}))
+                return
             item.status = ItemStatus.RUNNING
             item.attempt += 1
             item.started_at = item.started_at or _utcnow()

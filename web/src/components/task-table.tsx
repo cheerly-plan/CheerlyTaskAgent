@@ -4,7 +4,7 @@ import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/c
 import {Badge} from '@/components/ui/badge';
 import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
-import type {ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
+import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {shortTime, sourceLabel} from '@/lib/labels';
 import {cn} from '@/lib/utils';
 
@@ -71,8 +71,27 @@ interface TaskTableProps {
   onOpen: (id: string) => void;
   mappings: ProjectMapping[];
   models: ModelChoice[];
+  backends: BackendInfo[];
   sort: SortState;
   onSort: (field: SortField) => void;
+}
+
+/** 模型单元格：固定模型的后端只展示它 profile 里实际会用的模型，不暗示可选。 */
+function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) {
+  if (item.model) return <Mono>{item.model}</Mono>;
+  const backend = backends.find((entry) => entry.id === item.executor);
+  if (backend?.model_selection === false) {
+    const pinned = backend.models?.[0];
+    return (
+      <span
+        className="text-xs text-faint"
+        title={pinned ? `由 ${backend.label} profile 决定：${pinned}` : `由 ${backend.label} profile 决定`}
+      >
+        由 profile 决定{pinned ? ` · ${pinned}` : ''}
+      </span>
+    );
+  }
+  return <span className="text-xs text-faint">全局</span>;
 }
 
 export function TaskTable({
@@ -83,6 +102,7 @@ export function TaskTable({
   onOpen,
   mappings,
   models,
+  backends,
   sort,
   onSort,
 }: TaskTableProps) {
@@ -146,7 +166,7 @@ export function TaskTable({
               <Mono>{item.exec_mode || '—'}</Mono>
             </TableCell>
             <TableCell>
-              {item.model ? <Mono>{item.model}</Mono> : <span className="text-xs text-faint">全局</span>}
+              <ModelCell item={item} backends={backends} />
             </TableCell>
             <TableCell>
               <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
@@ -161,6 +181,7 @@ export function TaskTable({
                 onAction={onAction}
                 mappings={mappings}
                 models={models}
+                backends={backends}
               />
             </TableCell>
           </TableRow>

@@ -27,7 +27,7 @@ def _build(settings: Settings):
     projects = ProjectRegistry(project_store)
     events = EventBus()
     registry = build_registry(settings)
-    executor = registry.resolve("codebuddy")
+    executor = registry.resolve(registry.default_backend_id)
     scheduler = Scheduler(
         store=store,
         gitmap=gitmap,

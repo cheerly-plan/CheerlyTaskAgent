@@ -1,6 +1,6 @@
 # CheerlyTaskAgent 架构设计
 
-> 交付链路：**手动新建 / 邮箱 / TAPD 的需求或 bug → 映射到本地仓库 → 本地 CLI agent（codebuddy / workbuddy / dsh，按任务选择）改代码 → 结果落本地报告。**
+> 交付链路：**手动新建 / 邮箱 / TAPD 的需求或 bug → 映射到本地仓库 → 本地 CLI agent（codebuddy / dsh，按任务选择）改代码 → 结果落本地报告。**
 > 目标仓库 `cheerly-plan/CheerlyTaskAgent`（绿地）。本阶段不接大模型，规划交给规则，调度交给确定性代码。
 
 ---
@@ -18,7 +18,7 @@
 | 幂等、并发、重试、取消、事件流、Markdown 报告 | apply 用 worktree 隔离执行；成功后自动把改动同步到主仓库工作区（不 commit/push，不改 git 历史） |
 
 **环境事实（决定了设计）**
-- 编码 CLI：本机已装 `@tencent-ai/codebuddy-code`（提供 `codebuddy`，默认执行端）。执行层已抽象为三类后端接口；`workbuddy` / `dsh` 遵循同一 CLI 协议，在「系统设置 → 执行后端」填入其二进制路径并启用后即可用，未配置时不受分派。
+- 编码 CLI：本机已装 `@tencent-ai/codebuddy-code`（提供 `codebuddy`）。执行层已抽象为可增删的后端，遵循同一非交互 CLI 协议；在「系统设置 → 执行后端」配置任意二进制路径并启用后即可用，任务按 `executor` 字段分派到对应后端。
 - `CheerlyHarness`（`cheerly`）是流式 chat harness，只有 `now`/`calc` 工具，不能直接改代码；`dsh`（deepseek-harness）是另一套。二者本阶段不接。
 - Agent Mail 已连接但未开通，暂用样例邮件/manual；邮件走 IMAP 兜底。TAPD 通过开放 API（Basic Auth）接入，为权威数据源；凭据 / 权限需用户自行申请（写权限用于状态回填）。
 
@@ -47,7 +47,7 @@ flowchart LR
     W --> G[GitProjectRegistry<br/>URL 归一化 → 本地仓库]
     G --> SCH[Scheduler<br/>并发/重试/取消/事件]
     SCH --> REG[ExecutorRegistry<br/>按 item.executor 分派]
-    REG --> EX[Executor 接口<br/>codebuddy/workbuddy/dsh]
+    REG --> EX[Executor 接口<br/>codebuddy/dsh]
     EX -->|dry-run| CMD[生成提示词+命令<br/>不改动]
     EX -->|apply| WT[隔离 worktree<br/>选定后端 -p]
     WT --> R[Markdown 报告]
@@ -67,7 +67,7 @@ flowchart LR
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）。 |
 | `scheduler.py` | 导入去重（`source_ref`）、`create_manual`（手动指定项目直接 ready）、映射、按 `item.executor` 从 `ExecutorRegistry` 取后端派发、幂等、并发上限、退避重试、取消、事件发射。确定性代码，无 LLM。 |
-| `executor.py` | `Executor` 统一接口（`run`/`build_command`/`changed_files`/`commit_files`/`describe`）+ 三类真实后端 `CodeBuddyExecutor`/`WorkBuddyExecutor`/`DshExecutor`（共用 worktree/commit/sync 管线，仅二进制与标识不同）+ `ExecutorRegistry`（按 id 取，未知 id 回退 codebuddy）。三类都走 `<backend> -p --output-format json` 非交互协议：`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 以 worktree HEAD 为 base 做三方比较同步回主仓库（主仓库未分叉才覆盖，分叉则尝试干净合并、否则记冲突并备份双方；路径校验/忽略规则）。argv 列表拼接防命令注入。 |
+| `executor.py` | `Executor` 统一接口（`run`/`build_command`/`changed_files`/`commit_files`/`describe`/`list_models`）+ 两类真实后端 `CodeBuddyExecutor`/`DshExecutor`（共用 worktree/commit/sync 管线，仅二进制与标识不同）+ `ExecutorRegistry`（按 id 取，未知 id 回退默认后端）。两类都走 `<backend> -p --output-format json` 非交互协议：`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 以 worktree HEAD 为 base 做三方比较同步回主仓库（主仓库未分叉才覆盖，分叉则尝试干净合并、否则记冲突并备份双方；路径校验/忽略规则）。`list_models()` 解析 CLI `--help` 的 `--model` 参数动态获取模型列表。argv 列表拼接防命令注入。 |
 | `backends.py` | 依据持久化的 UI `backends` 配置构建 `ExecutorRegistry`（每类后端一套独立 profile：命令/模型/超时/自动同步/启用），并向 `/api/config` 输出后端清单。 |
 | `report.py` | 每单生成精简 Markdown：概览、执行结果、改动文件、自动同步明细与备份位置、错误；codebuddy 原始 stdout 只提取最终结论、提示词/命令/输出放折叠附录（`<details>`），避免动辄 10 万字符。`render_report` 也供 `/api/items/{id}/report` 实时渲染，老报告一并精简呈现（磁盘 .md 存档不动）。前端轻量 Markdown 渲染器把表格/标题/折叠块结构化展示。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
@@ -79,7 +79,7 @@ flowchart LR
 
 **手动新建**：`create_manual(title, description, kind, repo_name)` → 用户显式指定类型与项目 → 项目映射优先解析为 `LocalRepo` → 直接置 `ready`；`dedupe_key` 为随机值，因此同名手动任务不会互相去重。界面三个入口对应：创建草稿（`run_now=false`）、创建并 dry-run、创建并 apply（`approved=true`）。
 
-**执行**：`run(id, exec_mode, model)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`codebuddy -p` 在 worktree cwd 执行，收集 stdout/改动文件。**模型**：`WorkItem.model` 为按任务选择的模型（`build_command` 里 `item.model or executor.model`），新建时可选、卡片上可随时切换；`model=None` 回退全局 `CODEBUDDY_MODEL`。候选由 `config.CODEBUDDY_MODELS`（`codebuddy --help` 真实列表）提供，`TASKAGENT_MODELS` 可收窄。apply 成功后 `sync_to_repo()` 把改动文件**自动同步回主仓库工作区**：归一化路径→忽略规则过滤（复用 commit 规则）→拒绝绝对路径/`..`/符号链接逃逸→覆盖或删除前先备份到 `<data_dir>/sync-backups/<item>/<时间>/`；结果写入 RunResult 与报告，失败不否定 apply 本身。`TASKAGENT_AUTO_SYNC=0` 可关闭。只重试可重试错误（timeout/429/5xx）。
+**执行**：`run(id, exec_mode, model)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`<backend> -p` 在 worktree cwd 执行，收集 stdout/改动文件。**模型**：`WorkItem.model` 为按任务选择的模型（`build_command` 里 `item.model or executor.model`），新建时可选、卡片上可随时切换；`model=None` 回退该后端的 `model` 字段。候选列表不再写死——由默认执行后端 `Executor.list_models()` 动态解析其 CLI `--help` 的 `--model` 参数实时获取，`TASKAGENT_MODELS` 环境变量可收窄候选；`/api/config` 的 `default_model` 即默认后端的 `model` 字段，新建任务据此回填（全局默认选了哪个就回填哪个）。apply 成功后 `sync_to_repo()` 把改动文件**自动同步回主仓库工作区**：归一化路径→忽略规则过滤（复用 commit 规则）→拒绝绝对路径/`..`/符号链接逃逸→覆盖或删除前先备份到 `<data_dir>/sync-backups/<item>/<时间>/`；结果写入 RunResult 与报告，失败不否定 apply 本身。`TASKAGENT_AUTO_SYNC=0` 可关闭。只重试可重试错误（timeout/429/5xx）。
 
 **恢复**：状态与报告落盘；进程重启后可从 `data/tasks` 重建；`running` 中断的项后续可加 lease 重派（当前为手动重跑）。
 
@@ -96,7 +96,7 @@ flowchart LR
 | 决策 | 选项 | 结论 |
 |---|---|---|
 | 任务解析 | 规则 / LLM | **规则**：本阶段不接大模型，前缀+关键词+正则足够 |
-| 执行端 | 单一 codebuddy / 多后端 | **三类后端按类型各一套配置**：CodeBuddy（兜底，始终启用）/ WorkBuddy / DSH；统一 `Executor` 接口 + 注册表，任务按 `executor` 字段分派 |
+| 执行端 | 单一 codebuddy / 多后端 | **后端配置驱动**：可自由增删后端（新装种子 codebuddy/dsh 均可删可禁，无特权）；统一 `Executor` 接口 + 注册表，任务按 `executor` 字段分派；缺失/禁用后端回退到用户配置的默认后端，无后端时报错 |
 | 状态存储 | JSON / SQLite | **JSON**（沿用 Harness SessionStore 原子写）；量大了换 SQLite |
 | 权威数据源 | 邮件 / TAPD | **TAPD**（结构化、状态机、Webhook 可闭环）；邮件只作通知/兜底，非可信源 |
 | 结果回填 | 本地报告 / 回邮件 / TAPD | **本地报告 + TAPD 状态/评论**（需写权限）；邮件不回填（无状态机） |
@@ -123,7 +123,7 @@ flowchart LR
 
 ## 8. 落地状态与下一步
 
-**已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、邮件 IMAP 兜底接入、**TAPD 主源接入（Webhook + 定时拉取 + 幂等建单 + 状态/评论回填）**、**多执行后端（Executor 统一接口 + codebuddy/workbuddy/dsh 三类独立配置 + 任务按 executor 分派）**、测试全绿（82 passed）、mock 端到端闭环验证通过。
+**已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、邮件 IMAP 兜底接入、**TAPD 主源接入（Webhook + 定时拉取 + 幂等建单 + 状态/评论回填）**、**多执行后端（Executor 统一接口 + codebuddy/dsh 两类独立配置 + 任务按 executor 分派 + 模型动态探测）**、测试全绿（86 passed）、mock 端到端闭环验证通过。
 
 **下一步（按优先级）**：
 1. 申请 TAPD 应用凭证 + 项目授权（读 + 写权限），在「数据源」Tab 填入并开启；在 TAPD 后台配置 Webhook 事件订阅。

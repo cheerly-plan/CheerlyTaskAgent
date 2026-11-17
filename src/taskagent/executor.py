@@ -32,9 +32,8 @@ ShouldCancelFn = Callable[[], bool]
 
 # Backend identifiers exposed to the UI and stored on each WorkItem.
 BACKEND_CODEBUDDY = "codebuddy"
-BACKEND_WORKBUDDY = "workbuddy"
 BACKEND_DSH = "dsh"
-BACKEND_IDS = (BACKEND_CODEBUDDY, BACKEND_WORKBUDDY, BACKEND_DSH)
+BACKEND_IDS = (BACKEND_CODEBUDDY, BACKEND_DSH)
 
 
 class Executor(ABC):
@@ -48,6 +47,13 @@ class Executor(ABC):
 
     backend_id: str = ""
     label: str = ""
+    model: str | None = None
+
+    # Whether this CLI accepts a per-run model override (``--model <id>``).
+    # Backends that pin their model inside a config profile (DSH) set this to
+    # False: the flag does not exist, so passing it would be rejected or
+    # silently ignored — the UI must not offer a choice it cannot honour.
+    supports_model_selection: bool = True
 
     @abstractmethod
     def run(
@@ -60,6 +66,10 @@ class Executor(ABC):
 
     @abstractmethod
     def build_command(self, item: WorkItem) -> list[str]: ...
+
+    def list_models(self) -> list[str]:
+        """Discover the model IDs this backend supports (empty = unknown)."""
+        return []
 
     def changed_files(self, worktree: Path) -> list[str]:
         return self._changed_files(worktree)
@@ -181,7 +191,21 @@ class CodeBuddyExecutor(Executor):
         auto_sync: bool = True,
         backups_dir: Path | None = None,
         sync_ignore_patterns: tuple[str, ...] = (),
+        backend_id: str | None = None,
+        label: str | None = None,
+        supports_model_selection: bool | None = None,
     ) -> None:
+        # Backends are configuration-driven: the registry may create an
+        # executor for an arbitrary id added in the UI. Allow the instance to
+        # override the class-level identity so describe()/dispatch stay honest.
+        if backend_id:
+            self.backend_id = backend_id
+        if label:
+            self.label = label
+        # The registry builds every backend through this class, so capability
+        # is supplied per instance from the backend-id -> class map.
+        if supports_model_selection is not None:
+            self.supports_model_selection = supports_model_selection
         # Resolve once while we still have the full parent PATH. The subprocess
         # env is deliberately minimal, so a bare "codebuddy" may be missing
         # there even though it exists in the user's terminal.
@@ -237,6 +261,71 @@ class CodeBuddyExecutor(Executor):
         """
         return _no_execution_detected(stdout)
 
+    def list_models(self) -> list[str]:
+        """Discover the model IDs this backend's CLI currently supports.
+
+        Two CLI conventions are probed, in order:
+
+        1. **codebuddy-style**: ``--help`` advertises a ``--model <model>``
+           option whose parenthesised list enumerates the supported IDs.
+        2. **dsh-style** (DeepSeek Harness): the model is fixed in the profile,
+           exposed via ``--profile headless --dump-config`` as an
+           ``agent-default-model`` plugin entry (``model: <id>``). It is a
+           single fixed model, not a selectable list.
+
+        Returns an empty list when the CLI is missing or neither convention
+        matches — the UI then shows "由 CLI 决定" instead of a stale,
+        hand-written set of IDs.
+        """
+        import subprocess
+
+        # 1) codebuddy-style: --model list in --help.
+        try:
+            proc = subprocess.run(
+                [self.command, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=self._clean_env(),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        help_text = (proc.stdout or "") if proc is not None else ""
+        match = re.search(r"--model\s+<[^>]*>.*?\(([^)]*)\)", help_text, re.DOTALL)
+        if match:
+            ids = [
+                token.strip()
+                for token in re.split(r"[,\s]+", match.group(1))
+                if token.strip() and not token.strip().startswith("--")
+            ]
+            models = [mid for mid in ids if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", mid)]
+            if models:
+                return models
+
+        # 2) dsh-style: fixed model in --profile headless --dump-config.
+        try:
+            proc = subprocess.run(
+                [self.command, "--profile", "headless", "--dump-config"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=self._clean_env(),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        dump_text = proc.stdout or ""
+        # Match the ``model: <id>`` line under the agent-default-model entry.
+        fixed = re.search(
+            r"agent-default-model.*?\n(?:\s+.*?\n)*?\s+model:\s*([A-Za-z0-9][A-Za-z0-9._-]*)",
+            dump_text,
+            re.DOTALL,
+        )
+        if fixed and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", fixed.group(1)):
+            return [fixed.group(1)]
+        return []
+
     def build_command(self, item: WorkItem) -> list[str]:
         argv = [
             self.command,
@@ -245,8 +334,9 @@ class CodeBuddyExecutor(Executor):
             "--permission-mode", self.permission_mode,
         ]
         # Per-task model wins; fall back to the executor/global default.
+        # Skipped entirely for backends whose CLI has no --model flag.
         model = item.model or self.model
-        if model:
+        if model and self.supports_model_selection:
             argv += ["--model", model]
         # Do NOT pass --add-dir here. It is variadic (<directories...>) and
         # swallows the following positional prompt, so codebuddy starts with an
@@ -972,47 +1062,24 @@ class CodeBuddyExecutor(Executor):
 
 
 # ── Additional CLI backends ───────────────────────────────────────────────────
-# WorkBuddy and DSH use the same non-interactive CLI protocol as codebuddy
-# (``-p --permission-mode --output-format json``), so they reuse the entire
-# worktree / commit / sync pipeline and differ only in binary + presentation.
+# DSH uses the same non-interactive CLI protocol as codebuddy
+# (``-p --permission-mode --output-format json``), so it reuses the entire
+# worktree / commit / sync pipeline and differs only in binary + presentation.
 # The binary is resolved at construction time from the matching backend config,
 # so an empty command simply yields a backend that reports "CLI not found" on
 # an apply — never a silent fallback to another backend.
-
-
-class WorkBuddyExecutor(CodeBuddyExecutor):
-    backend_id = BACKEND_WORKBUDDY
-    label = "WorkBuddy CLI"
-    install_hint = "Configure the workbuddy binary path in 系统设置 → 执行后端。"
-
-    def __init__(
-        self,
-        *,
-        command: str = "workbuddy",
-        worktrees_dir: Path = Path("data/worktrees"),
-        timeout_s: float = 600.0,
-        permission_mode: str = "acceptEdits",
-        model: str | None = None,
-        auto_sync: bool = True,
-        backups_dir: Path | None = None,
-        sync_ignore_patterns: tuple[str, ...] = (),
-    ) -> None:
-        super().__init__(
-            command=command,
-            worktrees_dir=worktrees_dir,
-            timeout_s=timeout_s,
-            permission_mode=permission_mode,
-            model=model,
-            auto_sync=auto_sync,
-            backups_dir=backups_dir,
-            sync_ignore_patterns=sync_ignore_patterns,
-        )
 
 
 class DshExecutor(CodeBuddyExecutor):
     backend_id = BACKEND_DSH
     label = "DSH"
     install_hint = "Configure the DSH binary path in 系统设置 → 执行后端。"
+
+    # ``dsh --profile headless`` exposes no ``--model`` flag: the model lives in
+    # the profile's ``agent-default-model`` entry. Offering a per-task choice
+    # would send a flag the CLI does not know, so selection is disabled and the
+    # UI shows the profile's pinned model instead.
+    supports_model_selection = False
 
     def __init__(
         self,
@@ -1040,16 +1107,37 @@ class DshExecutor(CodeBuddyExecutor):
 
 _EXECUTOR_CLASSES: dict[str, type[CodeBuddyExecutor]] = {
     BACKEND_CODEBUDDY: CodeBuddyExecutor,
-    BACKEND_WORKBUDDY: WorkBuddyExecutor,
     BACKEND_DSH: DshExecutor,
 }
 
 
-class ExecutorRegistry:
-    """Holds one executor per backend id; scheduler dispatches by ``item.executor``."""
+def backend_supports_model_selection(backend_id: str) -> bool:
+    """Whether the backend with this id accepts a per-run ``--model`` flag.
 
-    def __init__(self, executors: dict[str, Executor] | None = None) -> None:
+    Unknown (user-added) ids default to True: they are assumed to speak the
+    codebuddy-style protocol until proven otherwise.
+    """
+    klass = _EXECUTOR_CLASSES.get(backend_id)
+    return bool(getattr(klass, "supports_model_selection", True)) if klass else True
+
+
+class ExecutorRegistry:
+    """Holds one executor per backend id; scheduler dispatches by ``item.executor``.
+
+    ``default_backend_id`` is the fallback used by :meth:`resolve` when a task
+    references a missing/disabled backend. If it is unset (or itself missing),
+    the first registered backend is used; with an empty registry ``resolve``
+    returns ``None`` rather than fabricating a backend.
+    """
+
+    def __init__(
+        self,
+        executors: dict[str, Executor] | None = None,
+        *,
+        default_backend_id: str | None = None,
+    ) -> None:
         self._executors: dict[str, Executor] = dict(executors or {})
+        self.default_backend_id = default_backend_id or ""
 
     def register(self, executor: Executor) -> None:
         self._executors[executor.backend_id] = executor
@@ -1057,13 +1145,16 @@ class ExecutorRegistry:
     def get(self, backend_id: str) -> Executor | None:
         return self._executors.get(backend_id)
 
-    def resolve(self, backend_id: str | None) -> Executor:
-        """Look up a backend, falling back to codebuddy only for unknown ids."""
-        return (
-            self._executors.get(backend_id or "")
-            or self._executors.get(BACKEND_CODEBUDDY)
-            or next(iter(self._executors.values()))
-        )
+    def resolve(self, backend_id: str | None) -> Executor | None:
+        """Look up a backend, falling back to the default backend for unknown ids.
+
+        Returns ``None`` when the registry is empty (nothing to dispatch to).
+        """
+        if backend_id and backend_id in self._executors:
+            return self._executors[backend_id]
+        if self.default_backend_id and self.default_backend_id in self._executors:
+            return self._executors[self.default_backend_id]
+        return next(iter(self._executors.values()), None)
 
     def ids(self) -> list[str]:
         return list(self._executors)

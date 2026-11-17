@@ -48,6 +48,8 @@ interface AppContextValue {
   deleteMapping: (id: string) => Promise<void>;
   openReport: (id: string) => Promise<void>;
   confirm: (message: string) => Promise<boolean>;
+  /** 该后端是否接受按任务指定模型（DSH 之类把模型钉在 profile 里 → false）。 */
+  modelSelectionSupported: (executorId?: string) => boolean;
 }
 
 const AppContext = React.createContext<AppContextValue | null>(null);
@@ -147,7 +149,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         setModels(config.models ?? []);
         setDefaultModel(config.default_model ?? '');
         setBackends(config.backends ?? [{id: 'codebuddy', label: 'CodeBuddy CLI', command: config.executor, enabled: true}]);
-        setConnText('执行端 ' + config.executor);
+        // 执行端显示后端 label（而非裸 id，如 backend-1）。
+        const defaultBackend = (config.backends ?? []).find((b) => b.id === config.executor);
+        setConnText('执行端 ' + (defaultBackend?.label || config.executor));
         await Promise.all([reloadMappings(), reloadItems(), reloadSettings()]);
       } catch (error) {
         toast.error('加载失败：' + (error as Error).message);
@@ -173,6 +177,15 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     };
     return () => source.close();
   }, [reloadItems]);
+
+  const modelSelectionSupported = React.useCallback(
+    (executorId?: string) => {
+      if (!executorId) return true;
+      const backend = backends.find((entry) => entry.id === executorId);
+      return backend?.model_selection !== false;
+    },
+    [backends],
+  );
 
   const setSelection = React.useCallback(
     (id: string, key: keyof ActionSelection, value: string) =>
@@ -245,10 +258,14 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           }
           await endpoints.mapItem(id, repo);
         } else if (action === 'dry') {
-          const model = selection.model || item?.model || null;
+          const model = modelSelectionSupported(item?.executor)
+            ? selection.model || item?.model || null
+            : null;
           await endpoints.runItem(id, {exec_mode: 'dry-run', model});
         } else if (action === 'apply') {
-          const model = selection.model || item?.model || null;
+          const model = modelSelectionSupported(item?.executor)
+            ? selection.model || item?.model || null
+            : null;
           const ok = await confirm(
             'apply 会在隔离 worktree 中真实执行 codebuddy 改代码（不会提交/推送）。确认继续？',
           );
@@ -267,7 +284,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       }
       await reloadItems();
     },
-    [confirm, items, openReport, reloadItems, selections],
+    [confirm, items, modelSelectionSupported, openReport, reloadItems, selections],
   );
 
   // ── 新建任务 / 邮件拉取 ───────────────────────────────────────────────────
@@ -296,7 +313,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           repo_name: draft.repo,
           exec_mode: mode === 'apply' ? 'apply' : 'dry-run',
           executor: draft.executor || 'codebuddy',
-          model: draft.model || null,
+          model: modelSelectionSupported(draft.executor) ? draft.model || null : null,
           run_now: mode !== 'draft',
           approved: mode === 'apply',
         });
@@ -399,9 +416,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       const tapd = next.tapd;
       const payload: UISettings = {
         executor: next.executor || 'codebuddy',
-        codebuddy_command: (next.codebuddy_command || '').trim(),
-        workbuddy_cli_path: (next.workbuddy_cli_path || '').trim(),
-        dsh_path: (next.dsh_path || '').trim(),
+        // 扁平字段从 backends 派生，避免旧值覆盖用户新填的 command。
+        codebuddy_command: (next.backends?.codebuddy?.command || '').trim(),
+        dsh_path: (next.backends?.dsh?.command || '').trim(),
         default_model: next.default_model || '',
         max_concurrent: Math.max(1, Number(next.max_concurrent) || 1),
         auto_sync: next.auto_sync !== false,
@@ -409,7 +426,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           Object.entries(next.backends ?? {}).map(([id, cfg]) => [
             id,
             {
-              enabled: id === 'codebuddy' ? true : cfg.enabled === true,
+              label: (cfg.label || '').trim(),
+              enabled: cfg.enabled === true,
               command: (cfg.command || '').trim(),
               model: (cfg.model || '').trim(),
               timeout_s: Math.max(1, Number(cfg.timeout_s) || 600),
@@ -483,7 +501,16 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     deleteMapping,
     openReport,
     confirm,
+    modelSelectionSupported,
   };
+
+  // 新建任务要回填的默认模型：系统设置里「默认执行后端」真正保存的 model 值。
+  // 设置一旦保存，settings 刷新后这里自动跟随，无需额外刷新 config。
+  const effectiveDefaultModel = React.useMemo(() => {
+    const executorId = settings?.executor || '';
+    const backend = executorId ? settings?.backends?.[executorId] : undefined;
+    return backend?.model || defaultModel || '';
+  }, [settings, defaultModel]);
 
   return (
     <AppContext.Provider value={value}>
@@ -494,7 +521,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         onOpenChange={setNewTaskOpen}
         mappings={mappings}
         models={models}
-        defaultModel={defaultModel}
+        defaultModel={effectiveDefaultModel}
         backends={backends}
         onManualCreate={(draft, mode) => void createManual(draft, mode)}
       />

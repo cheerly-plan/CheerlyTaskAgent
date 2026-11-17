@@ -2,7 +2,7 @@ import {Plus, RotateCcw, Square, Terminal, Trash2, FileText, Play} from 'lucide-
 
 import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
-import type {ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
+import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {ACTIVE_STATUSES, TERMINAL_STATUSES} from '@/lib/labels';
 
 export interface ActionSelection {
@@ -17,6 +17,7 @@ interface TaskActionsProps {
   onAction: (action: ItemAction, id: string) => void;
   mappings: ProjectMapping[];
   models: ModelChoice[];
+  backends: BackendInfo[];
   /** 卡片视图里按钮换行更紧凑 */
   compact?: boolean;
 }
@@ -33,6 +34,7 @@ export function TaskActions({
   onAction,
   mappings,
   models,
+  backends,
   compact,
 }: TaskActionsProps) {
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
@@ -43,9 +45,14 @@ export function TaskActions({
   const repoOptions = mappings
     .filter((mapping) => mapping.enabled)
     .map((mapping) => ({value: mapping.name, label: mapping.name}));
+  // 该任务所属后端能否接受按任务指定模型；不能时只展示它 profile 里钉住的模型。
+  const backend = backends.find((entry) => entry.id === item.executor);
+  const canPickModel = backend?.model_selection !== false;
+  const backendModels = backend?.models?.length ? backend.models : null;
+  const pinnedModel = !canPickModel ? backendModels?.[0] ?? '' : '';
   const modelOptions = [
     {value: '', label: '默认（跟随全局）'},
-    ...models.map((model) => ({value: model.id, label: model.label})),
+    ...(backendModels ?? models.map((model) => model.id)).map((id) => ({value: id, label: id})),
   ];
 
   return (
@@ -96,14 +103,27 @@ export function TaskActions({
       ) : null}
 
       {!terminal && !running ? (
-        <SelectField
-          size="sm"
-          className={compact ? 'w-[120px]' : 'w-[132px]'}
-          value={selection.model ?? ''}
-          options={modelOptions}
-          onChange={(value) => onSelect('model', value)}
-          title="本任务使用的模型"
-        />
+        canPickModel ? (
+          <SelectField
+            size="sm"
+            className={compact ? 'w-[120px]' : 'w-[132px]'}
+            value={selection.model ?? ''}
+            options={modelOptions}
+            onChange={(value) => onSelect('model', value)}
+            title="本任务使用的模型"
+          />
+        ) : (
+          <span
+            className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[11px] text-faint"
+            title={
+              pinnedModel
+                ? `该后端不支持 --model，实际使用 profile 中钉住的模型：${pinnedModel}`
+                : '该后端不支持 --model，模型由它自己的 profile 决定'
+            }
+          >
+            模型由 profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
+          </span>
+        )
       ) : null}
 
       {item.report_path ? (

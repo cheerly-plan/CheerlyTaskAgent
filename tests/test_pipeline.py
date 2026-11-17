@@ -308,15 +308,17 @@ def test_model_choices_from_config():
     from taskagent.config import Settings
 
     s = Settings()
-    choices = {c["id"]: c["label"] for c in s.model_choices}
-    assert len(choices) >= 10
-    assert "deepseek-v4-pro" in choices
-    assert choices["fast-model"]  # has a friendly label
+    # No discovery passed and no allow-list -> empty (the UI shows "未配置模型"),
+    # not a hard-coded list. Model ids are discovered from the CLI at runtime.
+    assert s.model_choices() == []
 
-    # TASKAGENT_MODELS restricts the offered list (env read happens in from_env;
-    # here we verify the property honors available_models directly).
+    # A discovered list is offered verbatim (label == id, no hand-made names).
+    discovered = ["deepseek-v4-pro", "fast-model"]
+    assert [c["id"] for c in s.model_choices(discovered)] == discovered
+
+    # TASKAGENT_MODELS narrows the discovered list to the allow-list.
     s2 = Settings(available_models=("deepseek-v4-pro",))
-    assert [c["id"] for c in s2.model_choices] == ["deepseek-v4-pro"]
+    assert [c["id"] for c in s2.model_choices(discovered)] == ["deepseek-v4-pro"]
 
 
 def test_build_command_keeps_prompt_positional(env):

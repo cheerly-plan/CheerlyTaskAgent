@@ -8,67 +8,61 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Model IDs exactly as advertised by `codebuddy --help` (verified 2026-11-17).
-# CLI only publishes raw IDs, no official human names, so the label is the ID
-# itself — no hand-made translations that could drift from what argv accepts.
-# The first three are routing aliases whose concrete model may change over
-# time; the rest are concrete model IDs.
-CODEBUDDY_MODELS: tuple[str, ...] = (
-    "fast-model",
-    "balanced-model",
-    "deep-model",
-    "hy4std",
-    "hy4flash",
-    "hy4flash-free",
-    "deepseek-v4.1-flash",
-    "deepseek-v4-pro",
-    "glm-5.3",
-    "glm-5.3-flash",
-    "glm-5.2",
-    "kimi-k3.1-pro",
-    "kimi-k3-1",
-    "kimi-k2.8-preview",
-    "minimax-m3.1-flash",
-    "step-5-preview",
-    "mimo-v2.6-pro",
-    "space-bunny",
-)
+# NOTE: model IDs are no longer hard-coded here. The supported-model list is
+# discovered at runtime from the default backend's CLI ``--help`` output (see
+# ``Executor.list_models``), so the UI always matches the installed CLI instead
+# of a hand-written list that drifts as the CLI upgrades. ``TASKAGENT_MODELS``
+# remains an explicit allow-list the operator can set to narrow the choices;
+# it wins over discovery when present.
 
 # Settings managed from the UI "系统设置" tab. Stored in <data_dir>/settings.json
 # so the values survive restarts; env-derived values are used as the initial
-# defaults until the file is written. DSH / WorkBuddy are execution backends
-# reserved for later, so their paths are kept here but not yet dispatched to.
-def _default_backends() -> dict[str, dict[str, Any]]:
-    """Per-type execution backend configs, each a complete independent profile."""
+# defaults until the file is written. Backends are configuration-driven: the UI
+# may add/remove any number of them, and none is privileged. The default backend
+# for new tasks is the ``executor`` key; runtime dispatch falls back to it when a
+# task references a missing/disabled backend, and errors only if no backend
+# exists at all.
+def _backend_profile(
+    *,
+    label: str = "",
+    command: str = "",
+    enabled: bool = False,
+    model: str = "",
+    timeout_s: int = 600,
+    auto_sync: bool = True,
+) -> dict[str, Any]:
+    """A complete, independent profile for one execution backend.
+
+    Used both for the built-in seeds and for backends added at runtime, so a
+    newly added backend always carries every field the registry expects.
+    """
     return {
-        "codebuddy": {
-            "enabled": True,  # always available as the safe fallback
-            "command": "codebuddy",
-            "model": "",
-            "timeout_s": 600,
-            "auto_sync": True,
-        },
-        "workbuddy": {
-            "enabled": False,
-            "command": "workbuddy",
-            "model": "",
-            "timeout_s": 600,
-            "auto_sync": True,
-        },
-        "dsh": {
-            "enabled": False,
-            "command": "dsh",
-            "model": "",
-            "timeout_s": 600,
-            "auto_sync": True,
-        },
+        "label": label,
+        "enabled": enabled,
+        "command": command,
+        "model": model,
+        "timeout_s": timeout_s,
+        "auto_sync": auto_sync,
+    }
+
+
+def _default_backends() -> dict[str, dict[str, Any]]:
+    """Initial backend profiles shipped with a fresh install.
+
+    These are only seeds — the persisted ``backends`` map is authoritative and
+    may contain any number of extra (or fewer) backends.
+    """
+    return {
+        "codebuddy": _backend_profile(
+            label="CodeBuddy CLI", command="codebuddy", enabled=True,
+        ),
+        "dsh": _backend_profile(label="DSH", command="dsh"),
     }
 
 
 UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "executor": "codebuddy",  # default backend for new tasks (legacy key, kept for /api/config)
     "codebuddy_command": "codebuddy",
-    "workbuddy_cli_path": "",
     "dsh_path": "",
     "default_model": "",
     "max_concurrent": 1,
@@ -180,19 +174,33 @@ class Settings:
             else self.data_dir / "commit-ignore.txt"
         )
 
-    @property
-    def model_choices(self) -> list[dict[str, str]]:
+    def model_choices(self, discovered: list[str] | tuple[str, ...] | None = None) -> list[dict[str, str]]:
         """Model options for the UI: ``[{id, label}, ...]``.
 
-        When ``TASKAGENT_MODELS`` is set, only those ids are offered (in that
-        order). Label is the raw CLI ID — CodeBuddy publishes no human names.
+        The concrete list comes from the caller (the default backend's CLI
+        discovery); ``TASKAGENT_MODELS`` narrows it further. ``discovered``
+        defaults to ``available_models`` so older callers still work, but the
+        API passes the live list from ``Executor.list_models``.
         """
-        ids = self.available_models or CODEBUDDY_MODELS
-        return [{"id": mid, "label": mid} for mid in ids]
+        base: tuple[str, ...]
+        if discovered is not None:
+            base = tuple(discovered)
+        else:
+            base = self.available_models
+        if self.available_models:
+            # TASKAGENT_MODELS is an allow-list: keep only ids the operator listed.
+            allowed = set(self.available_models)
+            base = tuple(mid for mid in base if mid in allowed) or self.available_models
+        return [{"id": mid, "label": mid} for mid in base]
 
     @property
     def default_model(self) -> str | None:
-        """The per-task default: CODEBUDDY_MODEL env, else first allowed option."""
+        """Env-level default: CODEBUDDY_MODEL, else the first allowed option.
+
+        Note: the UI-facing default model is the default backend's ``model``
+        field (see ``/api/config``), not this env-derived value. This property
+        only seeds the initial backend profile before the UI writes settings.
+        """
         return self.codebuddy_model or (
             self.available_models[0] if self.available_models else None
         )
@@ -228,14 +236,27 @@ class Settings:
                     saved = loaded
                 if saved:
                     for key, value in saved.items():
-                        if key in {"imap", "mail_poll", "tapd", "backends"} and isinstance(value, dict):
-                            if key == "backends":
-                                # deep merge each backend so new fields get defaults
+                        if key == "backends":
+                            # The saved map is authoritative: it defines the full
+                            # set of backends (added OR removed in the UI). Merge
+                            # each profile onto a template so new fields survive.
+                            # No backend is privileged: any may be removed or
+                            # disabled; the default backend is tracked by
+                            # ``executor``, not by a hard-coded id.
+                            if isinstance(value, dict):
+                                merged: dict[str, dict[str, Any]] = {}
                                 for backend_id, cfg in value.items():
-                                    if backend_id in data["backends"] and isinstance(cfg, dict):
-                                        data["backends"][backend_id].update(cfg)
-                            else:
-                                data[key].update(value)
+                                    if not isinstance(backend_id, str) or not backend_id.strip():
+                                        continue
+                                    if not isinstance(cfg, dict):
+                                        continue
+                                    profile = _backend_profile()
+                                    profile.update(cfg)
+                                    profile["label"] = profile.get("label") or backend_id.strip()
+                                    merged[backend_id.strip()] = profile
+                                data["backends"] = merged
+                        elif key in {"imap", "mail_poll", "tapd"} and isinstance(value, dict):
+                            data[key].update(value)
                         elif key in data:
                             data[key] = value
             except (OSError, ValueError):
@@ -243,7 +264,6 @@ class Settings:
         # Migrate legacy flat fields into backends when the file predates them.
         if isinstance(saved, dict) and "backends" not in saved:
             data["backends"]["codebuddy"]["command"] = data.get("codebuddy_command") or "codebuddy"
-            data["backends"]["workbuddy"]["command"] = data.get("workbuddy_cli_path") or "workbuddy"
             data["backends"]["dsh"]["command"] = data.get("dsh_path") or "dsh"
             data["backends"]["codebuddy"]["model"] = data.get("default_model") or ""
             data["backends"]["codebuddy"]["auto_sync"] = bool(data.get("auto_sync", True))
@@ -254,36 +274,29 @@ class Settings:
         data = self.load_ui_settings()
         for key, value in payload.items():
             if key == "backends" and isinstance(value, dict):
+                # The submitted map is authoritative: backends absent from it
+                # have been removed in the UI. Rebuild from persisted profiles
+                # so edited fields on surviving backends are preserved. No
+                # backend is privileged or force-enabled.
+                merged: dict[str, dict[str, Any]] = {}
                 for backend_id, cfg in value.items():
-                    if backend_id in data["backends"] and isinstance(cfg, dict):
-                        incoming = dict(cfg)
-                        # blank command keeps the saved value (avoids wiping a path)
-                        if not incoming.get("command"):
-                            incoming["command"] = data["backends"][backend_id].get("command", "")
-                        data["backends"][backend_id].update(incoming)
-                # Legacy flat fields in the same payload win over stale backend
-                # defaults (older clients submit both). Let them flow inward.
-                flat_to_backend = {
-                    "codebuddy_command": "codebuddy",
-                    "workbuddy_cli_path": "workbuddy",
-                    "dsh_path": "dsh",
-                }
-                for flat_key, backend_id in flat_to_backend.items():
-                    if payload.get(flat_key):
-                        data["backends"][backend_id]["command"] = payload[flat_key]
-                if payload.get("default_model"):
-                    data["backends"]["codebuddy"]["model"] = payload["default_model"]
-                if "auto_sync" in payload:
-                    data["backends"]["codebuddy"]["auto_sync"] = bool(payload["auto_sync"])
-                # codebuddy is always the safe fallback; never fully disable it.
-                data["backends"]["codebuddy"]["enabled"] = True
-                # keep legacy flat keys in sync for older clients / /api/config
-                data["codebuddy_command"] = data["backends"]["codebuddy"].get("command", "codebuddy")
-                data["workbuddy_cli_path"] = data["backends"]["workbuddy"].get("command", "")
-                data["dsh_path"] = data["backends"]["dsh"].get("command", "")
-                data["default_model"] = data["backends"]["codebuddy"].get("model", "")
-                data["auto_sync"] = bool(data["backends"]["codebuddy"].get("auto_sync", True))
-                data["executor"] = data.get("executor") or "codebuddy"
+                    if not isinstance(backend_id, str) or not backend_id.strip():
+                        continue
+                    if not isinstance(cfg, dict):
+                        continue
+                    bid = backend_id.strip()
+                    profile = dict(data["backends"].get(bid) or _backend_profile())
+                    incoming = dict(cfg)
+                    # blank command keeps the saved value (avoids wiping a path)
+                    if not incoming.get("command"):
+                        incoming["command"] = profile.get("command", "")
+                    profile.update(incoming)
+                    merged[bid] = profile
+                data["backends"] = merged
+                # default backend: keep existing, or first available if the
+                # current one was removed/never set. Empty backends -> empty.
+                if data.get("executor") not in data["backends"]:
+                    data["executor"] = next(iter(data["backends"]), "")
             elif key == "imap" and isinstance(value, dict):
                 imap = dict(value)
                 # The UI masks the stored password; an empty submission means
@@ -320,35 +333,37 @@ class Settings:
         tapd["interval_minutes"] = max(1, int(tapd.get("interval_minutes", 5) or 5))
         tapd["exec_mode"] = "apply" if tapd.get("exec_mode") == "apply" else "dry-run"
         tapd["entity_types"] = [e for e in tapd.get("entity_types", []) if e in {"story", "bug", "task"}] or ["story", "bug"]
-        # Normalise backends: valid ids, sane timeouts, codebuddy always on.
+        # Normalise backends: valid ids, sane timeouts. No backend is forced on.
         for backend_id, cfg in data["backends"].items():
-            cfg["enabled"] = True if backend_id == "codebuddy" else bool(cfg.get("enabled", False))
+            cfg["label"] = str(cfg.get("label") or "") or backend_id
+            cfg["enabled"] = bool(cfg.get("enabled", False))
             cfg["command"] = str(cfg.get("command") or "")
             cfg["model"] = str(cfg.get("model") or "")
             cfg["timeout_s"] = max(1, int(cfg.get("timeout_s", 600) or 600))
             cfg["auto_sync"] = bool(cfg.get("auto_sync", True))
-        # Final insurance: any explicitly-submitted legacy flat field is the
-        # source of truth for its backend command (covers payloads without a
-        # ``backends`` key entirely).
-        for flat_key, backend_id in {
-            "codebuddy_command": "codebuddy",
-            "workbuddy_cli_path": "workbuddy",
-            "dsh_path": "dsh",
-        }.items():
-            if flat_key in payload and payload[flat_key]:
-                data["backends"][backend_id]["command"] = payload[flat_key]
-        if "default_model" in payload and payload["default_model"]:
-            data["backends"]["codebuddy"]["model"] = payload["default_model"]
-        if "auto_sync" in payload:
-            data["backends"]["codebuddy"]["auto_sync"] = bool(payload["auto_sync"])
+        # Legacy flat fields are only authoritative when the payload has no
+        # ``backends`` key (i.e. a pre-multi-backend client). Otherwise the
+        # backends map is the source of truth and flat fields are derived from
+        # it below, never the reverse.
+        if "backends" not in payload:
+            for flat_key, backend_id in {
+                "codebuddy_command": "codebuddy",
+                "dsh_path": "dsh",
+            }.items():
+                if backend_id in data["backends"] and flat_key in payload and payload[flat_key]:
+                    data["backends"][backend_id]["command"] = payload[flat_key]
+            if "default_model" in payload and payload["default_model"] and "codebuddy" in data["backends"]:
+                data["backends"]["codebuddy"]["model"] = payload["default_model"]
+            if "auto_sync" in payload and "codebuddy" in data["backends"]:
+                data["backends"]["codebuddy"]["auto_sync"] = bool(payload["auto_sync"])
         # Reflect backends into flat fields so every API shape stays consistent.
-        data["codebuddy_command"] = data["backends"]["codebuddy"]["command"]
-        data["workbuddy_cli_path"] = data["backends"]["workbuddy"]["command"]
-        data["dsh_path"] = data["backends"]["dsh"]["command"]
-        data["default_model"] = data["backends"]["codebuddy"]["model"]
-        data["auto_sync"] = bool(data["backends"]["codebuddy"]["auto_sync"])
+        data["codebuddy_command"] = data["backends"].get("codebuddy", {}).get("command", "codebuddy")
+        data["dsh_path"] = data["backends"].get("dsh", {}).get("command", "")
+        data["default_model"] = data["backends"].get("codebuddy", {}).get("model", "")
+        data["auto_sync"] = bool(data["backends"].get("codebuddy", {}).get("auto_sync", True))
+        # default backend: keep existing, else first available; empty -> empty.
         if data.get("executor") not in data["backends"]:
-            data["executor"] = "codebuddy"
+            data["executor"] = next(iter(data["backends"]), "")
         path = self.ui_settings_path
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")

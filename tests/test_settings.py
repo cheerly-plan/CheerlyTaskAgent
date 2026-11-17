@@ -12,14 +12,14 @@ def test_ui_settings_defaults_and_roundtrip(tmp_path):
     assert initial["codebuddy_command"] == "codebuddy"
     assert initial["imap"]["port"] == 993
 
-    initial["dsh_path"] = "/opt/dsh"
-    initial["workbuddy_cli_path"] = "/opt/workbuddy"
+    # dsh 的路径以 backends 为权威：改 backends.dsh.command 后扁平字段 dsh_path 应镜像它。
+    initial["backends"]["dsh"]["command"] = "/opt/dsh"
     initial["imap"]["host"] = "imap.example.com"
     s.save_ui_settings(initial)
 
     loaded = s.load_ui_settings()
-    assert loaded["dsh_path"] == "/opt/dsh"
-    assert loaded["workbuddy_cli_path"] == "/opt/workbuddy"
+    assert loaded["backends"]["dsh"]["command"] == "/opt/dsh"
+    assert loaded["dsh_path"] == "/opt/dsh"  # 扁平字段从 backends 派生，保持一致
     assert loaded["imap"]["host"] == "imap.example.com"
 
 
@@ -45,7 +45,6 @@ def test_settings_api_roundtrip(tmp_path):
             "executor": "codebuddy",
             "codebuddy_command": "npx -y @tencent-ai/codebuddy-code@latest",
             "dsh_path": "/opt/dsh",
-            "workbuddy_cli_path": "/opt/workbuddy",
             "default_model": "deep-model",
             "max_concurrent": 2,
             "auto_sync": False,

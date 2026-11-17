@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 from .backends import build_registry, describe_backends
 from .config import Settings
 from .events import EventBus, sse_frame
-from .executor import ExecutorRegistry
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
 from .mailpoll import MailPoller
@@ -106,7 +105,6 @@ class UISettingsBody(BaseModel):
 
     executor: str = "codebuddy"
     codebuddy_command: str = "codebuddy"
-    workbuddy_cli_path: str = ""
     dsh_path: str = ""
     default_model: str = ""
     max_concurrent: int = Field(default=1, ge=1)
@@ -176,7 +174,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     events = EventBus()
 
     executor_registry = build_registry(settings)
-    executor = executor_registry.resolve("codebuddy")
+    executor = executor_registry.resolve(executor_registry.default_backend_id)
 
     def make_tapd_client() -> tuple[TapdClient, dict[str, Any]]:
         """Build a TAPD client from the latest saved UI settings."""
@@ -382,10 +380,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/config")
     def api_config() -> dict[str, Any]:
+        # Model list is discovered live from the default backend's CLI, not
+        # hard-coded, so the UI always matches the installed CLI. Fall back to
+        # an empty list when no backend is configured or discovery fails.
+        discovered: list[str] = []
+        default_backend = executor_registry.resolve(executor_registry.default_backend_id)
+        if default_backend is not None:
+            try:
+                discovered = default_backend.list_models()
+            except (OSError, ValueError, RuntimeError):  # discovery is best-effort
+                discovered = []
+        # The default model is the default backend's own ``model`` field —
+        # "global default 选了哪个就回填哪个".
+        default_model = (default_backend.model if default_backend is not None else "") or ""
         return {
             "version": "0.2.0",
             "sources": ["manual", "tapd", "email"],
-            "executor": "codebuddy",
+            "executor": executor_registry.default_backend_id or "codebuddy",
             "backends": describe_backends(settings, executor_registry),
             "codebuddy_command": settings.codebuddy_command,
             "max_concurrent": settings.max_concurrent,
@@ -396,8 +407,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "fs_root": str(settings.browse_root),
             "commit_rules_file": str(settings.commit_rules_path),
             "auto_sync": settings.auto_sync,
-            "models": settings.model_choices,
-            "default_model": settings.default_model,
+            "models": settings.model_choices(discovered),
+            "default_model": default_model,
         }
 
     # ── UI-managed settings (系统设置 tab) ────────────────────────────────────
@@ -407,7 +418,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.put("/api/settings")
     def api_put_settings(body: UISettingsBody) -> dict[str, Any]:
-        return settings.save_ui_settings(body.model_dump())
+        # exclude_unset: fields the client didn't send (e.g. ``backends`` from
+        # an older client) must not be treated as "clear everything".
+        return settings.save_ui_settings(body.model_dump(exclude_unset=True))
 
     # ── read-only folder browser + on-demand scanner ────────────────────────
     @app.get("/api/fs/browse")

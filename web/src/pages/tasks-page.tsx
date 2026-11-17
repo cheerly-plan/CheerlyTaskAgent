@@ -48,8 +48,18 @@ function sortValue(item: WorkItem, field: string): string {
 }
 
 export function TasksPage() {
-  const {items, mappings, models, selections, setSelection, runItemAction, openReport, openNewTask, reloadItems} =
-    useApp();
+  const {
+    items,
+    mappings,
+    models,
+    backends,
+    selections,
+    setSelection,
+    runItemAction,
+    openReport,
+    openNewTask,
+    reloadItems,
+  } = useApp();
 
   const [filters, setFilters] = React.useState<Filters>(DEFAULT_FILTERS);
   const [sort, setSort] = React.useState<SortState>(DEFAULT_SORT);
@@ -275,6 +285,7 @@ export function TasksPage() {
             onOpen={(id) => void openReport(id)}
             mappings={mappings}
             models={models}
+            backends={backends}
           />
         ) : (
           <div className="grid gap-3 bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -288,6 +299,7 @@ export function TasksPage() {
                 onOpen={(id) => void openReport(id)}
                 mappings={mappings}
                 models={models}
+                backends={backends}
               />
             ))}
           </div>

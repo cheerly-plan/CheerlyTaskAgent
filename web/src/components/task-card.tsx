@@ -3,7 +3,7 @@ import {FolderGit2, Layers} from 'lucide-react';
 import {Badge} from '@/components/ui/badge';
 import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
-import type {ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
+import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {sourceLabel} from '@/lib/labels';
 
 interface TaskCardProps {
@@ -14,10 +14,23 @@ interface TaskCardProps {
   onOpen: (id: string) => void;
   mappings: ProjectMapping[];
   models: ModelChoice[];
+  backends: BackendInfo[];
 }
 
-export function TaskCard({item, selection, onSelect, onAction, onOpen, mappings, models}: TaskCardProps) {
+export function TaskCard({
+  item,
+  selection,
+  onSelect,
+  onAction,
+  onOpen,
+  mappings,
+  models,
+  backends,
+}: TaskCardProps) {
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
+  const backend = backends.find((entry) => entry.id === item.executor);
+  const modelLocked = backend?.model_selection === false;
+  const pinnedModel = modelLocked ? backend?.models?.[0] : undefined;
   return (
     <div
       role="button"
@@ -62,6 +75,10 @@ export function TaskCard({item, selection, onSelect, onAction, onOpen, mappings,
           <Badge variant="secondary" className="font-mono">
             {item.model}
           </Badge>
+        ) : modelLocked ? (
+          <Badge variant="muted" title={`由 ${backend?.label ?? ''} profile 决定`}>
+            profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
+          </Badge>
         ) : (
           <Badge variant="muted">全局模型</Badge>
         )}
@@ -90,6 +107,7 @@ export function TaskCard({item, selection, onSelect, onAction, onOpen, mappings,
           onAction={onAction}
           mappings={mappings}
           models={models}
+          backends={backends}
         />
       </div>
     </div>

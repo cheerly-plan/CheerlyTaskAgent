@@ -47,17 +47,30 @@ export function NewTaskDialog({
 }: NewTaskDialogProps) {
   const [manual, setManual] = React.useState<ManualTaskDraft>(EMPTY_MANUAL);
 
-  // 每次打开都清空草稿，避免上一轮的残留内容被误提交
+  const enabledBackends = backends.filter((backend) => backend.enabled);
+  const backendOptions = (enabledBackends.length ? enabledBackends : backends).map((backend) => ({
+    value: backend.id,
+    label: backend.label,
+    hint: backend.command || undefined,
+  }));
+  const firstExecutor = backendOptions[0]?.value ?? 'codebuddy';
+
+  // 每次打开都重置草稿；模型/后端预填系统设置里真正保存的值，避免歧义。
   React.useEffect(() => {
-    if (open) setManual(EMPTY_MANUAL);
-  }, [open]);
+    if (open) setManual({...EMPTY_MANUAL, executor: firstExecutor, model: defaultModel});
+  }, [open, defaultModel, firstExecutor]);
+
+  // 该后端把模型钉在自己的 profile 里（model_selection === false）时，不给假的选项。
+  const backendInfo = backends.find((backend) => backend.id === manual.executor);
+  const canPickModel = backendInfo?.model_selection !== false;
+  const pinnedModel = !canPickModel ? backendInfo?.models?.[0] : undefined;
 
   const modelOptions = [
-    {value: '', label: '默认（跟随全局）'},
+    {value: '', label: '跟随后端默认'},
     ...models.map((model) => ({
       value: model.id,
       label: model.label,
-      hint: model.id === defaultModel ? '全局默认模型' : undefined,
+      hint: model.id === defaultModel ? '全局默认' : undefined,
     })),
   ];
 
@@ -67,16 +80,10 @@ export function NewTaskDialog({
     disabled: !mapping.enabled,
   }));
 
-  const enabledBackends = backends.filter((backend) => backend.enabled);
-  const backendOptions = (enabledBackends.length ? enabledBackends : backends).map((backend) => ({
-    value: backend.id,
-    label: backend.label,
-    hint: backend.command || undefined,
-  }));
   // 若默认后端已停用，回退到第一个启用项。
   const effectiveExecutor = backendOptions.some((option) => option.value === manual.executor)
     ? manual.executor
-    : (backendOptions[0]?.value ?? 'codebuddy');
+    : firstExecutor;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -115,12 +122,25 @@ export function NewTaskDialog({
                   onChange={(value) => setManual((prev) => ({...prev, executor: value}))}
                 />
               </Field>
-              <Field label="模型">
-                <SelectField
-                  value={manual.model}
-                  options={modelOptions}
-                  onChange={(value) => setManual((prev) => ({...prev, model: value}))}
-                />
+              <Field
+                label="模型"
+                hint={
+                  canPickModel
+                    ? undefined
+                    : `该后端不支持按任务指定模型，实际使用 profile 中的模型${pinnedModel ? `（${pinnedModel}）` : ''}。`
+                }
+              >
+                {canPickModel ? (
+                  <SelectField
+                    value={manual.model}
+                    options={modelOptions}
+                    onChange={(value) => setManual((prev) => ({...prev, model: value}))}
+                  />
+                ) : (
+                  <div className="flex h-9 items-center rounded-lg border border-dashed border-border bg-[#fbfbfd] px-3 text-xs text-faint">
+                    由 profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
+                  </div>
+                )}
               </Field>
             </div>
             <div>

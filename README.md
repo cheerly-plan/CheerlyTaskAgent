@@ -1,6 +1,6 @@
 # CheerlyTaskAgent（需求调度台）
 
-**手动新建 / 邮箱 / TAPD 里的需求或 bug → 映射本地仓库 → 按任务选择执行后端（CodeBuddy / WorkBuddy / DSH CLI）改代码 → 结果落本地报告。**
+**手动新建 / 邮箱 / TAPD 里的需求或 bug → 映射本地仓库 → 按任务选择执行后端（CodeBuddy / DSH CLI）改代码 → 结果落本地报告。**
 
 本阶段不接大模型：邮件解析、git 映射都是规则式的；调度是确定性代码。默认 `dry-run`——只生成要执行的提示词和命令，**不改动任何仓库**；`apply` 模式在隔离 worktree 里真实执行，需显式审批，不提交不推送。
 
@@ -26,7 +26,7 @@ uv run taskagent serve + cd web && pnpm dev --host 127.0.0.1
 WorkItem ──git 归一化──▶ 本地仓库（HTTPS/SSH 格式统一匹配）
    │ 调度（幂等/并发/重试/取消）
    ▼
-执行后端 -p  (codebuddy / workbuddy / dsh，按任务选择；dry-run 只生成命令 / apply 在 worktree 执行)
+执行后端 -p  (codebuddy / dsh，按任务选择；dry-run 只生成命令 / apply 在 worktree 执行)
    ▼
 data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 ```
@@ -37,7 +37,8 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
   - **TAPD（主数据源）**：在「数据源」Tab 填项目 ID（workspace_id）、API 账号 / 秘钥（Basic Auth，即应用 ID / 秘钥）、API 地址（公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`）。两种接入方式：① Webhook——在 TAPD 事件订阅里填本服务的 `/api/tapd/webhook` 地址（可选 secret 验签），推送的新建 / 变更事件只带工单 ID，服务据此回 API 拉详情建单；② 定时拉取——开启后按间隔（默认 5 分钟）增量拉取需求 / 缺陷（基于 modified 时间）。按 `tapd:<type>:<id>` 幂等建单，执行完成后把状态回填到 TAPD（需写权限）并把报告路径写成评论。也可点「立即同步」手动拉一次。配置存 `data/settings.json`，即时生效。
   - **邮件（兜底通知）**：在「数据源」Tab 填 IMAP 凭证（host/port/user/password/use_ssl），开启「自动拉取」后按间隔（默认 5 分钟）轮询收件箱未读邮件 → 规则式解析 → 按 message-id 幂等建单；也可点「立即拉取」。邮件是非结构化文本、无状态机、无法回填，仅作临时入口 / 通知提醒，**接入 TAPD 后建议保持关闭**。
   - 旧的 `/api/import`、`/api/import/emails` 端点保留供程序化调用/兼容，但界面不再暴露手动邮件入口。
-- **按任务选模型**：新建任务时可选本次 codebuddy 用的模型（默认「跟随全局」）；工作项卡片上也能随时切换，dry-run/apply 时按该选择下发 `--model`。候选来自 `codebuddy --help` 的真实模型（18 个，含 `fast-model`/`balanced-model`/`deep-model`、`hy4std/hy4flash`、`deepseek-v4.1-flash`/`deepseek-v4-pro`、`glm-5.3` 等），可用 `TASKAGENT_MODELS` 收窄候选；全局默认由 `CODEBUDDY_MODEL` 指定。报告里记录每个任务实际用的模型。
+- **按任务选模型**：新建任务时可选本次执行的模型（默认「跟随后端默认」）；工作项上也随时可切，dry-run/apply 时按该选择下发 `--model`。候选由**当前后端的 CLI 实测发现**：codebuddy 走 `--help` 里的 `--model` 列表（含 `hy4std/hy4flash`、`deepseek-v4.1-flash`/`deepseek-v4-pro`、`glm-5.3` 等），可用 `TASKAGENT_MODELS` 收窄候选；全局默认由后端 profile 的 `model` 字段指定。报告里记录每个任务实际用的模型。
+  - **例外（DSH）**：`dsh --profile headless` 没有 `--model` 选项，模型钉在 profile 的 `agent-default-model` 里。因此该后端的模型字段是**只读**的，只展示它实际会用的模型（如 `deepseek-flash`），也不会向 CLI 透传 `--model`；要换模型请改 profile，或用 DSH 客户端切换。`/api/config` 的每个后端带 `model_selection` 标记供 UI 判断。
 - **项目映射配置（推荐）**：维护一张「项目名/别名 → 本地文件夹」列表，邮件标题/正文出现任一别名即命中，**不依赖 git**。列表默认为空（`data/projects.json`），**完全由你手动添加**——可在调度台逐级点选文件夹、或扫描一个父目录批量勾选加入；也可手工填写。增删改、启停即时生效。匹配规则：中文按子串、英文按词边界、多个命中取最长别名、可停用。
   - **选择文件夹**：点「选择文件夹」→ 从主目录逐级点进子文件夹 → 「选择当前文件夹」→ 自动带出项目名与路径，确认即建映射。
   - **扫描文件夹**：点「扫描文件夹」→ 选一个父目录（如 `~/Desktop/code/projects`）→ 后端列出其下 2 层子文件夹（git 仓库排前并标注 origin）→ 勾选后批量加入。
@@ -61,7 +62,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 1. **任务列表**：右上角「+ 新建任务」按钮打开**纯手动**录入弹窗；外部来源（邮件 / TAPD）统一在「数据源」Tab 接入。列表默认表格视图，按来源 / 状态 / 项目筛选；**点击表头**即可按标题 / 类型 / 来源 / 项目 / 状态 / 创建时间升序或降序（再次点击切换方向，卡片视图用工具栏的「排序」下拉 + 方向按钮）；点击条目查看报告（无报告时显示工单详情），配套重试、apply、取消、删除、按任务切换模型等操作，可切换卡片视图。
 2. **项目映射**：以配置表格统一管理项目名 / 别名 / 本地路径 / 仓库信息，支持「选择文件夹」逐级点选、「扫描文件夹」批量勾选与手动新增、编辑、启停、删除。
 3. **数据源**：外部来源接入中心。**TAPD 卡（主数据源）**配置 workspace / API 凭证 / Webhook 地址与 secret / 拉取类型 / 回填状态 / 定时开关，提供「立即同步」；**邮件卡（兜底通知）**配置 IMAP 凭证 / 自动拉取 / 执行模式，提供「立即拉取」。凭证明文保存在本机 `data/settings.json`，密码留空表示保持原值；配置即时生效，无需重启。
-4. **系统设置**：「执行后端」按类型独立维护三类配置——**CodeBuddy CLI**（始终启用，兜底）、**WorkBuddy CLI**、**DSH**，每类含启用开关、CLI 命令/路径、默认模型、超时、执行后同步；后两类配置好二进制路径后启用。「调度策略」设定新建任务的默认后端、并发数与自动同步。三类后端都遵循同一非交互 CLI 协议（`-p --permission-mode`），建任务时可选其中任一类，任务按自身 `executor` 字段分派。部分参数（如 CLI 路径）保存后需重启服务生效。
+4. **系统设置**：「执行后端」完全由配置驱动——可自由增删后端，每个后端含名称、启用开关、CLI 命令/路径、默认模型、超时、执行后同步；没有后端时任务会因缺少执行器而失败。「调度策略」设定新建任务的默认后端（同时也是缺失/禁用后端的运行时兜底）、并发数与自动同步。新装默认种入 CodeBuddy CLI / DSH 两个普通种子，均可删除、可禁用，无特权。后端都遵循同一非交互 CLI 协议（`-p --permission-mode`），建任务时可选任一已启用后端，任务按自身 `executor` 字段分派。部分参数（如 CLI 路径）保存后需重启服务生效。
 
 ## 配置
 
@@ -71,8 +72,8 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 | `TASKAGENT_DATA_DIR` | `data` | 任务/报告/worktree 目录 |
 | `TASKAGENT_HOST` / `TASKAGENT_PORT` | `127.0.0.1` / `8010` | 监听地址 |
 | `CODEBUDDY_COMMAND` | `codebuddy` | 执行 CLI（本机未装可用 `npx -y @tencent-ai/codebuddy-code@latest`） |
-| `CODEBUDDY_MODEL` | 空 | 全局默认模型（`--model`）；任务可单独覆盖 |
-| `TASKAGENT_MODELS` | 空（用全部 18 个） | 允许选择的模型 id，逗号分隔，用于收窄下拉候选 |
+| `CODEBUDDY_MODEL` | 空 | 默认执行后端的默认模型（`--model`）；任务可单独覆盖 |
+| `TASKAGENT_MODELS` | 空（用后端动态探测的全部） | 允许选择的模型 id，逗号分隔，用于收窄下拉候选 |
 | `CODEBUDDY_TIMEOUT` | `600` | 单次执行超时秒数 |
 | `TASKAGENT_MAX_CONCURRENT` | `1` | 并发执行数（codebuddy 较重，默认串行） |
 | `TASKAGENT_PROJECT_MAP_FILE` | `<data_dir>/projects.json` | 项目映射列表 JSON 路径；默认空列表，由界面手动维护 |
@@ -87,7 +88,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 |---|---|---|
 | `GET` | `/` | 调度台 UI |
 | `GET` | `/api/config` | 配置概览 |
-| `GET` / `PUT` | `/api/settings` | 读取 / 保存系统设置（CLI 路径、DSH、WorkBuddy、模型、IMAP、邮件自动拉取、TAPD） |
+| `GET` / `PUT` | `/api/settings` | 读取 / 保存系统设置（CLI 路径、DSH、模型、IMAP、邮件自动拉取、TAPD） |
 | `POST` | `/api/mail/pull` | 立即从 IMAP 收件箱拉取新邮件并幂等建单（返回 created/skipped） |
 | `POST` | `/api/tapd/sync` | 立即从 TAPD 增量拉取需求 / 缺陷并幂等建单（可选 `modified_since`） |
 | `POST` | `/api/tapd/webhook` | 接收 TAPD Webhook（json/form），校验 secret 后按 event+id 回源拉详情建单；delete 事件忽略 |
@@ -120,7 +121,7 @@ src/taskagent/
 ├── projects.seed.json  映射种子（默认空，列表由界面手动维护）
 ├── sources.py      邮件/TAPD/手动 → RawItem 解析
 ├── tapd.py         TAPD Open API 客户端：Basic Auth 拉取需求/缺陷 + 状态回填/评论
-├── executor.py     Executor 统一接口 + 三类 CLI 执行器（codebuddy/workbuddy/dsh）+ dry-run/worktree 安全策略
+├── executor.py     Executor 统一接口 + 两类 CLI 执行器（codebuddy/dsh）+ dry-run/worktree 安全策略
 ├── backends.py     依据 UI 配置构建 ExecutorRegistry（每类一套配置）
 ├── scheduler.py    导入/映射/调度/幂等/重试/取消，按任务 executor 字段分派后端
 ├── report.py       Markdown 报告生成

@@ -51,6 +51,13 @@ export interface BackendInfo {
   label: string;
   command: string;
   enabled: boolean;
+  models?: string[];
+  /**
+   * 该 CLI 是否接受按任务指定模型（`--model`）。
+   * false 表示模型钉死在自己的 profile 里（如 DSH 的 agent-default-model），
+   * 此时 UI 不应提供选择，只能展示它实际会用的模型。
+   */
+  model_selection?: boolean;
 }
 
 export interface AppConfig {
@@ -93,6 +100,7 @@ export interface TapdSettings {
 }
 
 export interface BackendConfig {
+  label: string;
   enabled: boolean;
   command: string;
   model: string;
@@ -103,7 +111,6 @@ export interface BackendConfig {
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
-  workbuddy_cli_path: string;
   dsh_path: string;
   default_model: string;
   max_concurrent: number;

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {RefreshCw, Save, Server, SlidersHorizontal} from 'lucide-react';
+import {Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {Field, SelectField} from '@/components/select-field';
@@ -10,26 +10,8 @@ import {Input} from '@/components/ui/input';
 import {Switch} from '@/components/ui/switch';
 import type {BackendConfig, UISettings} from '@/lib/api';
 
-const BACKEND_META: Record<string, {label: string; desc: string; defaultCommand: string}> = {
-  codebuddy: {
-    label: 'CodeBuddy CLI',
-    desc: '当前默认执行器，始终可用作兜底。',
-    defaultCommand: 'codebuddy',
-  },
-  workbuddy: {
-    label: 'WorkBuddy CLI',
-    desc: '与 CodeBuddy 使用相同 CLI 协议，配置二进制路径后启用。',
-    defaultCommand: 'workbuddy',
-  },
-  dsh: {
-    label: 'DSH',
-    desc: '内部 DSH 执行器，配置二进制路径后启用。',
-    defaultCommand: 'dsh',
-  },
-};
-const BACKEND_IDS = Object.keys(BACKEND_META);
-
 const DEFAULT_BACKEND: BackendConfig = {
+  label: '',
   enabled: false,
   command: '',
   model: '',
@@ -38,12 +20,22 @@ const DEFAULT_BACKEND: BackendConfig = {
 };
 
 export function SettingsPage() {
-  const {settings, saveSettings, reloadSettings} = useApp();
+  const {settings, saveSettings, reloadSettings, backends: backendInfos} = useApp();
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
 
   React.useEffect(() => {
     setDraft(settings);
   }, [settings]);
+
+  // 每个后端各自的模型列表（来自各自 CLI 探测），缺失时为空。
+  // 必须在提前 return 之前声明，避免 Hooks 调用顺序不一致。
+  const modelsByBackend = React.useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const info of backendInfos) {
+      map[info.id] = info.models ?? [];
+    }
+    return map;
+  }, [backendInfos]);
 
   if (!draft) {
     return (
@@ -58,10 +50,10 @@ export function SettingsPage() {
     setDraft((prev) => (prev ? {...prev, [key]: value} : prev));
 
   const backends = draft.backends ?? {};
+  const backendEntries = Object.entries(backends);
   const getBackend = (id: string): BackendConfig => ({
     ...DEFAULT_BACKEND,
     ...(backends[id] ?? {}),
-    command: backends[id]?.command || BACKEND_META[id].defaultCommand,
   });
   const patchBackend = (id: string, key: keyof BackendConfig, value: BackendConfig[keyof BackendConfig]) =>
     setDraft((prev) => {
@@ -70,115 +62,222 @@ export function SettingsPage() {
       return {...prev, backends: {...(prev.backends ?? {}), [id]: {...current, [key]: value}}};
     });
 
-  const backendChoices = BACKEND_IDS.filter((id) => id === 'codebuddy' || getBackend(id).enabled).map((id) => ({
-    value: id,
-    label: BACKEND_META[id].label,
-  }));
+  // 新增后端：生成一个不与现有 id 冲突的标识，保存后由后端纳入注册表。
+  const addBackend = () =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const current = prev.backends ?? {};
+      let seq = Object.keys(current).length + 1;
+      let id = `backend-${seq}`;
+      while (current[id]) {
+        seq += 1;
+        id = `backend-${seq}`;
+      }
+      return {
+        ...prev,
+        backends: {
+          ...current,
+          [id]: {...DEFAULT_BACKEND, label: `新后端 ${seq}`},
+        },
+      };
+    });
+
+  // 删除后端：任何后端都可删除；若被删的正是默认后端，回退到第一个剩余后端（或空）。
+  const removeBackend = (id: string) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const next = {...(prev.backends ?? {})};
+      delete next[id];
+      const nextExecutor =
+        prev.executor === id ? (Object.keys(next)[0] ?? '') : prev.executor;
+      return {
+        ...prev,
+        backends: next,
+        executor: nextExecutor,
+      };
+    });
+
+  const backendChoices = backendEntries
+    .filter(([, cfg]) => cfg.enabled)
+    .map(([id, cfg]) => ({value: id, label: cfg.label || id}));
 
   return (
     <div className="flex flex-col gap-4">
-      {/* ── 执行后端：每类一套独立配置 ───────────────────────────── */}
+      {/* ── 执行后端：完全由配置驱动，可增删 ─────────────────────────── */}
       <div>
-        <h3 className="mb-0.5 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-          <Server className="size-4 text-primary" />
-          执行后端
-        </h3>
-        <p className="mb-3 text-[11.5px] text-faint">
-          三类后端各自独立配置。任务创建时选择用哪一类；只有启用的后端可被调用，CodeBuddy 始终作为兜底。
-        </p>
-        <div className="grid gap-4 lg:grid-cols-3">
-          {BACKEND_IDS.map((id) => {
-            const meta = BACKEND_META[id];
-            const cfg = getBackend(id);
-            const alwaysOn = id === 'codebuddy';
-            return (
-              <Card key={id} className="p-5">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <h4 className="text-[13px] font-semibold text-foreground">{meta.label}</h4>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={alwaysOn || cfg.enabled ? 'success' : 'warning'}>
-                      {alwaysOn ? '始终启用' : cfg.enabled ? '已启用' : '未启用'}
-                    </Badge>
-                    <Switch
-                      checked={alwaysOn ? true : cfg.enabled}
-                      disabled={alwaysOn}
-                      onCheckedChange={(checked) => patchBackend(id, 'enabled', checked)}
-                      aria-label={`启用 ${meta.label}`}
-                    />
-                  </div>
-                </div>
-                <p className="mb-4 min-h-[30px] text-[11px] leading-[1.4] text-faint">{meta.desc}</p>
-
-                <Field label="CLI 命令 / 路径">
-                  <Input
-                    className="font-mono"
-                    value={cfg.command}
-                    placeholder={meta.defaultCommand}
-                    onChange={(event) => patchBackend(id, 'command', event.target.value)}
-                  />
-                </Field>
-                <Field label="默认模型" hint="留空跟随全局；任务可单独覆盖">
-                  <Input
-                    className="font-mono"
-                    value={cfg.model}
-                    placeholder="留空使用全局默认"
-                    onChange={(event) => patchBackend(id, 'model', event.target.value)}
-                  />
-                </Field>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="超时（秒）" className="mb-0">
-                    <Input
-                      type="number"
-                      min={1}
-                      value={cfg.timeout_s}
-                      onChange={(event) => patchBackend(id, 'timeout_s', Number(event.target.value))}
-                    />
-                  </Field>
-                  <div>
-                    <span className="mb-1.5 block text-xs font-semibold tracking-wide text-foreground/75">
-                      执行后同步
-                    </span>
-                    <div className="flex h-9 items-center gap-2.5 rounded-lg border border-border bg-[#fbfbfd] px-3">
-                      <Switch
-                        checked={cfg.auto_sync}
-                        onCheckedChange={(checked) => patchBackend(id, 'auto_sync', checked)}
-                        aria-label={`${meta.label} 执行后同步`}
-                      />
-                      <span className="text-xs text-foreground/70">{cfg.auto_sync ? '回写主仓库' : '仅 worktree'}</span>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
+        <div className="mb-0.5 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+              <Server className="size-4 text-primary" />
+              执行后端
+            </h3>
+            <p className="mt-0.5 text-[11.5px] text-faint">
+              后端由配置驱动，可按需添加或删除；只有启用的后端可被调用，没有后端时任务会因缺少执行器而失败。
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={addBackend}>
+            <Plus />
+            添加后端
+          </Button>
         </div>
+
+        {backendEntries.length === 0 ? (
+          <Card className="mt-3 p-6 text-center text-[12px] text-faint">
+            还没有配置执行后端，点击「添加后端」新建一个。
+          </Card>
+        ) : (
+          <Card className="mt-3 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12.5px]">
+                <thead>
+                  <tr className="border-b border-border text-left text-[11.5px] text-faint">
+                    <th className="px-4 py-2.5 font-medium">名称</th>
+                    <th className="px-4 py-2.5 font-medium">CLI 命令 / 路径</th>
+                    <th className="w-[220px] px-4 py-2.5 font-medium">默认模型</th>
+                    <th className="px-4 py-2.5 font-medium">超时（秒）</th>
+                    <th className="w-[136px] px-4 py-2.5 font-medium">执行后同步</th>
+                    <th className="px-4 py-2.5 font-medium">状态</th>
+                    <th className="px-4 py-2.5 text-right font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {backendEntries.map(([id]) => {
+                    const current = getBackend(id);
+                    const displayName = current.label || id;
+                    const info = backendInfos.find((entry) => entry.id === id);
+                    // 有些 CLI（DSH）没有 --model：模型钉在它自己的 profile 里，只读展示。
+                    const canPickModel = info?.model_selection !== false;
+                    const pinnedName = (info?.models ?? [])[0] ?? '';
+                    return (
+                      <tr key={id} className="border-b border-border/70 align-middle last:border-0">
+                        <td className="px-4 py-3">
+                          <Input
+                            className="h-8"
+                            value={current.label}
+                            placeholder="给后端起个名字"
+                            onChange={(event) => patchBackend(id, 'label', event.target.value)}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <Input
+                            className="h-8 font-mono"
+                            value={current.command}
+                            placeholder="例如 /usr/local/bin/my-agent"
+                            onChange={(event) => patchBackend(id, 'command', event.target.value)}
+                          />
+                        </td>
+                        <td className="w-[220px] max-w-[220px] px-4 py-3">
+                          {canPickModel ? (
+                            <SelectField
+                              size="sm"
+                              className="w-full"
+                              value={current.model}
+                              placeholder="由 CLI 决定"
+                              options={[
+                                {value: '', label: '由 CLI 决定'},
+                                ...(modelsByBackend[id] ?? []).map((mid) => ({value: mid, label: mid})),
+                                // 当前已保存的模型若不在动态列表里，仍保留以免丢失
+                                ...(current.model && !(modelsByBackend[id] ?? []).includes(current.model)
+                                  ? [{value: current.model, label: current.model}]
+                                  : []),
+                              ]}
+                              onChange={(value) => patchBackend(id, 'model', value)}
+                            />
+                          ) : (
+                            // 该 CLI 没有 --model：模型钉在它自己的 profile 里，只读展示。
+                            <div
+                              className="flex h-8 w-full items-center gap-1.5 rounded-md border border-dashed border-border bg-[#fbfbfd] px-2 text-xs text-faint"
+                              title={`${displayName} 不支持按任务指定模型，实际使用 profile 中钉住的模型`}
+                            >
+                              <Lock className="size-3 shrink-0" />
+                              <span className="truncate">
+                                profile 决定{pinnedName ? ` · ${pinnedName}` : ''}
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Input
+                            className="h-8 w-24"
+                            type="number"
+                            min={1}
+                            value={current.timeout_s}
+                            onChange={(event) => patchBackend(id, 'timeout_s', Number(event.target.value))}
+                          />
+                        </td>
+                        <td className="w-[136px] px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              className="shrink-0"
+                              checked={current.auto_sync}
+                              onCheckedChange={(checked) => patchBackend(id, 'auto_sync', checked)}
+                              aria-label={`${displayName} 执行后同步`}
+                            />
+                            <span className="w-16 shrink-0 whitespace-nowrap text-xs text-foreground/70">
+                              {current.auto_sync ? '回写主仓库' : '仅 worktree'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={current.enabled}
+                              onCheckedChange={(checked) => patchBackend(id, 'enabled', checked)}
+                              aria-label={`启用 ${displayName}`}
+                            />
+                            <Badge variant={current.enabled ? 'success' : 'warning'}>
+                              {current.enabled ? '已启用' : '未启用'}
+                            </Badge>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Button
+                            variant="danger"
+                            size="icon-sm"
+                            onClick={() => removeBackend(id)}
+                            aria-label={`删除 ${displayName}`}
+                            title="删除此后端"
+                          >
+                            <Trash2 />
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
       </div>
 
-      {/* ── 调度策略 ─────────────────────────────────────────────── */}
-      <Card className="p-5">
-        <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-          <SlidersHorizontal className="size-4 text-primary" />
-          调度策略
-        </h3>
-        <p className="mb-4 text-[11.5px] text-faint">控制默认后端、并发数量与执行后的全局同步行为。</p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="新建任务默认后端" hint="手动建单预选的后端；未启用的后端不会出现">
-            <SelectField
-              value={draft.executor || 'codebuddy'}
-              options={backendChoices}
-              onChange={(value) => patch('executor', value)}
-            />
-          </Field>
-          <Field label="并发执行数" hint="同时运行的最大任务数" className="mb-0">
-            <Input
-              type="number"
-              min={1}
-              value={draft.max_concurrent}
-              onChange={(event) => patch('max_concurrent', Number(event.target.value))}
-            />
-          </Field>
-        </div>
-      </Card>
+      {/* ── 调度策略：没有后端时无默认后端/并发可配置，隐藏 ─────────── */}
+      {backendEntries.length > 0 && (
+        <Card className="p-5">
+          <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+            <SlidersHorizontal className="size-4 text-primary" />
+            调度策略
+          </h3>
+          <p className="mb-4 mt-0.5 text-[11.5px] text-faint">控制默认后端、并发数量与执行后的全局同步行为。</p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="新建任务默认后端" hint="手动建单预选的后端；未启用的后端不会出现" className="mb-0">
+              <SelectField
+                value={draft.executor || ''}
+                options={backendChoices}
+                onChange={(value) => patch('executor', value)}
+              />
+            </Field>
+            <Field label="并发执行数" hint="同时运行的最大任务数" className="mb-0">
+              <Input
+                type="number"
+                min={1}
+                value={draft.max_concurrent}
+                onChange={(event) => patch('max_concurrent', Number(event.target.value))}
+              />
+            </Field>
+          </div>
+        </Card>
+      )}
 
       {/* ── 操作栏 ───────────────────────────────────────────────── */}
       <Card className="flex flex-wrap items-center gap-2 p-4">
@@ -191,7 +290,7 @@ export function SettingsPage() {
           重新载入
         </Button>
         <span className="ml-1 text-[11.5px] text-faint">
-          CLI 路径、默认模型等运行时参数在保存后需重启服务才会对新任务生效。
+          后端的新增 / 删除，以及 CLI 路径、默认模型等运行时参数，在保存后需重启服务才会对新任务生效。
         </span>
       </Card>
     </div>
