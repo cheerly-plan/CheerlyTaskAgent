@@ -12,6 +12,7 @@ import type {ActionSelection} from '@/components/task-actions';
 import {esc, renderMarkdown} from '@/lib/markdown';
 import {
   endpoints,
+  type BackendInfo,
   type ItemAction,
   type MappingDraft,
   type ModelChoice,
@@ -25,6 +26,7 @@ interface AppContextValue {
   mappings: ProjectMapping[];
   models: ModelChoice[];
   defaultModel: string;
+  backends: BackendInfo[];
   settings: UISettings | null;
   conn: ConnState;
   connText: string;
@@ -38,6 +40,7 @@ interface AppContextValue {
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
   openNewTask: () => void;
   pullMail: () => Promise<void>;
+  syncTapd: () => Promise<void>;
   pickFolder: (apply: (path: string) => void) => void;
   openScan: (path: string) => void;
   openMappingModal: (mapping: ProjectMapping | null) => void;
@@ -75,6 +78,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   const [mappings, setMappings] = React.useState<ProjectMapping[]>([]);
   const [models, setModels] = React.useState<ModelChoice[]>([]);
   const [defaultModel, setDefaultModel] = React.useState('');
+  const [backends, setBackends] = React.useState<BackendInfo[]>([]);
   const [settings, setSettings] = React.useState<UISettings | null>(null);
   const [conn, setConn] = React.useState<ConnState>('connecting');
   const [connText, setConnText] = React.useState('连接中…');
@@ -142,6 +146,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         const config = await endpoints.config();
         setModels(config.models ?? []);
         setDefaultModel(config.default_model ?? '');
+        setBackends(config.backends ?? [{id: 'codebuddy', label: 'CodeBuddy CLI', command: config.executor, enabled: true}]);
         setConnText('执行端 ' + config.executor);
         await Promise.all([reloadMappings(), reloadItems(), reloadSettings()]);
       } catch (error) {
@@ -279,7 +284,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       }
       if (mode === 'apply') {
         const ok = await confirm(
-          `apply 会在 ${draft.repo} 的隔离 worktree 中真实执行 codebuddy 改代码（不提交/推送）。确认继续？`,
+          `apply 会在 ${draft.repo} 的隔离 worktree 中真实执行所选后端改代码（不提交/推送）。确认继续？`,
         );
         if (!ok) return;
       }
@@ -290,6 +295,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           kind: draft.kind,
           repo_name: draft.repo,
           exec_mode: mode === 'apply' ? 'apply' : 'dry-run',
+          executor: draft.executor || 'codebuddy',
           model: draft.model || null,
           run_now: mode !== 'draft',
           approved: mode === 'apply',
@@ -315,6 +321,20 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       }
     } catch (error) {
       toast.error('拉取邮件失败：' + (error as Error).message);
+    }
+  }, [reloadItems]);
+
+  const syncTapd = React.useCallback(async () => {
+    try {
+      const result = await endpoints.syncTapd();
+      await reloadItems();
+      if (result.created > 0) {
+        toast.success(`已从 TAPD 同步 ${result.created} 条${result.skipped ? `，跳过 ${result.skipped} 条重复` : ''}`);
+      } else {
+        toast.info(`TAPD 暂无新工单${result.skipped ? `（跳过 ${result.skipped} 条重复）` : ''}`);
+      }
+    } catch (error) {
+      toast.error('同步 TAPD 失败：' + (error as Error).message);
     }
   }, [reloadItems]);
 
@@ -376,6 +396,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     async (next: UISettings) => {
       const imap = next.imap ?? {host: '', port: 993, user: '', password: '', use_ssl: true};
       const poll = next.mail_poll ?? {enabled: false, interval_minutes: 5, exec_mode: 'dry-run'};
+      const tapd = next.tapd;
       const payload: UISettings = {
         executor: next.executor || 'codebuddy',
         codebuddy_command: (next.codebuddy_command || '').trim(),
@@ -384,6 +405,18 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         default_model: next.default_model || '',
         max_concurrent: Math.max(1, Number(next.max_concurrent) || 1),
         auto_sync: next.auto_sync !== false,
+        backends: Object.fromEntries(
+          Object.entries(next.backends ?? {}).map(([id, cfg]) => [
+            id,
+            {
+              enabled: id === 'codebuddy' ? true : cfg.enabled === true,
+              command: (cfg.command || '').trim(),
+              model: (cfg.model || '').trim(),
+              timeout_s: Math.max(1, Number(cfg.timeout_s) || 600),
+              auto_sync: cfg.auto_sync !== false,
+            },
+          ]),
+        ),
         imap: {
           host: (imap.host || '').trim(),
           port: Number(imap.port) || 993,
@@ -396,6 +429,21 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           interval_minutes: Math.max(1, Number(poll.interval_minutes) || 5),
           exec_mode: poll.exec_mode === 'apply' ? 'apply' : 'dry-run',
         },
+        tapd: tapd ? {
+          enabled: tapd.enabled === true,
+          base_url: (tapd.base_url || 'https://api.tapd.cn').trim(),
+          workspace_id: (tapd.workspace_id || '').trim(),
+          api_user: (tapd.api_user || '').trim(),
+          api_password: tapd.api_password || '',
+          webhook_secret: tapd.webhook_secret || '',
+          entity_types: tapd.entity_types ?? ['story', 'bug'],
+          pull_statuses: tapd.pull_statuses ?? [],
+          status_on_success: (tapd.status_on_success || 'resolved').trim(),
+          status_on_failure: (tapd.status_on_failure || '').trim(),
+          current_user: (tapd.current_user || 'taskagent').trim(),
+          interval_minutes: Math.max(1, Number(tapd.interval_minutes) || 5),
+          exec_mode: tapd.exec_mode === 'apply' ? 'apply' : 'dry-run',
+        } : ({} as UISettings['tapd']),
       };
       try {
         await endpoints.saveSettings(payload);
@@ -413,6 +461,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     mappings,
     models,
     defaultModel,
+    backends,
     settings,
     conn,
     connText,
@@ -426,6 +475,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     runItemAction,
     openNewTask: () => setNewTaskOpen(true),
     pullMail,
+    syncTapd,
     pickFolder: (apply) => setFolderPicker({open: true, apply}),
     openScan: (path) => setScan({open: true, path}),
     openMappingModal: (mapping) => setMappingDialog({open: true, editing: mapping}),
@@ -445,6 +495,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         mappings={mappings}
         models={models}
         defaultModel={defaultModel}
+        backends={backends}
         onManualCreate={(draft, mode) => void createManual(draft, mode)}
       />
 

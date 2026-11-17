@@ -20,13 +20,71 @@ import re
 import shlex
 import shutil
 import time
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
 
 ProgressFn = Callable[[float, str], None]
 ShouldCancelFn = Callable[[], bool]
+
+# Backend identifiers exposed to the UI and stored on each WorkItem.
+BACKEND_CODEBUDDY = "codebuddy"
+BACKEND_WORKBUDDY = "workbuddy"
+BACKEND_DSH = "dsh"
+BACKEND_IDS = (BACKEND_CODEBUDDY, BACKEND_WORKBUDDY, BACKEND_DSH)
+
+
+class Executor(ABC):
+    """Uniform contract for all CLI-code execution backends.
+
+    Every backend drives the same worktree -> prompt -> commit pipeline; they
+    differ only in the binary they invoke and the flags they accept. Keeping
+    the surface small (``run`` + the git helpers) lets the scheduler dispatch
+    by ``item.executor`` without knowing which concrete backend it holds.
+    """
+
+    backend_id: str = ""
+    label: str = ""
+
+    @abstractmethod
+    def run(
+        self,
+        item: WorkItem,
+        *,
+        progress: ProgressFn,
+        should_cancel: ShouldCancelFn,
+    ) -> RunResult: ...
+
+    @abstractmethod
+    def build_command(self, item: WorkItem) -> list[str]: ...
+
+    def changed_files(self, worktree: Path) -> list[str]:
+        return self._changed_files(worktree)
+
+    @staticmethod
+    @abstractmethod
+    def _changed_files(worktree: Path) -> list[str]: ...
+
+    @abstractmethod
+    def commit_files(
+        self,
+        worktree: Path,
+        *,
+        kept: list[str],
+        message: str,
+        dry_run: bool = False,
+    ) -> dict[str, object]: ...
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "id": self.backend_id,
+            "label": self.label,
+            "command": self.command,
+        }
+
 
 _KIND_LABEL = {
     ItemKind.BUG: "修复缺陷 (bug)",
@@ -107,7 +165,11 @@ def build_prompt(item: WorkItem) -> str:
     )
 
 
-class CodeBuddyExecutor:
+class CodeBuddyExecutor(Executor):
+    backend_id = BACKEND_CODEBUDDY
+    label = "CodeBuddy CLI"
+    install_hint = "Install with: npm i -g @tencent-ai/codebuddy-code"
+
     def __init__(
         self,
         *,
@@ -167,6 +229,14 @@ class CodeBuddyExecutor:
         env["PATH"] = os.pathsep.join(p for p in (cli_dir, env["PATH"]) if p)
         return env
 
+    def _no_execution_detected(self, stdout: str) -> bool:
+        """Whether the CLI exited 0 without actually running the prompt.
+
+        Subclasses may override for a different output protocol; the default
+        recognises the codebuddy JSON / event-array formats.
+        """
+        return _no_execution_detected(stdout)
+
     def build_command(self, item: WorkItem) -> list[str]:
         argv = [
             self.command,
@@ -207,7 +277,7 @@ class CodeBuddyExecutor:
                 ok=True,
                 dry_run=True,
                 command=shlex.join(argv),
-                stdout="[dry-run] 未调用 codebuddy，仓库未被修改。",
+                stdout=f"[dry-run] 未调用 {self.label}，仓库未被修改。",
             )
 
         return await self._run_apply(item, progress=progress, should_cancel=should_cancel)
@@ -243,7 +313,7 @@ class CodeBuddyExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            progress(0.3, "codebuddy 执行中…")
+            progress(0.3, f"{self.label} 执行中…")
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(
                     proc.communicate(), timeout=self.timeout_s
@@ -255,7 +325,7 @@ class CodeBuddyExecutor:
                     ok=False,
                     dry_run=False,
                     command=command,
-                    error=f"codebuddy timed out after {self.timeout_s:g}s",
+                    error=f"{self.label} timed out after {self.timeout_s:g}s",
                     duration_s=time.monotonic() - started,
                     worktree=str(worktree_path),
                 )
@@ -264,7 +334,7 @@ class CodeBuddyExecutor:
                 ok=False,
                 dry_run=False,
                 command=command,
-                error=f"CLI not found: {self.command!r}. Install with: npm i -g @tencent-ai/codebuddy-code",
+                error=f"CLI not found: {self.command!r}. {self.install_hint}",
                 worktree=str(worktree_path),
             )
 
@@ -272,20 +342,20 @@ class CodeBuddyExecutor:
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
         changed = self._changed_files(worktree_path)
-        progress(1.0, "codebuddy 完成")
+        progress(1.0, f"{self.label} 完成")
 
-        # codebuddy may exit 0 while only printing an auth error to stderr.
+        # The CLI may exit 0 while only printing an auth error to stderr.
         # Treat that as a failure so we never report a phantom "success".
         auth_markers = ("authentication required", "please use /login", "not logged in")
         auth_failed = any(marker in stderr.lower() for marker in auth_markers)
-        no_exec = _no_execution_detected(stdout)
+        no_exec = self._no_execution_detected(stdout)
         ok = proc.returncode == 0 and not auth_failed and not no_exec
         if auth_failed:
-            error = "codebuddy 未登录：请在终端运行 codebuddy 后执行 /login，再重试此任务"
+            error = f"{self.label} 未登录：请在终端运行 CLI 后执行 /login，再重试此任务"
         elif proc.returncode != 0:
             error = f"exit code {proc.returncode}"
         elif no_exec:
-            error = "codebuddy 未执行提示词（空结果/0 token），请查看报告 stdout"
+            error = f"{self.label} 未执行提示词（空结果/0 token），请查看报告 stdout"
         else:
             error = None
 
@@ -899,3 +969,104 @@ class CodeBuddyExecutor:
         if backup_used:
             result["sync_backup_dir"] = str(backup_root)
         return result
+
+
+# ── Additional CLI backends ───────────────────────────────────────────────────
+# WorkBuddy and DSH use the same non-interactive CLI protocol as codebuddy
+# (``-p --permission-mode --output-format json``), so they reuse the entire
+# worktree / commit / sync pipeline and differ only in binary + presentation.
+# The binary is resolved at construction time from the matching backend config,
+# so an empty command simply yields a backend that reports "CLI not found" on
+# an apply — never a silent fallback to another backend.
+
+
+class WorkBuddyExecutor(CodeBuddyExecutor):
+    backend_id = BACKEND_WORKBUDDY
+    label = "WorkBuddy CLI"
+    install_hint = "Configure the workbuddy binary path in 系统设置 → 执行后端。"
+
+    def __init__(
+        self,
+        *,
+        command: str = "workbuddy",
+        worktrees_dir: Path = Path("data/worktrees"),
+        timeout_s: float = 600.0,
+        permission_mode: str = "acceptEdits",
+        model: str | None = None,
+        auto_sync: bool = True,
+        backups_dir: Path | None = None,
+        sync_ignore_patterns: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(
+            command=command,
+            worktrees_dir=worktrees_dir,
+            timeout_s=timeout_s,
+            permission_mode=permission_mode,
+            model=model,
+            auto_sync=auto_sync,
+            backups_dir=backups_dir,
+            sync_ignore_patterns=sync_ignore_patterns,
+        )
+
+
+class DshExecutor(CodeBuddyExecutor):
+    backend_id = BACKEND_DSH
+    label = "DSH"
+    install_hint = "Configure the DSH binary path in 系统设置 → 执行后端。"
+
+    def __init__(
+        self,
+        *,
+        command: str = "dsh",
+        worktrees_dir: Path = Path("data/worktrees"),
+        timeout_s: float = 600.0,
+        permission_mode: str = "acceptEdits",
+        model: str | None = None,
+        auto_sync: bool = True,
+        backups_dir: Path | None = None,
+        sync_ignore_patterns: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(
+            command=command,
+            worktrees_dir=worktrees_dir,
+            timeout_s=timeout_s,
+            permission_mode=permission_mode,
+            model=model,
+            auto_sync=auto_sync,
+            backups_dir=backups_dir,
+            sync_ignore_patterns=sync_ignore_patterns,
+        )
+
+
+_EXECUTOR_CLASSES: dict[str, type[CodeBuddyExecutor]] = {
+    BACKEND_CODEBUDDY: CodeBuddyExecutor,
+    BACKEND_WORKBUDDY: WorkBuddyExecutor,
+    BACKEND_DSH: DshExecutor,
+}
+
+
+class ExecutorRegistry:
+    """Holds one executor per backend id; scheduler dispatches by ``item.executor``."""
+
+    def __init__(self, executors: dict[str, Executor] | None = None) -> None:
+        self._executors: dict[str, Executor] = dict(executors or {})
+
+    def register(self, executor: Executor) -> None:
+        self._executors[executor.backend_id] = executor
+
+    def get(self, backend_id: str) -> Executor | None:
+        return self._executors.get(backend_id)
+
+    def resolve(self, backend_id: str | None) -> Executor:
+        """Look up a backend, falling back to codebuddy only for unknown ids."""
+        return (
+            self._executors.get(backend_id or "")
+            or self._executors.get(BACKEND_CODEBUDDY)
+            or next(iter(self._executors.values()))
+        )
+
+    def ids(self) -> list[str]:
+        return list(self._executors)
+
+    def describe(self) -> list[dict[str, Any]]:
+        return [self._executors[key].describe() for key in self._executors]

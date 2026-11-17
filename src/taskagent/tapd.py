@@ -1,0 +1,288 @@
+"""TAPD Open API client: authoritative source for stories/bugs.
+
+Design (see docs/architecture.md):
+  - TAPD is the source of truth. Webhooks / emails only *trigger* a sync;
+    the full details are always pulled from this API before creating a task.
+  - Basic Auth: api_user:api_password (TAPD app id / app secret).
+  - Public cloud: https://api.tapd.cn  ·  Internal (Tencent): https://apiv2.tapd.woa.com
+  - Pull: GET /stories, GET /bugs  (workspace_id, limit<=200, page, modified)
+  - Write-back: POST /stories or /bugs with id + status + current_user.
+
+No credentials are stored in the repo — they come from UI settings
+(data/settings.json) passed in by the caller. Missing credentials produce a
+clear error instead of crashing the service.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_BASE_URL = "https://api.tapd.cn"
+INTERNAL_BASE_URL = "https://apiv2.tapd.woa.com"
+
+# Entity type -> (plural API path, singular key in response).
+_ENTITIES = {
+    "story": ("stories", "Story"),
+    "bug": ("bugs", "Bug"),
+    "task": ("tasks", "Task"),
+}
+
+
+@dataclass
+class TapdConfig:
+    base_url: str = DEFAULT_BASE_URL
+    workspace_id: str = ""
+    api_user: str = ""
+    api_password: str = ""
+    webhook_secret: str = ""
+    # Only these entity types are pulled. Empty means story+bug.
+    entity_types: list[str] = field(default_factory=lambda: ["story", "bug"])
+    # TAPD status codes to pull; empty means all non-closed. Examples:
+    # ["planning", "in_progress"]. Keep empty by default to avoid surprises.
+    pull_statuses: list[str] = field(default_factory=list)
+    # Status code written back on task completion / failure.
+    status_on_success: str = "resolved"
+    status_on_failure: str = ""
+    # Author name used for write-back (current_user field).
+    current_user: str = "taskagent"
+
+    def is_configured(self) -> bool:
+        return bool(self.workspace_id and self.api_user and self.api_password)
+
+    def missing(self) -> list[str]:
+        missing = []
+        if not self.workspace_id:
+            missing.append("workspace_id")
+        if not self.api_user:
+            missing.append("api_user")
+        if not self.api_password:
+            missing.append("api_password")
+        return missing
+
+
+@dataclass
+class TapdItem:
+    """A normalised story/bug/task from TAPD."""
+
+    entity_type: str
+    id: str
+    workspace_id: str
+    title: str
+    description: str
+    status: str
+    owner: str
+    priority: str
+    iteration_id: str
+    created: str
+    modified: str
+    git_url_hint: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ref(self) -> str:
+        """Stable source_ref used for dedupe: tapd:story:12345."""
+        return f"tapd:{self.entity_type}:{self.id}"
+
+    @property
+    def external_url(self) -> str:
+        ws = self.workspace_id
+        kind = "story" if self.entity_type == "story" else ("bugtrace" if self.entity_type == "bug" else "task")
+        return f"https://www.tapd.cn/{ws}/prong/{kind}/view/{self.id}"
+
+
+@dataclass
+class TapdResult:
+    items: list[TapdItem] = field(default_factory=list)
+    error: str = ""
+
+
+class TapdError(RuntimeError):
+    pass
+
+
+class TapdClient:
+    """Thin, synchronous TAPD API client (callers run it in a thread)."""
+
+    def __init__(self, config: TapdConfig, *, timeout: float = 15.0) -> None:
+        self.config = config
+        self.timeout = timeout
+
+    def _url(self, path: str, params: dict[str, Any] | None = None) -> str:
+        base = self.config.base_url.rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if params:
+            clean = {k: v for k, v in params.items() if v not in (None, "")}
+            url += "?" + urllib.parse.urlencode(clean)
+        return url
+
+    def _request(self, method: str, path: str, *, params=None, data=None) -> dict[str, Any]:
+        if not self.config.is_configured():
+            raise TapdError("TAPD 未配置，缺少：" + ", ".join(self.config.missing()))
+        url = self._url(path, params)
+        headers = {
+            "Authorization": "Basic "
+            + base64.b64encode(
+                f"{self.config.api_user}:{self.config.api_password}".encode()
+            ).decode("ascii"),
+            "Accept": "application/json",
+        }
+        body = None
+        if data is not None:
+            body = urllib.parse.urlencode(data).encode("utf-8")
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise TapdError(f"TAPD HTTP {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise TapdError(f"TAPD 网络错误：{exc}") from exc
+        except ValueError as exc:
+            raise TapdError(f"TAPD 返回非 JSON：{exc}") from exc
+        if isinstance(payload, dict) and payload.get("status") not in (1, "1", None):
+            raise TapdError(f"TAPD 返回错误：{payload.get('info', payload)}")
+        return payload
+
+    # ── pull ──────────────────────────────────────────────────────────────────
+    def fetch(
+        self,
+        entity_type: str,
+        *,
+        modified_since: str = "",
+        limit: int = 200,
+        max_pages: int = 5,
+    ) -> list[TapdItem]:
+        if entity_type not in _ENTITIES:
+            raise TapdError(f"不支持的实体类型：{entity_type}")
+        plural, singular = _ENTITIES[entity_type]
+        items: list[TapdItem] = []
+        for page in range(1, max_pages + 1):
+            params: dict[str, Any] = {
+                "workspace_id": self.config.workspace_id,
+                "limit": min(200, max(1, limit)),
+                "page": page,
+                "order": "modified desc",
+            }
+            if self.config.pull_statuses:
+                params["status"] = ",".join(self.config.pull_statuses)
+            if modified_since:
+                params["modified"] = f">{modified_since}"
+            payload = self._request("GET", plural, params=params)
+            rows = payload.get("data") or []
+            if not rows:
+                break
+            for row in rows:
+                obj = row.get(singular) if isinstance(row, dict) else None
+                if isinstance(obj, dict):
+                    items.append(self._normalise(entity_type, obj))
+            if len(rows) < min(200, max(1, limit)):
+                break
+        return items
+
+    def fetch_all(
+        self, *, modified_since: str = "", limit: int = 200, max_pages: int = 5
+    ) -> TapdResult:
+        result = TapdResult()
+        for entity_type in self.config.entity_types:
+            try:
+                result.items.extend(
+                    self.fetch(entity_type, modified_since=modified_since, limit=limit, max_pages=max_pages)
+                )
+            except TapdError as exc:
+                result.error = str(exc)
+                logger.warning("拉取 TAPD %s 失败：%s", entity_type, exc)
+        return result
+
+    def fetch_one(self, entity_type: str, object_id: str) -> TapdItem:
+        """Fetch a single item by id — used after a webhook notification."""
+        if entity_type not in _ENTITIES:
+            raise TapdError(f"不支持的实体类型：{entity_type}")
+        plural, singular = _ENTITIES[entity_type]
+        payload = self._request(
+            "GET",
+            plural,
+            params={"workspace_id": self.config.workspace_id, "id": object_id},
+        )
+        rows = payload.get("data") or []
+        if not rows or singular not in rows[0]:
+            raise TapdError(f"TAPD 找不到 {entity_type} {object_id}")
+        return self._normalise(entity_type, rows[0][singular])
+
+    @staticmethod
+    def _normalise(entity_type: str, obj: dict[str, Any]) -> TapdItem:
+        def first(*keys: str) -> str:
+            for key in keys:
+                if obj.get(key) not in (None, ""):
+                    return str(obj[key])
+            return ""
+
+        # TAPD stories use `name`; bugs/tasks use `title`.
+        title = first("name", "title")
+        description = first("description")
+        # A git URL is often kept in a custom field; expose common ones.
+        git_hint = first("custom_field_git_url", "git_url", "custom_field_one")
+        return TapdItem(
+            entity_type=entity_type,
+            id=first("id"),
+            workspace_id=first("workspace_id"),
+            title=title,
+            description=description,
+            status=first("status", "v_status"),
+            owner=first("owner", "current_owner"),
+            priority=first("priority_label", "priority"),
+            iteration_id=first("iteration_id"),
+            created=first("created"),
+            modified=first("modified"),
+            git_url_hint=git_hint,
+            raw=obj,
+        )
+
+    # ── write-back ────────────────────────────────────────────────────────────
+    def update_status(self, item: TapdItem, status: str) -> bool:
+        """Write a status back to TAPD. Returns True on success."""
+        if not status:
+            return False
+        if entity_path := _ENTITIES.get(item.entity_type):
+            plural = entity_path[0]
+        else:
+            raise TapdError(f"不支持的实体类型：{item.entity_type}")
+        self._request(
+            "POST",
+            plural,
+            data={
+                "id": item.id,
+                "workspace_id": item.workspace_id or self.config.workspace_id,
+                "status": status,
+                "current_user": self.config.current_user,
+            },
+        )
+        logger.info("TAPD %s %s 状态已回填为 %s", item.entity_type, item.id, status)
+        return True
+
+    def add_comment(self, item: TapdItem, content: str) -> bool:
+        """Post a comment (e.g. the local report path) back to the work item."""
+        if not content:
+            return False
+        path = f"comments?entity_type={item.entity_type}&entity_id={item.id}"
+        self._request(
+            "POST",
+            path,
+            data={
+                "workspace_id": item.workspace_id or self.config.workspace_id,
+                "description": content[:2000],
+                "author": self.config.current_user,
+            },
+        )
+        logger.info("TAPD %s %s 评论已回填", item.entity_type, item.id)
+        return True

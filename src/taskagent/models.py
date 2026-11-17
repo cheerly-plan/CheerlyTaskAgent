@@ -206,7 +206,8 @@ class WorkItem:
     status: ItemStatus = ItemStatus.DISCOVERED
     dedupe_key: str = ""
     exec_mode: str = "dry-run"      # dry-run | apply
-    model: str | None = None        # per-task codebuddy model; None = executor default
+    executor: str = "codebuddy"    # execution backend id; None/legacy -> codebuddy
+    model: str | None = None        # per-task model; None = backend default
     attempt: int = 0
     max_attempts: int = 2
     stage: str = ""
@@ -231,6 +232,7 @@ class WorkItem:
         git_url: str = "",
         dedupe_key: str = "",
         exec_mode: str = "dry-run",
+        executor: str = "codebuddy",
         model: str | None = None,
     ) -> WorkItem:
         return cls(
@@ -243,6 +245,7 @@ class WorkItem:
             git_url=git_url.strip(),
             dedupe_key=dedupe_key or source_ref or _new_id(),
             exec_mode=exec_mode if exec_mode in {"dry-run", "apply"} else "dry-run",
+            executor=executor or "codebuddy",
             model=model or None,
         )
 
@@ -279,6 +282,7 @@ class WorkItem:
             "repo": self.repo.name if self.repo else None,
             "status": self.status.value,
             "exec_mode": self.exec_mode,
+            "executor": self.executor,
             "model": self.model,
             "attempt": self.attempt,
             "stage": self.stage,
@@ -301,6 +305,7 @@ class WorkItem:
             "status": self.status.value,
             "dedupe_key": self.dedupe_key,
             "exec_mode": self.exec_mode,
+            "executor": self.executor,
             "model": self.model,
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,
@@ -335,6 +340,7 @@ class WorkItem:
             status=ItemStatus(data.get("status", ItemStatus.DISCOVERED.value)),
             dedupe_key=data.get("dedupe_key", ""),
             exec_mode=data.get("exec_mode", "dry-run"),
+            executor=data.get("executor") or "codebuddy",  # legacy items -> codebuddy
             model=data.get("model") or None,
             attempt=int(data.get("attempt", 0)),
             max_attempts=int(data.get("max_attempts", 2)),

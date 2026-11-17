@@ -48,6 +48,33 @@ class RawItem:
             attachments=attachments or [],
         )
 
+    @classmethod
+    def from_tapd(cls, item: Any) -> RawItem:
+        """Convert a normalised TAPD item (tapd.TapdItem) to a RawItem.
+
+        The TAPD item is the authoritative source, so its title/description win
+        and ``source_ref`` is the stable ``tapd:<type>:<id>`` used for dedupe.
+        """
+        entity = getattr(item, "entity_type", "story")
+        prefix = "[缺陷]" if entity == "bug" else ("[需求]" if entity == "story" else "[任务]")
+        meta_lines = []
+        if getattr(item, "owner", ""):
+            meta_lines.append(f"处理人：{item.owner}")
+        if getattr(item, "priority", ""):
+            meta_lines.append(f"优先级：{item.priority}")
+        if getattr(item, "external_url", ""):
+            meta_lines.append(f"原始链接：{item.external_url}")
+        body = getattr(item, "description", "") or ""
+        if meta_lines:
+            body = "\n".join(meta_lines) + "\n\n" + body
+        return cls(
+            source=SourceType.TAPD,
+            title=f"{prefix} {getattr(item, 'title', '')}".strip(),
+            body=body,
+            source_ref=item.ref,
+            git_url_hint=getattr(item, "git_url_hint", ""),
+        )
+
 
 def classify_kind(title: str, body: str) -> ItemKind:
     # Explicit [BUG]/【需求】 prefix wins — it is the strongest signal.
@@ -160,12 +187,22 @@ class EmailSource(Source):
         return self.from_mailtool(self._messages)
 
 
-# ── seam for TAPD ─────────────────────────────────────────────────────────────
-# class TapdSource(Source):
-#     """Future adapter: TAPD stories/bugs -> RawItem.
-#
-#     fetch() calls TAPD Open API (stories/bugs with workspace_id + status),
-#     maps each to RawItem(source=TAPD, source_ref=story_id, title=name,
-#     body=description, git_url_hint=custom_field_git_url). Credentials come
-#     from env, never the repo.
-#     """
+class TapdSource(Source):
+    """Authoritative source adapter: TAPD stories/bugs -> RawItem.
+
+    Wraps :class:`~taskagent.tapd.TapdClient`. The client is synchronous
+    (urllib), so callers should run ``fetch()`` in a worker thread via
+    ``asyncio.to_thread`` to avoid blocking the event loop.
+    """
+
+    name = "tapd"
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+
+    def fetch(self) -> list[RawItem]:
+        result = self.client.fetch_all()
+        return [RawItem.from_tapd(item) for item in result.items]
+
+    def fetch_one(self, entity_type: str, object_id: str) -> RawItem:
+        return RawItem.from_tapd(self.client.fetch_one(entity_type, object_id))

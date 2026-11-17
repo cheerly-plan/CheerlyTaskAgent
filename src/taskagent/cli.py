@@ -6,9 +6,9 @@ import argparse
 import asyncio
 from pathlib import Path
 
+from .backends import build_registry
 from .config import Settings
 from .events import EventBus
-from .executor import CodeBuddyExecutor
 from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .scheduler import Scheduler, SchedulerSettings
@@ -26,16 +26,12 @@ def _build(settings: Settings):
     )
     projects = ProjectRegistry(project_store)
     events = EventBus()
-    executor = CodeBuddyExecutor(
-        command=settings.codebuddy_command,
-        worktrees_dir=settings.worktrees_dir,
-        timeout_s=settings.timeout_s,
-        model=settings.codebuddy_model,
-    )
+    registry = build_registry(settings)
+    executor = registry.resolve("codebuddy")
     scheduler = Scheduler(
         store=store,
         gitmap=gitmap,
-        executor=executor,
+        executors=registry,
         events=events,
         settings=SchedulerSettings(
             max_concurrent=settings.max_concurrent, reports_dir=settings.reports_dir

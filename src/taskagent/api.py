@@ -13,9 +13,10 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .backends import build_registry, describe_backends
 from .config import Settings
 from .events import EventBus, sse_frame
-from .executor import CodeBuddyExecutor
+from .executor import ExecutorRegistry
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
 from .mailpoll import MailPoller
@@ -24,6 +25,7 @@ from .report import render_report
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import EmailSource, ManualSource, RawItem
 from .store import TaskStore
+from .tapd import TapdClient, TapdConfig, TapdError, TapdItem
 
 logger = logging.getLogger("taskagent")
 
@@ -52,6 +54,7 @@ class ManualTaskBody(BaseModel):
     source_ref: str = ""
     git_url_hint: str = ""
     exec_mode: str = "dry-run"
+    executor: str = "codebuddy"
     model: str | None = None
     run_now: bool = False
     approved: bool = False
@@ -61,6 +64,7 @@ class RunBody(BaseModel):
     exec_mode: str | None = None
     approved: bool = False
     model: str | None = None
+    executor: str | None = None
 
 
 class CommitBody(BaseModel):
@@ -107,8 +111,17 @@ class UISettingsBody(BaseModel):
     default_model: str = ""
     max_concurrent: int = Field(default=1, ge=1)
     auto_sync: bool = True
+    backends: dict[str, Any] = Field(default_factory=dict)
     imap: dict[str, Any] = Field(default_factory=dict)
     mail_poll: dict[str, Any] = Field(default_factory=dict)
+    tapd: dict[str, Any] = Field(default_factory=dict)
+
+
+class TapdSyncBody(BaseModel):
+    """Manual TAPD sync options (all optional; credentials come from settings)."""
+
+    exec_mode: str | None = None
+    modified_since: str = ""
 
 
 def web_not_built_page() -> str:
@@ -161,29 +174,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     projects = ProjectRegistry(project_store)
     browser = FolderBrowser(settings.browse_root)
     events = EventBus()
-    from .commitfilter import load_extra_patterns
 
-    executor = CodeBuddyExecutor(
-        command=settings.codebuddy_command,
-        worktrees_dir=settings.worktrees_dir,
-        timeout_s=settings.timeout_s,
-        model=settings.codebuddy_model,
-        auto_sync=settings.auto_sync,
-        backups_dir=settings.data_dir / "sync-backups",
-        # Reuse the same ignore rules as commit so we never sync secrets,
-        # venvs, data/ or other runtime state back into the main checkout.
-        sync_ignore_patterns=tuple(load_extra_patterns(settings.commit_rules_path)),
-    )
+    executor_registry = build_registry(settings)
+    executor = executor_registry.resolve("codebuddy")
+
+    def make_tapd_client() -> tuple[TapdClient, dict[str, Any]]:
+        """Build a TAPD client from the latest saved UI settings."""
+        cfg = settings.load_ui_settings().get("tapd", {})
+        tapd_cfg = TapdConfig(
+            base_url=(cfg.get("base_url") or TapdConfig.base_url).rstrip("/"),
+            workspace_id=str(cfg.get("workspace_id", "") or ""),
+            api_user=str(cfg.get("api_user", "") or ""),
+            api_password=str(cfg.get("api_password", "") or ""),
+            webhook_secret=str(cfg.get("webhook_secret", "") or ""),
+            entity_types=list(cfg.get("entity_types") or ["story", "bug"]),
+            pull_statuses=list(cfg.get("pull_statuses") or []),
+            status_on_success=str(cfg.get("status_on_success", "resolved") or "resolved"),
+            status_on_failure=str(cfg.get("status_on_failure", "") or ""),
+            current_user=str(cfg.get("current_user", "taskagent") or "taskagent"),
+        )
+        return TapdClient(tapd_cfg), cfg
+
+    def parse_tapd_ref(source_ref: str) -> tuple[str, str] | None:
+        """'tapd:story:123' -> ('story', '123')."""
+        parts = (source_ref or "").split(":")
+        if len(parts) == 3 and parts[0] == "tapd" and parts[1] in {"story", "bug", "task"}:
+            return parts[1], parts[2]
+        return None
+
+    def backfill_tapd(item: Any, ok: bool) -> None:
+        """Write task result back to TAPD (called by scheduler after execution)."""
+        cfg = settings.load_ui_settings().get("tapd", {})
+        if not cfg.get("enabled"):
+            return
+        parsed = parse_tapd_ref(item.source_ref)
+        if not parsed:
+            return
+        entity_type, object_id = parsed
+        client, _ = make_tapd_client()
+        target = TapdItem(
+            entity_type=entity_type,
+            id=object_id,
+            workspace_id=client.config.workspace_id,
+            title="", description="", status="", owner="", priority="",
+            iteration_id="", created="", modified="",
+        )
+        status = client.config.status_on_success if ok else client.config.status_on_failure
+        if status:
+            client.update_status(target, status)
+        if ok and item.report_path:
+            client.add_comment(target, f"任务已完成，报告：{item.report_path}")
+
     scheduler = Scheduler(
         store=store,
         gitmap=gitmap,
-        executor=executor,
+        executors=executor_registry,
         events=events,
         settings=SchedulerSettings(
             max_concurrent=settings.max_concurrent, reports_dir=settings.reports_dir
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
+        on_finished=backfill_tapd,
     )
     # A server restart kills in-flight asyncio tasks; reap any work item that
     # was persisted as queued/running so it no longer shows "执行中" forever.
@@ -231,15 +283,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.info("定时拉取邮件：新建 %d 条", result["created"])
             await asyncio.sleep(interval_s)
 
+    # ── TAPD (authoritative source) ────────────────────────────────────────────
+    _tapd_last_sync: dict[str, str] = {"modified": ""}  # incremental cursor, in-memory
+
+    def sync_tapd_now(modified_since: str = "") -> dict[str, Any]:
+        """Pull stories/bugs from TAPD -> parse -> import. Never raises."""
+        client, cfg = make_tapd_client()
+        if not client.config.is_configured():
+            return {
+                "created": 0, "skipped": 0, "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing()),
+            }
+        result = client.fetch_all(modified_since=modified_since or _tapd_last_sync["modified"])
+        if result.error:
+            return {"created": 0, "skipped": 0, "error": result.error}
+        exec_mode = cfg.get("exec_mode", "dry-run")
+        created = skipped = 0
+        for item in result.items:
+            raw = RawItem.from_tapd(item)
+            try:
+                _, was_created = scheduler.import_raw(raw, exec_mode=exec_mode)
+                if was_created:
+                    created += 1
+                else:
+                    skipped += 1
+            except ValueError as error:
+                logger.warning("TAPD 建单失败 %s：%s", item.ref, error)
+                skipped += 1
+        # Advance cursor using the newest modified timestamp seen.
+        stamps = [i.modified for i in result.items if i.modified]
+        if stamps:
+            _tapd_last_sync["modified"] = max(stamps)
+        return {"created": created, "skipped": skipped, "error": None}
+
+    def tapd_webhook_sync(event: str, object_id: str) -> dict[str, Any]:
+        """A webhook carries only an id — always pull full details from TAPD."""
+        # Determine entity type from the webhook event name (story::create, bug::status_change…)
+        entity_type = event.split("::", 1)[0] if "::" in event else ""
+        if entity_type not in {"story", "bug", "task"}:
+            return {"created": 0, "skipped": 0, "error": f"无法识别的 Webhook 事件：{event}"}
+        client, cfg = make_tapd_client()
+        if not client.config.is_configured():
+            return {"created": 0, "skipped": 0, "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing())}
+        try:
+            item = client.fetch_one(entity_type, object_id)
+        except TapdError as error:
+            return {"created": 0, "skipped": 0, "error": str(error)}
+        raw = RawItem.from_tapd(item)
+        try:
+            _, was_created = scheduler.import_raw(raw, exec_mode=cfg.get("exec_mode", "dry-run"))
+        except ValueError as error:
+            return {"created": 0, "skipped": 0, "error": str(error)}
+        return {"created": 1 if was_created else 0, "skipped": 0 if was_created else 1, "error": None}
+
+    async def tapd_poll_loop() -> None:
+        """Periodically pull from TAPD while enabled; re-reads settings each tick."""
+        while True:
+            cfg = settings.load_ui_settings().get("tapd", {})
+            interval_s = max(1, int(cfg.get("interval_minutes", 5) or 5)) * 60
+            if cfg.get("enabled"):
+                result = await asyncio.to_thread(sync_tapd_now)
+                if result.get("error"):
+                    logger.warning("定时同步 TAPD 失败：%s", result["error"])
+                elif result.get("created"):
+                    logger.info("定时同步 TAPD：新建 %d 条", result["created"])
+            await asyncio.sleep(interval_s)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         poll_task = asyncio.create_task(mail_poll_loop(), name="mail-poll")
+        tapd_task = asyncio.create_task(tapd_poll_loop(), name="tapd-poll")
         try:
             yield
         finally:
             logger.info("关闭中：断开 SSE、取消后台任务…")
             poll_task.cancel()
-            await asyncio.gather(poll_task, return_exceptions=True)
+            tapd_task.cancel()
+            await asyncio.gather(poll_task, tapd_task, return_exceptions=True)
             events.close()
             await scheduler.shutdown()
 
@@ -265,8 +384,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_config() -> dict[str, Any]:
         return {
             "version": "0.2.0",
-            "sources": ["manual", "email", "tapd(planned)"],
+            "sources": ["manual", "tapd", "email"],
             "executor": "codebuddy",
+            "backends": describe_backends(settings, executor_registry),
             "codebuddy_command": settings.codebuddy_command,
             "max_concurrent": settings.max_concurrent,
             "default_exec_mode": "dry-run",
@@ -377,12 +497,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 source_ref=body.source_ref,
                 git_url_hint=body.git_url_hint,
                 exec_mode=body.exec_mode,
+                executor=body.executor,
                 model=body.model,
             )
             if body.run_now:
                 item = scheduler.run(
                     item.id, exec_mode=body.exec_mode, approved=body.approved,
-                    model=body.model,
+                    executor=body.executor, model=body.model,
                 )
             return item.to_dict()
         except ValueError as error:
@@ -409,6 +530,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, result["error"])
         return {"created": result["created"], "skipped": result["skipped"]}
 
+    @app.post("/api/tapd/sync")
+    async def api_tapd_sync(body: TapdSyncBody | None = None) -> dict[str, Any]:
+        """Manually pull stories/bugs from TAPD and create work items."""
+        result = await asyncio.to_thread(
+            sync_tapd_now, (body.modified_since if body else "") or ""
+        )
+        if result.get("error"):
+            raise HTTPException(400, result["error"])
+        return {"created": result["created"], "skipped": result["skipped"]}
+
+    @app.post("/api/tapd/webhook")
+    async def api_tapd_webhook(request: Request) -> dict[str, Any]:
+        """Receive TAPD webhook events and sync the referenced work item.
+
+        Accepts both JSON and form payloads. An optional shared secret (set in
+        TAPD webhook config) is verified against the `secret` field to reject
+        forged requests.
+        """
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                payload = await request.json()
+            except ValueError as error:
+                raise HTTPException(400, f"无效 JSON：{error}") from error
+        else:
+            form = await request.form()
+            payload = dict(form)
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Webhook payload 格式错误")
+
+        cfg = settings.load_ui_settings().get("tapd", {})
+        expected_secret = str(cfg.get("webhook_secret", "") or "")
+        if expected_secret and str(payload.get("secret", "")) != expected_secret:
+            raise HTTPException(403, "Webhook secret 校验失败")
+
+        event = str(payload.get("event", ""))
+        object_id = str(payload.get("id", ""))
+        if not event or not object_id:
+            raise HTTPException(400, "Webhook 缺少 event 或 id")
+        # Ignore delete events; there is no work item to sync.
+        if "::delete" in event:
+            return {"created": 0, "skipped": 0, "ignored": True}
+        result = await asyncio.to_thread(tapd_webhook_sync, event, object_id)
+        if result.get("error"):
+            raise HTTPException(400, result["error"])
+        return {"created": result["created"], "skipped": result["skipped"]}
+
     @app.get("/api/items/{item_id}")
     def api_get_item(item_id: str) -> dict[str, Any]:
         item = store.get(item_id)
@@ -431,7 +599,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             return scheduler.run(
                 item_id, exec_mode=body.exec_mode, approved=body.approved,
-                model=body.model, _model_supplied=supplied,
+                executor=body.executor, model=body.model, _model_supplied=supplied,
             ).summary()
         except ValueError as error:
             raise HTTPException(400, str(error)) from error

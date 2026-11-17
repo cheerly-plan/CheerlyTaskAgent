@@ -7,14 +7,18 @@ concurrency, retry/backoff, cancellation, and event emission.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 from .commitfilter import CommitFileFilter, load_extra_patterns
 from .events import Event, EventBus
-from .executor import CodeBuddyExecutor
+from .executor import BACKEND_CODEBUDDY, CodeBuddyExecutor, Executor, ExecutorRegistry
 from .gitmap import GitProjectRegistry
 from .models import CommitResult, ItemKind, ItemStatus, SourceType, WorkItem
 from .projectmap import ProjectRegistry
@@ -36,19 +40,31 @@ class Scheduler:
         *,
         store: TaskStore,
         gitmap: GitProjectRegistry,
-        executor: CodeBuddyExecutor,
+        executor: Executor | None = None,
         events: EventBus,
         settings: SchedulerSettings | None = None,
         projects: ProjectRegistry | None = None,
         commit_rules_file: Path | None = None,
+        on_finished: Callable[[WorkItem, bool], None] | None = None,
+        executors: ExecutorRegistry | None = None,
     ) -> None:
         self.store = store
         self.gitmap = gitmap
         self.projects = projects
-        self.executor = executor
+        # Accept either a full registry or a single executor (legacy/tests).
+        if executors is not None:
+            self.executors = executors
+        elif executor is not None:
+            self.executors = ExecutorRegistry({executor.backend_id: executor})
+        else:
+            self.executors = ExecutorRegistry()
+        # ``self.executor`` remains the default backend for compatibility with
+        # callers that used it directly; dispatch uses ``self.executors``.
+        self.executor = self.executors.resolve(BACKEND_CODEBUDDY) if self.executors.ids() else executor
         self.events = events
         self.settings = settings or SchedulerSettings()
         self.commit_rules_file = commit_rules_file
+        self.on_finished = on_finished
         self._sem = asyncio.Semaphore(self.settings.max_concurrent)
         self._cancel_flags: dict[str, bool] = {}
         self._seen_keys: dict[str, str] = {}
@@ -81,6 +97,7 @@ class Scheduler:
     def import_raw(
         self, raw: RawItem, *, exec_mode: str = "dry-run",
         auto_map: bool = True, model: str | None = None,
+        executor: str | None = None,
     ) -> tuple[WorkItem, bool]:
         """Create a WorkItem from a RawItem. Returns (item, created).
 
@@ -89,6 +106,8 @@ class Scheduler:
         """
         probe = parse_raw(raw, exec_mode=exec_mode)
         probe.model = model or None
+        if executor:
+            probe.executor = executor
         existing_id = self._seen_keys.get(probe.dedupe_key)
         if existing_id:
             existing = self.store.get(existing_id)
@@ -114,6 +133,7 @@ class Scheduler:
         exec_mode: str = "dry-run",
         model: str | None = None,
         auto_map: bool = True,
+        executor: str | None = None,
     ) -> WorkItem:
         """Create a WorkItem directly from user input (no email/TAPD needed).
 
@@ -139,6 +159,8 @@ class Scheduler:
         item.title = title.strip()
         item.kind = ItemKind(kind)
         item.model = model or None
+        if executor:
+            item.executor = executor
         item.dedupe_key = source_ref.strip() or f"manual:{secrets.token_hex(8)}"
 
         if repo_name:
@@ -227,6 +249,7 @@ class Scheduler:
         exec_mode: str | None = None,
         approved: bool = False,
         model: str | None = None,
+        executor: str | None = None,
         _model_supplied: bool = True,
     ) -> WorkItem:
         item = self.store.get(item_id)
@@ -254,6 +277,8 @@ class Scheduler:
             if exec_mode not in {"dry-run", "apply"}:
                 raise ValueError("exec_mode must be 'dry-run' or 'apply'")
             item.exec_mode = exec_mode
+        if executor:
+            item.executor = executor
         if _model_supplied:
             # The caller explicitly set the model for this run (None clears it
             # back to the global default); when omitted, keep the stored choice.
@@ -295,7 +320,8 @@ class Scheduler:
         worktree = item.result.worktree if item.result else None
         if not worktree:
             raise ValueError("工作项还没有 apply 过的 worktree，无法提交")
-        changed = self.executor._changed_files(Path(worktree))
+        backend = self.executors.resolve(item.executor)
+        changed = backend.changed_files(Path(worktree))
         plan = self._commit_filter().classify(changed)
         return {
             "item_id": item_id,
@@ -315,11 +341,12 @@ class Scheduler:
         if not Path(worktree).is_dir():
             raise ValueError(f"worktree 不存在：{worktree}")
 
-        changed = self.executor._changed_files(Path(worktree))
+        backend = self.executors.resolve(item.executor)
+        changed = backend.changed_files(Path(worktree))
         plan = self._commit_filter().classify(changed)
         commit_message = message.strip() or f"taskagent: {item.title}"
 
-        outcome = self.executor.commit_files(
+        outcome = backend.commit_files(
             Path(worktree), kept=plan.kept, message=commit_message
         )
         result = CommitResult(
@@ -361,14 +388,17 @@ class Scheduler:
             def should_cancel() -> bool:
                 return bool(self._cancel_flags.get(item_id))
 
+            backend = self.executors.resolve(item.executor)
             item.status = ItemStatus.RUNNING
             item.attempt += 1
             item.started_at = item.started_at or _utcnow()
-            item.stage = "开始执行"
+            item.stage = f"开始执行（{backend.label}）"
             self.store.save(item)
-            self.events.publish(Event("item_started", item_id, {"attempt": item.attempt}))
+            self.events.publish(Event("item_started", item_id, {
+                "attempt": item.attempt, "executor": backend.backend_id,
+            }))
 
-            result = await self.executor.run(item, progress=progress, should_cancel=should_cancel)
+            result = await backend.run(item, progress=progress, should_cancel=should_cancel)
 
             if should_cancel():
                 item.status = ItemStatus.CANCELLED
@@ -422,6 +452,14 @@ class Scheduler:
             self.events.publish(
                 Event(event, item_id, {"report_path": item.report_path, "error": item.error})
             )
+            # Optional write-back (e.g. TAPD status). Runs in a thread so a slow
+            # external API can't stall the scheduler; failures never mask the
+            # local result.
+            if self.on_finished and item.source == SourceType.TAPD:
+                try:
+                    await asyncio.to_thread(self.on_finished, item, bool(result.ok))
+                except Exception as exc:  # noqa: BLE001 - write-back is best effort
+                    logger.warning("工作项 %s 状态回填失败：%s", item_id, exc)
 
 
 def _is_retryable(error: str | None) -> bool:

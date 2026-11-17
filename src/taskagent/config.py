@@ -38,16 +38,59 @@ CODEBUDDY_MODELS: tuple[str, ...] = (
 # so the values survive restarts; env-derived values are used as the initial
 # defaults until the file is written. DSH / WorkBuddy are execution backends
 # reserved for later, so their paths are kept here but not yet dispatched to.
+def _default_backends() -> dict[str, dict[str, Any]]:
+    """Per-type execution backend configs, each a complete independent profile."""
+    return {
+        "codebuddy": {
+            "enabled": True,  # always available as the safe fallback
+            "command": "codebuddy",
+            "model": "",
+            "timeout_s": 600,
+            "auto_sync": True,
+        },
+        "workbuddy": {
+            "enabled": False,
+            "command": "workbuddy",
+            "model": "",
+            "timeout_s": 600,
+            "auto_sync": True,
+        },
+        "dsh": {
+            "enabled": False,
+            "command": "dsh",
+            "model": "",
+            "timeout_s": 600,
+            "auto_sync": True,
+        },
+    }
+
+
 UI_SETTINGS_DEFAULTS: dict[str, Any] = {
-    "executor": "codebuddy",
+    "executor": "codebuddy",  # default backend for new tasks (legacy key, kept for /api/config)
     "codebuddy_command": "codebuddy",
     "workbuddy_cli_path": "",
     "dsh_path": "",
     "default_model": "",
     "max_concurrent": 1,
     "auto_sync": True,
+    "backends": _default_backends(),
     "imap": {"host": "", "port": 993, "user": "", "password": "", "use_ssl": True},
     "mail_poll": {"enabled": False, "interval_minutes": 5, "exec_mode": "dry-run"},
+    "tapd": {
+        "enabled": False,
+        "base_url": "https://api.tapd.cn",
+        "workspace_id": "",
+        "api_user": "",
+        "api_password": "",
+        "webhook_secret": "",
+        "entity_types": ["story", "bug"],
+        "pull_statuses": [],
+        "status_on_success": "resolved",
+        "status_on_failure": "",
+        "current_user": "taskagent",
+        "interval_minutes": 5,
+        "exec_mode": "dry-run",
+    },
 }
 
 
@@ -160,34 +203,88 @@ class Settings:
 
     def load_ui_settings(self) -> dict[str, Any]:
         """Return UI-managed settings, starting from env values on first run."""
+        backends = _default_backends()
+        # env-derived values seed the codebuddy backend until the UI writes a file
+        backends["codebuddy"]["command"] = self.codebuddy_command
+        backends["codebuddy"]["model"] = self.codebuddy_model or ""
+        backends["codebuddy"]["auto_sync"] = self.auto_sync
         data: dict[str, Any] = {
             **UI_SETTINGS_DEFAULTS,
+            "backends": backends,
             "codebuddy_command": self.codebuddy_command,
             "default_model": self.default_model or "",
             "max_concurrent": self.max_concurrent,
             "auto_sync": self.auto_sync,
             "imap": dict(UI_SETTINGS_DEFAULTS["imap"]),
             "mail_poll": dict(UI_SETTINGS_DEFAULTS["mail_poll"]),
+            "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
         }
         path = self.ui_settings_path
+        saved: dict[str, Any] = {}
         if path.is_file():
             try:
-                saved = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(saved, dict):
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    saved = loaded
+                if saved:
                     for key, value in saved.items():
-                        if key in {"imap", "mail_poll"} and isinstance(value, dict):
-                            data[key].update(value)
+                        if key in {"imap", "mail_poll", "tapd", "backends"} and isinstance(value, dict):
+                            if key == "backends":
+                                # deep merge each backend so new fields get defaults
+                                for backend_id, cfg in value.items():
+                                    if backend_id in data["backends"] and isinstance(cfg, dict):
+                                        data["backends"][backend_id].update(cfg)
+                            else:
+                                data[key].update(value)
                         elif key in data:
                             data[key] = value
             except (OSError, ValueError):
                 pass  # corrupt/unreadable file -> fall back to defaults
+        # Migrate legacy flat fields into backends when the file predates them.
+        if isinstance(saved, dict) and "backends" not in saved:
+            data["backends"]["codebuddy"]["command"] = data.get("codebuddy_command") or "codebuddy"
+            data["backends"]["workbuddy"]["command"] = data.get("workbuddy_cli_path") or "workbuddy"
+            data["backends"]["dsh"]["command"] = data.get("dsh_path") or "dsh"
+            data["backends"]["codebuddy"]["model"] = data.get("default_model") or ""
+            data["backends"]["codebuddy"]["auto_sync"] = bool(data.get("auto_sync", True))
         return data
 
     def save_ui_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Merge and persist UI-managed settings; blank IMAP password keeps the old one."""
         data = self.load_ui_settings()
         for key, value in payload.items():
-            if key == "imap" and isinstance(value, dict):
+            if key == "backends" and isinstance(value, dict):
+                for backend_id, cfg in value.items():
+                    if backend_id in data["backends"] and isinstance(cfg, dict):
+                        incoming = dict(cfg)
+                        # blank command keeps the saved value (avoids wiping a path)
+                        if not incoming.get("command"):
+                            incoming["command"] = data["backends"][backend_id].get("command", "")
+                        data["backends"][backend_id].update(incoming)
+                # Legacy flat fields in the same payload win over stale backend
+                # defaults (older clients submit both). Let them flow inward.
+                flat_to_backend = {
+                    "codebuddy_command": "codebuddy",
+                    "workbuddy_cli_path": "workbuddy",
+                    "dsh_path": "dsh",
+                }
+                for flat_key, backend_id in flat_to_backend.items():
+                    if payload.get(flat_key):
+                        data["backends"][backend_id]["command"] = payload[flat_key]
+                if payload.get("default_model"):
+                    data["backends"]["codebuddy"]["model"] = payload["default_model"]
+                if "auto_sync" in payload:
+                    data["backends"]["codebuddy"]["auto_sync"] = bool(payload["auto_sync"])
+                # codebuddy is always the safe fallback; never fully disable it.
+                data["backends"]["codebuddy"]["enabled"] = True
+                # keep legacy flat keys in sync for older clients / /api/config
+                data["codebuddy_command"] = data["backends"]["codebuddy"].get("command", "codebuddy")
+                data["workbuddy_cli_path"] = data["backends"]["workbuddy"].get("command", "")
+                data["dsh_path"] = data["backends"]["dsh"].get("command", "")
+                data["default_model"] = data["backends"]["codebuddy"].get("model", "")
+                data["auto_sync"] = bool(data["backends"]["codebuddy"].get("auto_sync", True))
+                data["executor"] = data.get("executor") or "codebuddy"
+            elif key == "imap" and isinstance(value, dict):
                 imap = dict(value)
                 # The UI masks the stored password; an empty submission means
                 # "unchanged" instead of clearing it.
@@ -196,6 +293,19 @@ class Settings:
                 data["imap"].update(imap)
             elif key == "mail_poll" and isinstance(value, dict):
                 data["mail_poll"].update(value)
+            elif key == "tapd" and isinstance(value, dict):
+                tapd = dict(value)
+                # Blank password keeps the stored value (UI masks it).
+                if not tapd.get("api_password"):
+                    tapd["api_password"] = data["tapd"].get("api_password", "")
+                # Lists must not arrive as strings from the UI.
+                for list_key in ("entity_types", "pull_statuses"):
+                    val = tapd.get(list_key)
+                    if isinstance(val, str):
+                        tapd[list_key] = [part.strip() for part in val.split(",") if part.strip()]
+                    elif not isinstance(val, list):
+                        tapd[list_key] = list(data["tapd"].get(list_key, []))
+                data["tapd"].update(tapd)
             elif key in data:
                 data[key] = value
         data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
@@ -204,6 +314,41 @@ class Settings:
         poll["enabled"] = bool(poll.get("enabled", False))
         poll["interval_minutes"] = max(1, int(poll.get("interval_minutes", 5) or 5))
         poll["exec_mode"] = "apply" if poll.get("exec_mode") == "apply" else "dry-run"
+        # Normalise tapd values.
+        tapd = data["tapd"]
+        tapd["enabled"] = bool(tapd.get("enabled", False))
+        tapd["interval_minutes"] = max(1, int(tapd.get("interval_minutes", 5) or 5))
+        tapd["exec_mode"] = "apply" if tapd.get("exec_mode") == "apply" else "dry-run"
+        tapd["entity_types"] = [e for e in tapd.get("entity_types", []) if e in {"story", "bug", "task"}] or ["story", "bug"]
+        # Normalise backends: valid ids, sane timeouts, codebuddy always on.
+        for backend_id, cfg in data["backends"].items():
+            cfg["enabled"] = True if backend_id == "codebuddy" else bool(cfg.get("enabled", False))
+            cfg["command"] = str(cfg.get("command") or "")
+            cfg["model"] = str(cfg.get("model") or "")
+            cfg["timeout_s"] = max(1, int(cfg.get("timeout_s", 600) or 600))
+            cfg["auto_sync"] = bool(cfg.get("auto_sync", True))
+        # Final insurance: any explicitly-submitted legacy flat field is the
+        # source of truth for its backend command (covers payloads without a
+        # ``backends`` key entirely).
+        for flat_key, backend_id in {
+            "codebuddy_command": "codebuddy",
+            "workbuddy_cli_path": "workbuddy",
+            "dsh_path": "dsh",
+        }.items():
+            if flat_key in payload and payload[flat_key]:
+                data["backends"][backend_id]["command"] = payload[flat_key]
+        if "default_model" in payload and payload["default_model"]:
+            data["backends"]["codebuddy"]["model"] = payload["default_model"]
+        if "auto_sync" in payload:
+            data["backends"]["codebuddy"]["auto_sync"] = bool(payload["auto_sync"])
+        # Reflect backends into flat fields so every API shape stays consistent.
+        data["codebuddy_command"] = data["backends"]["codebuddy"]["command"]
+        data["workbuddy_cli_path"] = data["backends"]["workbuddy"]["command"]
+        data["dsh_path"] = data["backends"]["dsh"]["command"]
+        data["default_model"] = data["backends"]["codebuddy"]["model"]
+        data["auto_sync"] = bool(data["backends"]["codebuddy"]["auto_sync"])
+        if data.get("executor") not in data["backends"]:
+            data["executor"] = "codebuddy"
         path = self.ui_settings_path
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")

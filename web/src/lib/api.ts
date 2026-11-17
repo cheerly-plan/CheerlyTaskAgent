@@ -22,6 +22,7 @@ export interface WorkItem {
   repo?: string;
   status: Status;
   exec_mode: ExecMode;
+  executor?: string;
   model?: string | null;
   attempt?: number;
   stage?: string | null;
@@ -45,9 +46,17 @@ export interface ModelChoice {
   label: string;
 }
 
+export interface BackendInfo {
+  id: string;
+  label: string;
+  command: string;
+  enabled: boolean;
+}
+
 export interface AppConfig {
   version: string;
   executor: string;
+  backends: BackendInfo[];
   models: ModelChoice[];
   default_model: string | null;
   max_concurrent?: number;
@@ -67,6 +76,30 @@ export interface MailPollSettings {
   exec_mode: ExecMode;
 }
 
+export interface TapdSettings {
+  enabled: boolean;
+  base_url: string;
+  workspace_id: string;
+  api_user: string;
+  api_password: string;
+  webhook_secret: string;
+  entity_types: string[];
+  pull_statuses: string[];
+  status_on_success: string;
+  status_on_failure: string;
+  current_user: string;
+  interval_minutes: number;
+  exec_mode: ExecMode;
+}
+
+export interface BackendConfig {
+  enabled: boolean;
+  command: string;
+  model: string;
+  timeout_s: number;
+  auto_sync: boolean;
+}
+
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
@@ -75,8 +108,10 @@ export interface UISettings {
   default_model: string;
   max_concurrent: number;
   auto_sync: boolean;
+  backends: Record<string, BackendConfig>;
   imap: ImapSettings;
   mail_poll: MailPollSettings;
+  tapd: TapdSettings;
 }
 
 export interface BrowseEntry {
@@ -166,7 +201,7 @@ export const endpoints = {
   items: () => api<{items: WorkItem[]}>('/api/items'),
   mapItem: (id: string, repo: string) =>
     api<WorkItem>(`/api/items/${id}/map`, jsonInit('POST', {repo_name: repo})),
-  runItem: (id: string, body: {exec_mode: ExecMode; model?: string | null; approved?: boolean}) =>
+  runItem: (id: string, body: {exec_mode: ExecMode; model?: string | null; approved?: boolean; executor?: string}) =>
     api<unknown>(`/api/items/${id}/run`, jsonInit('POST', body)),
   cancelItem: (id: string) => api<{cancelled: boolean}>(`/api/items/${id}/cancel`, {method: 'POST'}),
   deleteItem: (id: string) => api<unknown>(`/api/items/${id}`, {method: 'DELETE'}),
@@ -179,12 +214,18 @@ export const endpoints = {
     kind: Kind;
     repo_name: string;
     exec_mode: ExecMode;
+    executor: string;
     model: string | null;
     run_now: boolean;
     approved: boolean;
   }) => api<WorkItem>('/api/tasks/manual', jsonInit('POST', body)),
 
   pullMail: () => api<{created: number; skipped: number}>('/api/mail/pull', {method: 'POST'}),
+
+  syncTapd: (body?: {modified_since?: string; exec_mode?: string}) =>
+    api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
+
+  tapdWebhookUrl: () => `${location.origin}/api/tapd/webhook`,
 
   browse: (path: string) => api<BrowseResult>(`/api/fs/browse?path=${encodeURIComponent(path)}`),
   scan: (path: string, depth = 2) =>

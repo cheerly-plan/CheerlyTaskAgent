@@ -13,13 +13,14 @@ import {
 } from '@/components/ui/dialog';
 import {Textarea} from '@/components/ui/textarea';
 import {Field, SelectField} from '@/components/select-field';
-import type {Kind, ModelChoice, ProjectMapping} from '@/lib/api';
+import type {BackendInfo, Kind, ModelChoice, ProjectMapping} from '@/lib/api';
 
 export interface ManualTaskDraft {
   title: string;
   body: string;
   kind: Kind;
   repo: string;
+  executor: string;
   model: string;
 }
 
@@ -29,10 +30,11 @@ interface NewTaskDialogProps {
   mappings: ProjectMapping[];
   models: ModelChoice[];
   defaultModel: string;
+  backends: BackendInfo[];
   onManualCreate: (draft: ManualTaskDraft, mode: 'draft' | 'dry' | 'apply') => void;
 }
 
-const EMPTY_MANUAL: ManualTaskDraft = {title: '', body: '', kind: 'task', repo: '', model: ''};
+const EMPTY_MANUAL: ManualTaskDraft = {title: '', body: '', kind: 'task', repo: '', executor: 'codebuddy', model: ''};
 
 export function NewTaskDialog({
   open,
@@ -40,6 +42,7 @@ export function NewTaskDialog({
   mappings,
   models,
   defaultModel,
+  backends,
   onManualCreate,
 }: NewTaskDialogProps) {
   const [manual, setManual] = React.useState<ManualTaskDraft>(EMPTY_MANUAL);
@@ -63,6 +66,17 @@ export function NewTaskDialog({
     label: mapping.name + (mapping.enabled ? '' : '（停用）'),
     disabled: !mapping.enabled,
   }));
+
+  const enabledBackends = backends.filter((backend) => backend.enabled);
+  const backendOptions = (enabledBackends.length ? enabledBackends : backends).map((backend) => ({
+    value: backend.id,
+    label: backend.label,
+    hint: backend.command || undefined,
+  }));
+  // 若默认后端已停用，回退到第一个启用项。
+  const effectiveExecutor = backendOptions.some((option) => option.value === manual.executor)
+    ? manual.executor
+    : (backendOptions[0]?.value ?? 'codebuddy');
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -92,6 +106,13 @@ export function NewTaskDialog({
                     {value: 'bug', label: '缺陷 bug'},
                   ]}
                   onChange={(value) => setManual((prev) => ({...prev, kind: value as Kind}))}
+                />
+              </Field>
+              <Field label="执行后端">
+                <SelectField
+                  value={effectiveExecutor}
+                  options={backendOptions}
+                  onChange={(value) => setManual((prev) => ({...prev, executor: value}))}
                 />
               </Field>
               <Field label="模型">
