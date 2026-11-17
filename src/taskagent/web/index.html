@@ -176,6 +176,8 @@
         <option value="feature">需求 feature</option>
         <option value="bug">缺陷 bug</option>
       </select>
+      <label>模型 <span class="hint" style="font-weight:400">（本任务执行所用，默认跟随全局）</span></label>
+      <select id="m-model"><option value="">默认（跟随全局）</option></select>
       <label>标题</label>
       <textarea id="m-title" style="min-height:50px" placeholder="例如：调整 ai_task 调度台，新增手动新建入口"></textarea>
       <label>需求 / Bug 描述</label>
@@ -275,9 +277,21 @@
 
 <script>
 let items=[], mappings=[], es=null;
+let modelChoices=[], defaultModel='';
 let fsPickCb=null, fsState={current:'',parent:null,at_root:true};
 let scanItems=[], scanRoot='';
 const $ = id => document.getElementById(id);
+function fillModelSelect(sel, withDefault){
+  if(!sel) return;
+  const prev=sel.value;
+  sel.innerHTML='';
+  if(withDefault) sel.insertAdjacentHTML('beforeend',`<option value="">默认（跟随全局）</option>`);
+  for(const m of modelChoices){
+    const label=(m.id===defaultModel)?(m.label+' · 默认'):m.label;
+    sel.insertAdjacentHTML('beforeend',`<option value="${esc(m.id)}">${esc(label)}</option>`);
+  }
+  if(prev && [...sel.options].some(o=>o.value===prev)) sel.value=prev;
+}
 const kindLabel={bug:'缺陷',feature:'需求',task:'任务'};
 const statusLabel={discovered:'待映射',ready:'就绪',queued:'排队',running:'执行中',succeeded:'成功',failed:'失败',skipped:'跳过',cancelled:'已取消'};
 const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -292,6 +306,9 @@ async function loadAll(){ await Promise.all([loadConfig(),loadMappings(),loadIte
 
 async function loadConfig(){
   const cfg=await api('/api/config');
+  modelChoices=cfg.models||[];
+  defaultModel=cfg.default_model||'';
+  fillModelSelect($('m-model'), true);
   $('conn').textContent='已连接 · 执行端 '+cfg.executor;
 }
 
@@ -525,6 +542,8 @@ function render(){
     const terminal=['succeeded','failed','skipped','cancelled'].includes(it.status) && !dryDone && !retryable;
     const running=['running','queued'].includes(it.status);
     const repoOpts=mappings.map(m=>`<option value="${esc(m.name)}" ${it.repo===m.name?'selected':''}>${esc(m.name)}</option>`).join('');
+    const modelOpts=`<option value="" ${!it.model?'selected':''}>默认</option>`+modelChoices.map(m=>`<option value="${esc(m.id)}" ${it.model===m.id?'selected':''}>${esc(m.label)}</option>`).join('');
+    const modelSel=(!terminal&&!running)?`<select class="model-sel" data-id="${esc(it.id)}" title="本任务执行模型">${modelOpts}</select>`:'';
     const actions=[];
     if(!it.repo) actions.push(`<select class="map-sel" data-id="${esc(it.id)}"><option value="">选仓库…</option>${repoOpts}</select><button class="btn-sm" data-act="map" data-id="${esc(it.id)}">映射</button>`);
     // dry-run 已成功就不再重复提供「重新 dry-run」；只有草稿或失败/取消才需要 dry-run
@@ -533,6 +552,7 @@ function render(){
     // apply 对草稿、dry-run 成功、失败/取消都可用
     if(!terminal && !running) actions.push(`<button class="btn-sm apply" data-act="apply" data-id="${esc(it.id)}">apply</button>`);
     if(running) actions.push(`<button class="btn-sm" data-act="cancel" data-id="${esc(it.id)}">取消</button>`);
+    if(modelSel) actions.push(modelSel);
     actions.push(`<button class="btn-sm danger" data-act="delete" data-id="${esc(it.id)}">删除</button>`);
     return `<div class="item">
       <div class="item-head">
@@ -547,6 +567,7 @@ function render(){
         <span class="tag ${it.kind}">${kindLabel[it.kind]||it.kind}</span>
         ${it.repo?`<span class="tag repo">仓库 ${esc(it.repo)}</span>`:'<span class="tag">未映射</span>'}
         <span class="tag">${esc(it.exec_mode)}</span>
+        ${it.model?`<span class="tag">模型 ${esc(it.model)}</span>`:''}
         ${dryDone?'<span class="tag feature">待 apply</span>':''}
       </div>
       ${it.stage?`<div class="stage">${esc(it.stage)}</div>`:''}
@@ -593,10 +614,12 @@ async function onAction(act,id){
       if(!sel||!sel.value){alert('请先选择仓库');return}
       await api(`/api/items/${id}/map`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repo_name:sel.value})});
     } else if(act==='dry'){
-      await api(`/api/items/${id}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_mode:'dry-run'})});
+      const sel=document.querySelector(`.model-sel[data-id="${id}"]`);
+      await api(`/api/items/${id}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_mode:'dry-run',model:sel?.value||null})});
     } else if(act==='apply'){
+      const sel=document.querySelector(`.model-sel[data-id="${id}"]`);
       if(!await askConfirm('apply 会在隔离 worktree 中真实执行 codebuddy 改代码（不会提交/推送）。确认继续？'))return;
-      await api(`/api/items/${id}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_mode:'apply',approved:true})});
+      await api(`/api/items/${id}/run`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exec_mode:'apply',approved:true,model:sel?.value||null})});
     } else if(act==='cancel'){
       await api(`/api/items/${id}/cancel`,{method:'POST'});
     } else if(act==='delete'){
@@ -624,6 +647,7 @@ async function createManual(mode){
       kind:$('m-kind').value,
       repo_name,
       exec_mode,
+      model:$('m-model').value||null,
       run_now,
       approved:mode==='apply',
     })});
