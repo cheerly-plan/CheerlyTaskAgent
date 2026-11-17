@@ -209,7 +209,6 @@
         <div class="section-note" style="margin:0">默认表格视图；按来源 / 状态 / 项目筛选排序，点击条目查看报告，支持重试、删除与卡片视图切换。</div>
       </div>
       <div style="display:flex;gap:8px;flex-shrink:0">
-        <button class="btn-sm" id="import-email">导入邮件</button>
         <button class="btn-sm" id="new-task" style="background:var(--purple);color:#fff;border-color:var(--purple)">+ 新建任务</button>
         <button class="btn-sm" id="refresh">刷新</button>
       </div>
@@ -1000,7 +999,6 @@ $('import-btn').onclick=async()=>{
 $('top-tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>switchPage(b.dataset.page));
 $('new-subtabs').querySelectorAll('button').forEach(b=>{ if(!b.disabled) b.onclick=()=>switchSub(b.dataset.sub); });
 $('new-task').onclick=()=>openNewTask('manual');
-$('import-email').onclick=()=>openNewTask('email');
 $('nt-close').onclick=closeNewTask;
 $('nt-cancel').onclick=closeNewTask;
 $('nt-cancel-email').onclick=closeNewTask;
