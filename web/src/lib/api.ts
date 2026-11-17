@@ -61,6 +61,12 @@ export interface ImapSettings {
   use_ssl: boolean;
 }
 
+export interface MailPollSettings {
+  enabled: boolean;
+  interval_minutes: number;
+  exec_mode: ExecMode;
+}
+
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
@@ -70,6 +76,7 @@ export interface UISettings {
   max_concurrent: number;
   auto_sync: boolean;
   imap: ImapSettings;
+  mail_poll: MailPollSettings;
 }
 
 export interface BrowseEntry {
@@ -177,8 +184,7 @@ export const endpoints = {
     approved: boolean;
   }) => api<WorkItem>('/api/tasks/manual', jsonInit('POST', body)),
 
-  importEmail: (body: {title: string; body: string; source: string; exec_mode: ExecMode}) =>
-    api<WorkItem>('/api/import', jsonInit('POST', body)),
+  pullMail: () => api<{created: number; skipped: number}>('/api/mail/pull', {method: 'POST'}),
 
   browse: (path: string) => api<BrowseResult>(`/api/fs/browse?path=${encodeURIComponent(path)}`),
   scan: (path: string, depth = 2) =>

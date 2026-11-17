@@ -3,11 +3,7 @@ import {toast} from 'sonner';
 
 import {ConfirmDialog} from '@/components/dialogs/confirm-dialog';
 import {FolderPickerDialog} from '@/components/dialogs/folder-picker-dialog';
-import {
-  NewTaskDialog,
-  type EmailTaskDraft,
-  type ManualTaskDraft,
-} from '@/components/dialogs/new-task-dialog';
+import {NewTaskDialog, type ManualTaskDraft} from '@/components/dialogs/new-task-dialog';
 import {MappingDialog} from '@/components/dialogs/mapping-dialog';
 import {ReportDialog} from '@/components/dialogs/report-dialog';
 import {ScanDialog} from '@/components/dialogs/scan-dialog';
@@ -40,7 +36,8 @@ interface AppContextValue {
   reloadSettings: () => Promise<void>;
   saveSettings: (next: UISettings) => Promise<void>;
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
-  openNewTask: (tab?: 'manual' | 'email') => void;
+  openNewTask: () => void;
+  pullMail: () => Promise<void>;
   pickFolder: (apply: (path: string) => void) => void;
   openScan: (path: string) => void;
   openMappingModal: (mapping: ProjectMapping | null) => void;
@@ -268,7 +265,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     [confirm, items, openReport, reloadItems, selections],
   );
 
-  // ── 新建任务 / 邮件导入 ───────────────────────────────────────────────────
+  // ── 新建任务 / 邮件拉取 ───────────────────────────────────────────────────
   const createManual = React.useCallback(
     async (draft: ManualTaskDraft, mode: 'draft' | 'dry' | 'apply') => {
       const title = draft.title.trim();
@@ -307,29 +304,19 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     [confirm, reloadItems],
   );
 
-  const importEmail = React.useCallback(
-    async (draft: EmailTaskDraft) => {
-      const title = draft.title.trim();
-      if (!title) {
-        toast.warning('请输入标题');
-        return;
+  const pullMail = React.useCallback(async () => {
+    try {
+      const result = await endpoints.pullMail();
+      await reloadItems();
+      if (result.created > 0) {
+        toast.success(`已从邮箱拉取 ${result.created} 封新邮件建单${result.skipped ? `，跳过 ${result.skipped} 封重复` : ''}`);
+      } else {
+        toast.info(`邮箱暂无新需求${result.skipped ? `（跳过 ${result.skipped} 封重复）` : ''}`);
       }
-      try {
-        await endpoints.importEmail({
-          title,
-          body: draft.body,
-          source: 'email',
-          exec_mode: draft.mode,
-        });
-        setNewTaskOpen(false);
-        await reloadItems();
-        toast.success('邮件已导入');
-      } catch (error) {
-        toast.error('导入失败：' + (error as Error).message);
-      }
-    },
-    [reloadItems],
-  );
+    } catch (error) {
+      toast.error('拉取邮件失败：' + (error as Error).message);
+    }
+  }, [reloadItems]);
 
   // ── 项目映射 ──────────────────────────────────────────────────────────────
   const saveMapping = React.useCallback(
@@ -388,6 +375,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   const saveSettings = React.useCallback(
     async (next: UISettings) => {
       const imap = next.imap ?? {host: '', port: 993, user: '', password: '', use_ssl: true};
+      const poll = next.mail_poll ?? {enabled: false, interval_minutes: 5, exec_mode: 'dry-run'};
       const payload: UISettings = {
         executor: next.executor || 'codebuddy',
         codebuddy_command: (next.codebuddy_command || '').trim(),
@@ -402,6 +390,11 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           user: (imap.user || '').trim(),
           password: imap.password || '',
           use_ssl: imap.use_ssl !== false,
+        },
+        mail_poll: {
+          enabled: poll.enabled === true,
+          interval_minutes: Math.max(1, Number(poll.interval_minutes) || 5),
+          exec_mode: poll.exec_mode === 'apply' ? 'apply' : 'dry-run',
         },
       };
       try {
@@ -432,6 +425,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     saveSettings,
     runItemAction,
     openNewTask: () => setNewTaskOpen(true),
+    pullMail,
     pickFolder: (apply) => setFolderPicker({open: true, apply}),
     openScan: (path) => setScan({open: true, path}),
     openMappingModal: (mapping) => setMappingDialog({open: true, editing: mapping}),
@@ -452,7 +446,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         models={models}
         defaultModel={defaultModel}
         onManualCreate={(draft, mode) => void createManual(draft, mode)}
-        onImportEmail={(draft) => void importEmail(draft)}
       />
 
       <FolderPickerDialog

@@ -1,19 +1,21 @@
 import * as React from 'react';
-import {FolderGit2, List, Settings2} from 'lucide-react';
+import {FolderGit2, Inbox, List, Settings2} from 'lucide-react';
 
 import {AppProvider, useApp} from '@/app-context';
 import {AppHeader} from '@/components/app-header';
+import {DataSourcesPage} from '@/pages/data-sources-page';
 import {MappingsPage} from '@/pages/mappings-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
 import {Toaster} from '@/components/ui/sonner';
 import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs';
 
-type PageKey = 'tasks' | 'mapping' | 'settings';
+type PageKey = 'tasks' | 'mapping' | 'sources' | 'settings';
 
 const TABS = [
   {key: 'tasks' as const, label: '任务列表', icon: List},
   {key: 'mapping' as const, label: '项目映射', icon: FolderGit2},
+  {key: 'sources' as const, label: '数据源', icon: Inbox},
   {key: 'settings' as const, label: '系统设置', icon: Settings2},
 ];
 
@@ -45,6 +47,9 @@ function Shell() {
           </TabsContent>
           <TabsContent value="mapping" className="mt-6">
             <MappingsPage />
+          </TabsContent>
+          <TabsContent value="sources" className="mt-6">
+            <DataSourcesPage />
           </TabsContent>
           <TabsContent value="settings" className="mt-6">
             <SettingsPage />

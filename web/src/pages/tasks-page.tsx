@@ -246,7 +246,7 @@ export function TasksPage() {
         {items.length === 0 ? (
           <EmptyState
             title="还没有任何工作项"
-            description="点右上角「新建任务」手动录入需求或 Bug，也可以从「邮件导入」粘贴工单创建。"
+            description="点右上角「新建任务」手动录入需求或 Bug；邮件、TAPD 等外部来源在「数据源」Tab 自动接入。"
             action={
               <Button className="mt-2" onClick={() => openNewTask()}>
                 新建任务

@@ -29,9 +29,6 @@ export function AppHeader({conn, connText, onNewTask}: AppHeaderProps) {
             <span className="truncate text-[15px] font-semibold tracking-[-0.02em] text-foreground">
               CheerlyTaskAgent
             </span>
-            <span className="hidden truncate text-xs text-faint sm:block">
-              需求调度台 · 手动 / 邮箱 → 本地 CLI（TAPD 预留）
-            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">

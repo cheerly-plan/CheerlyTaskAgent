@@ -37,15 +37,15 @@ export function MappingsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={pickThenMap}>
             <FolderGit2 />
-            选择文件夹
+            添加
           </Button>
           <Button variant="outline" size="sm" onClick={() => pickFolder((path) => openScan(path))}>
             <Search />
-            扫描文件夹
+            扫描
           </Button>
           <Button size="sm" onClick={() => openMappingModal(null)}>
             <Plus />
-            手动新增
+            新增
           </Button>
         </div>
       </div>

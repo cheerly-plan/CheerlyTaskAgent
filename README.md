@@ -33,7 +33,9 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 
 ## 关键能力
 
-- **任务来源（手动优先）**：任务列表右上角「+ 新建任务」打开「新建任务」弹窗（含「手动新建 / 邮件导入 / TAPD 预留」子 Tab）；手动新建可直接选项目映射、写标题/描述、选 bug/需求/任务，支持「创建草稿」「创建并 dry-run」「创建并 apply」三种方式；不依赖邮件或 TAPD。`email` 导入在弹窗的「邮件导入」子 Tab，`tapd` 接口已留接缝（`sources.py`）。真实邮箱需先开通 Agent Mail，再用 `/api/import/emails` 把 `ListMessages` 结果喂进来。
+- **任务来源**：「+ 新建任务」弹窗**只做手动录入**——选项目映射、写标题/描述、选 bug/需求/任务，支持「创建草稿」「创建并 dry-run」「创建并 apply」。邮件和 TAPD 属于外部来源，走**自动接入**，不在新建入口里手动选。
+  - **邮件自动接入**：在「数据源」Tab 填 IMAP 凭证（host/port/user/password/use_ssl），开启「自动拉取」后，服务按间隔（默认 5 分钟）轮询收件箱的未读邮件 → 规则式解析 bug/需求 → 按 message-id 幂等建单；也可在该 Tab 点「立即拉取」收一次。建单后的执行模式（dry-run/apply）可在数据源 Tab 选。开关/间隔/模式保存在 `data/settings.json`，即时生效，无需重启。`tapd` 仍为预留接缝（`sources.py`）。
+  - 旧的 `/api/import`、`/api/import/emails` 端点保留供程序化调用/兼容，但界面不再暴露手动邮件入口。
 - **按任务选模型**：新建任务时可选本次 codebuddy 用的模型（默认「跟随全局」）；工作项卡片上也能随时切换，dry-run/apply 时按该选择下发 `--model`。候选来自 `codebuddy --help` 的真实模型（18 个，含 `fast-model`/`balanced-model`/`deep-model`、`hy4std/hy4flash`、`deepseek-v4.1-flash`/`deepseek-v4-pro`、`glm-5.3` 等），可用 `TASKAGENT_MODELS` 收窄候选；全局默认由 `CODEBUDDY_MODEL` 指定。报告里记录每个任务实际用的模型。
 - **项目映射配置（推荐）**：维护一张「项目名/别名 → 本地文件夹」列表，邮件标题/正文出现任一别名即命中，**不依赖 git**。列表默认为空（`data/projects.json`），**完全由你手动添加**——可在调度台逐级点选文件夹、或扫描一个父目录批量勾选加入；也可手工填写。增删改、启停即时生效。匹配规则：中文按子串、英文按词边界、多个命中取最长别名、可停用。
   - **选择文件夹**：点「选择文件夹」→ 从主目录逐级点进子文件夹 → 「选择当前文件夹」→ 自动带出项目名与路径，确认即建映射。
@@ -53,11 +55,12 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 - 加组件：`cd web && pnpm dlx shadcn@latest add <component>`，组件落在 `web/src/components/ui/`。
 - 类型检查：`cd web && pnpm typecheck`。
 
-顶部 Tab 划分三个主页面，新建任务已合并进任务列表（按钮 + 弹窗）：
+顶部 Tab 划分四个主页面，新建任务已合并进任务列表（按钮 + 弹窗）：
 
-1. **任务列表**：右上角「+ 新建任务」按钮打开弹窗，弹窗内嵌「手动新建 / 邮件导入 / TAPD 预留」子 Tab（邮件导入在此切换）。列表默认表格视图，按来源 / 状态 / 项目筛选；**点击表头**即可按标题 / 类型 / 来源 / 项目 / 状态 / 创建时间升序或降序（再次点击切换方向，卡片视图用工具栏的「排序」下拉 + 方向按钮）；点击条目查看报告（无报告时显示工单详情），配套重试、apply、取消、删除、按任务切换模型等操作，可切换卡片视图。
+1. **任务列表**：右上角「+ 新建任务」按钮打开**纯手动**录入弹窗；外部来源（邮件 / TAPD）统一在「数据源」Tab 接入。列表默认表格视图，按来源 / 状态 / 项目筛选；**点击表头**即可按标题 / 类型 / 来源 / 项目 / 状态 / 创建时间升序或降序（再次点击切换方向，卡片视图用工具栏的「排序」下拉 + 方向按钮）；点击条目查看报告（无报告时显示工单详情），配套重试、apply、取消、删除、按任务切换模型等操作，可切换卡片视图。
 2. **项目映射**：以配置表格统一管理项目名 / 别名 / 本地路径 / 仓库信息，支持「选择文件夹」逐级点选、「扫描文件夹」批量勾选与手动新增、编辑、启停、删除。
-3. **系统设置**：集中维护 CodeBuddy CLI 命令、DSH / WorkBuddy CLI 路径（预留执行端）、默认模型、并发与自动同步，以及 IMAP 邮箱凭证。凭证明文保存在本机 `data/settings.json`，密码留空表示保持原值；部分参数保存后需重启服务生效。
+3. **数据源**：外部来源接入中心。邮件（IMAP）卡片配置凭证、自动拉取开关 / 轮询间隔 / 建单执行模式，并提供「立即拉取」按钮；TAPD 为灰显预留卡。凭证明文保存在本机 `data/settings.json`，密码留空表示保持原值；邮件自动拉取配置即时生效，无需重启。
+4. **系统设置**：集中维护 CodeBuddy CLI 命令、DSH / WorkBuddy CLI 路径（预留执行端）、默认模型、并发与自动同步。部分参数（如 CLI 路径）保存后需重启服务生效。
 
 ## 配置
 
@@ -83,7 +86,8 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 |---|---|---|
 | `GET` | `/` | 调度台 UI |
 | `GET` | `/api/config` | 配置概览 |
-| `GET` / `PUT` | `/api/settings` | 读取 / 保存系统设置（CLI 路径、DSH、WorkBuddy、模型、IMAP） |
+| `GET` / `PUT` | `/api/settings` | 读取 / 保存系统设置（CLI 路径、DSH、WorkBuddy、模型、IMAP、邮件自动拉取） |
+| `POST` | `/api/mail/pull` | 立即从 IMAP 收件箱拉取新邮件并幂等建单（返回 created/skipped） |
 | `GET` | `/api/fs/browse?path=` | 只读浏览目录（返回真实绝对路径，限制在 `TASKAGENT_FS_ROOT` 内） |
 | `POST` | `/api/fs/scan` | 扫描目录 `{path,depth}` 返回候选项目（git 仓库优先） |
 | `GET` | `/api/mappings` | 项目映射配置列表 |
@@ -127,11 +131,11 @@ web/                    前端工程源码
 ├── components.json    shadcn/ui 配置
 ├── tailwind.config.ts 设计令牌（品牌紫 + 语义色）
 └── src/
-    ├── App.tsx       三个 Tab 的壳
+    ├── App.tsx       四个 Tab 的壳
     ├── app-context.tsx 数据加载 / SSE / 全局弹窗与动作
     ├── components/ui/  shadcn 组件（button / dialog / select / table …）
     ├── components/dialogs/  新建任务 / 选文件夹 / 扫描 / 映射 / 报告 / 确认
-    ├── pages/        任务列表 / 项目映射 / 系统设置
+    ├── pages/        任务列表 / 项目映射 / 数据源 / 系统设置
     └── lib/          API 契约、状态字典、Markdown 报告渲染
 ```
 

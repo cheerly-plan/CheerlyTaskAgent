@@ -11,7 +11,7 @@
 
 | 它做 | 它不做（本阶段） |
 |---|---|
-| 手动新建（选项目即执行）/ 邮件导入，规则提取标题/类型/git 地址 | 不接 LLM 自动拆任务（后续） |
+| 手动新建（选项目即执行）/ 邮件 IMAP 自动接入，规则提取标题/类型/git 地址 | 不接 LLM 自动拆任务（后续） |
 | git URL 归一化，映射到本地 checkout | 不改 git 历史、不提交、不 push |
 | 派发 `codebuddy -p` 在映射仓库执行 | 不回写邮件/TAPD（暂时只本地报告） |
 | 幂等、并发、重试、取消、事件流、Markdown 报告 | apply 用 worktree 隔离执行；成功后自动把改动同步到主仓库工作区（不 commit/push，不改 git 历史） |
@@ -31,6 +31,7 @@ flowchart LR
       M[手动新建（选项目）] --> S[Source 导入]
       E[邮件] --> S
       T[TAPD 预留接缝] -.-> S
+      IM[IMAP 邮箱] -->|定时/手动拉取| ES[EmailSource]
     end
     S --> P[规则解析<br/>标题/类型/git URL]
     P --> W[WorkItem<br/>去重/状态机]
@@ -49,13 +50,14 @@ flowchart LR
 | 组件 | 职责 |
 |---|---|
 | `sources.py` | `RawItem`（邮件/manual）→ `WorkItem`。规则：标题前缀判 bug/需求、关键词兜底、正则提取 git URL、去签名/引用。TAPD 适配器留注释接缝。 |
+| `mailpoll.py` | IMAP 自动接入：用标准库 imaplib 拉收件箱未读邮件（只读）、解析 MIME 正文/编码头，转成 `EmailSource.from_mailtool` 的 dict 形状；凭证来自 UI 设置，失败只返回错误不抛异常。`api.py` 的 `pull_mail_now()` 复用它建单（message-id 幂等），手动端点 `/api/mail/pull` 与 lifespan 后台定时任务共用；开关/间隔/模式存 `mail_poll` 设置，默认关闭、5 分钟、dry-run。 |
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`。 |
 | `scheduler.py` | 导入去重（`source_ref`）、`create_manual`（手动指定项目直接 ready）、映射、派发、幂等、并发上限、退避重试、取消、事件发射。确定性代码，无 LLM。 |
 | `executor.py` | `codebuddy -p --output-format json` 非交互执行。`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 以 worktree HEAD 为 base 做三方比较同步回主仓库（主仓库未分叉才覆盖，分叉则尝试干净合并、否则记冲突并备份双方；路径校验/忽略规则）。argv 列表拼接防命令注入。 |
 | `report.py` | 每单生成精简 Markdown：概览、执行结果、改动文件、自动同步明细与备份位置、错误；codebuddy 原始 stdout 只提取最终结论、提示词/命令/输出放折叠附录（`<details>`），避免动辄 10 万字符。`render_report` 也供 `/api/items/{id}/report` 实时渲染，老报告一并精简呈现（磁盘 .md 存档不动）。前端轻量 Markdown 渲染器把表格/标题/折叠块结构化展示。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
-| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。三 Tab（任务列表 / 项目映射 / 系统设置），新建任务由右上角「+ 新建任务」打开弹窗（内嵌手动新建 / 邮件导入 / TAPD 预留子 Tab）；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
+| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；邮件由「数据源」Tab 配置 IMAP 凭证 + 自动拉取，并提供「立即拉取」手动触发，TAPD 为预留接缝；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
 
 ## 3. 关键流程
 

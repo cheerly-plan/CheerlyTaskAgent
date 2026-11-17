@@ -47,6 +47,7 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "max_concurrent": 1,
     "auto_sync": True,
     "imap": {"host": "", "port": 993, "user": "", "password": "", "use_ssl": True},
+    "mail_poll": {"enabled": False, "interval_minutes": 5, "exec_mode": "dry-run"},
 }
 
 
@@ -166,6 +167,7 @@ class Settings:
             "max_concurrent": self.max_concurrent,
             "auto_sync": self.auto_sync,
             "imap": dict(UI_SETTINGS_DEFAULTS["imap"]),
+            "mail_poll": dict(UI_SETTINGS_DEFAULTS["mail_poll"]),
         }
         path = self.ui_settings_path
         if path.is_file():
@@ -173,8 +175,8 @@ class Settings:
                 saved = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(saved, dict):
                     for key, value in saved.items():
-                        if key == "imap" and isinstance(value, dict):
-                            data["imap"].update(value)
+                        if key in {"imap", "mail_poll"} and isinstance(value, dict):
+                            data[key].update(value)
                         elif key in data:
                             data[key] = value
             except (OSError, ValueError):
@@ -192,9 +194,16 @@ class Settings:
                 if not imap.get("password"):
                     imap["password"] = data["imap"].get("password", "")
                 data["imap"].update(imap)
-            elif key in data and key != "imap":
+            elif key == "mail_poll" and isinstance(value, dict):
+                data["mail_poll"].update(value)
+            elif key in data:
                 data[key] = value
         data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
+        # Normalise mail_poll values to sane bounds.
+        poll = data["mail_poll"]
+        poll["enabled"] = bool(poll.get("enabled", False))
+        poll["interval_minutes"] = max(1, int(poll.get("interval_minutes", 5) or 5))
+        poll["exec_mode"] = "apply" if poll.get("exec_mode") == "apply" else "dry-run"
         path = self.ui_settings_path
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")

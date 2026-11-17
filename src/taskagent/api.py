@@ -18,6 +18,7 @@ from .events import EventBus, sse_frame
 from .executor import CodeBuddyExecutor
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
+from .mailpoll import MailPoller
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .report import render_report
 from .scheduler import Scheduler, SchedulerSettings
@@ -107,6 +108,7 @@ class UISettingsBody(BaseModel):
     max_concurrent: int = Field(default=1, ge=1)
     auto_sync: bool = True
     imap: dict[str, Any] = Field(default_factory=dict)
+    mail_poll: dict[str, Any] = Field(default_factory=dict)
 
 
 def web_not_built_page() -> str:
@@ -189,14 +191,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if recovered:
         logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
 
+    def pull_mail_now() -> dict[str, Any]:
+        """Fetch inbox -> parse -> import, using the latest saved settings.
+
+        Shared by the manual endpoint and the background poller. Always returns
+        a dict (never raises) so a bad mailbox can't break the caller.
+        """
+        ui = settings.load_ui_settings()
+        imap_cfg = ui.get("imap", {})
+        result = MailPoller(imap_cfg).poll()
+        if result.error:
+            return {"created": 0, "skipped": 0, "error": result.error}
+        exec_mode = ui.get("mail_poll", {}).get("exec_mode", "dry-run")
+        created = skipped = 0
+        for raw in EmailSource.from_mailtool(result.messages):
+            try:
+                _, was_created = scheduler.import_raw(raw, exec_mode=exec_mode)
+                if was_created:
+                    created += 1
+                else:
+                    skipped += 1
+            except ValueError as error:
+                logger.warning("邮件建单失败：%s", error)
+                skipped += 1
+        return {"created": created, "skipped": skipped, "error": None}
+
+    async def mail_poll_loop() -> None:
+        """Periodically poll the inbox while enabled; re-reads settings each tick."""
+        while True:
+            ui = settings.load_ui_settings()
+            poll_cfg = ui.get("mail_poll", {})
+            interval_s = max(1, int(poll_cfg.get("interval_minutes", 5) or 5)) * 60
+            if poll_cfg.get("enabled"):
+                # Blocking IMAP work runs in a thread so the event loop stays free.
+                result = await asyncio.to_thread(pull_mail_now)
+                if result.get("error"):
+                    logger.warning("定时拉取邮件失败：%s", result["error"])
+                elif result.get("created"):
+                    logger.info("定时拉取邮件：新建 %d 条", result["created"])
+            await asyncio.sleep(interval_s)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Nothing to do on startup; cleanup on graceful shutdown so uvicorn
-        # doesn't hang waiting for SSE streams and in-flight exec tasks.
-        yield
-        logger.info("关闭中：断开 SSE、取消后台任务…")
-        events.close()
-        await scheduler.shutdown()
+        poll_task = asyncio.create_task(mail_poll_loop(), name="mail-poll")
+        try:
+            yield
+        finally:
+            logger.info("关闭中：断开 SSE、取消后台任务…")
+            poll_task.cancel()
+            await asyncio.gather(poll_task, return_exceptions=True)
+            events.close()
+            await scheduler.shutdown()
 
     app = FastAPI(title="CheerlyTaskAgent", version="0.2.0", lifespan=lifespan)
     app.state.ctx = SimpleNamespace(
@@ -355,6 +400,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 skipped += 1
         return {"created": created, "skipped": skipped}
+
+    @app.post("/api/mail/pull")
+    async def api_mail_pull() -> dict[str, Any]:
+        """Manually pull new mail from the configured IMAP inbox now."""
+        result = await asyncio.to_thread(pull_mail_now)
+        if result.get("error"):
+            raise HTTPException(400, result["error"])
+        return {"created": result["created"], "skipped": result["skipped"]}
 
     @app.get("/api/items/{item_id}")
     def api_get_item(item_id: str) -> dict[str, Any]:
