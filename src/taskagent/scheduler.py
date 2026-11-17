@@ -367,6 +367,11 @@ class Scheduler:
                     # failed — surface it so the user doesn't assume the code
                     # is in their checkout.
                     item.stage = "完成（同步回主仓库失败，请查看报告）"
+                elif result.sync_conflicts:
+                    # Diverged files were left untouched to protect later
+                    # main-repo edits — make the partial sync visible.
+                    n = len(result.sync_conflicts)
+                    item.stage = f"完成（{n} 个文件冲突未覆盖，请查看报告）"
                 elif result.synced_files or result.sync_deleted:
                     n = len(result.synced_files) + len(result.sync_deleted)
                     item.stage = f"完成（已同步 {n} 个文件到主仓库）"

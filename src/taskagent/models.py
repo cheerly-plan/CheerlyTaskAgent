@@ -130,6 +130,7 @@ class RunResult:
     synced_files: list[str] = field(default_factory=list)
     sync_deleted: list[str] = field(default_factory=list)
     sync_skipped: list[str] = field(default_factory=list)
+    sync_conflicts: list[str] = field(default_factory=list)
     sync_backup_dir: str | None = None
     sync_error: str | None = None
 
@@ -147,6 +148,7 @@ class RunResult:
             "synced_files": self.synced_files,
             "sync_deleted": self.sync_deleted,
             "sync_skipped": self.sync_skipped,
+            "sync_conflicts": self.sync_conflicts,
             "sync_backup_dir": self.sync_backup_dir,
             "sync_error": self.sync_error,
         }

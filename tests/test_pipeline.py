@@ -493,6 +493,105 @@ def test_sync_to_repo_missing_repo_reports_error(tmp_path):
     assert out["sync_error"]
 
 
+def _git_init_with_base(path: Path, files: dict[str, str]) -> None:
+    """Create a standalone git repo with one baseline commit."""
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        target = path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    subprocess.run(["git", "init", "-q"], cwd=path, capture_output=True, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=path, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-qm", "base"],
+        cwd=path, capture_output=True, check=True,
+    )
+
+
+def test_sync_conflict_does_not_clobber_repo_change(tmp_path):
+    """When repo diverged after base, codebuddy's version must not overwrite it.
+
+    Reproduces the real incident: a stale worktree's index.html would wipe
+    changes made in the main repo after the worktree's base commit.
+    """
+    base = "line1\nline2\nline3\n"
+    # Worktree's HEAD == base; codebuddy rewrote the whole file from base.
+    wt = tmp_path / "wt"
+    _git_init_with_base(wt, {"index.html": base})
+    (wt / "index.html").write_text("codebuddy rewrite\n")
+    # Main repo also has base committed, then a NEW edit landed after base.
+    repo = tmp_path / "repo"
+    _git_init_with_base(repo, {"index.html": base})
+    (repo / "index.html").write_text("line1\nline2\nline3\nNEW MODEL UI\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(wt, str(repo), item_id="conflict-1", changed=["index.html"])
+
+    # Repo change preserved — never silently clobbered.
+    assert "NEW MODEL UI" in (repo / "index.html").read_text()
+    assert out["synced_files"] == []
+    assert any("index.html" in c for c in out["sync_conflicts"])
+    backup = Path(out["sync_backup_dir"])
+    assert (backup / "index.html.main").read_text() == "line1\nline2\nline3\nNEW MODEL UI\n"
+    assert (backup / "index.html.codebuddy").read_text() == "codebuddy rewrite\n"
+
+
+def test_sync_clean_three_way_merge_applies(tmp_path):
+    """Non-overlapping edits in repo and codebuddy merge cleanly into the repo."""
+    base = "a\nb\nc\n"
+    wt = tmp_path / "wt"
+    _git_init_with_base(wt, {"f.py": base})
+    (wt / "f.py").write_text("a\nb\nc\nfrom_codebuddy\n")
+    repo = tmp_path / "repo"
+    _git_init_with_base(repo, {"f.py": base})
+    (repo / "f.py").write_text("from_repo\na\nb\nc\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(wt, str(repo), item_id="merge-1", changed=["f.py"])
+
+    content = (repo / "f.py").read_text()
+    assert "from_repo" in content and "from_codebuddy" in content
+    assert any("三方合并" in s for s in out["synced_files"])
+    assert out["sync_conflicts"] == []
+
+
+def test_sync_unchanged_repo_overwrites_cleanly(tmp_path):
+    """When repo still matches base, codebuddy's version is applied (normal path)."""
+    base = "old\n"
+    wt = tmp_path / "wt"
+    _git_init_with_base(wt, {"app.py": base})
+    (wt / "app.py").write_text("new\n")
+    repo = tmp_path / "repo"
+    _git_init_with_base(repo, {"app.py": base})
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(wt, str(repo), item_id="clean-1", changed=["app.py"])
+
+    assert (repo / "app.py").read_text() == "new\n"
+    assert "app.py" in out["synced_files"]
+    assert out["sync_conflicts"] == []
+
+
+def test_sync_deletion_guard_when_repo_diverged(tmp_path):
+    """codebuddy deletes a file that repo edited after base -> do not delete."""
+    base = "original\n"
+    wt = tmp_path / "wt"
+    _git_init_with_base(wt, {"gone.py": base})
+    (wt / "gone.py").unlink()
+    repo = tmp_path / "repo"
+    _git_init_with_base(repo, {"gone.py": base})
+    (repo / "gone.py").write_text("original\nrepo added lines\n")
+
+    ex = CodeBuddyExecutor(worktrees_dir=tmp_path / "wt-root", backups_dir=tmp_path / "backups")
+    out = ex.sync_to_repo(wt, str(repo), item_id="delconf-1", changed=["gone.py"])
+
+    assert (repo / "gone.py").exists()
+    assert "repo added lines" in (repo / "gone.py").read_text()
+    assert any("gone.py" in c for c in out["sync_conflicts"])
+
+
 def test_recover_interrupted_items_on_restart(env):
     """queued/running items left by a dead process are reaped on startup."""
     scheduler, store, _, events, _ = env

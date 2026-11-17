@@ -76,6 +76,14 @@ def render_report(item: WorkItem) -> str:
                 lines += ["已写入工作区："] + [f"- `{name}`" for name in result.synced_files] + [""]
             if result.sync_deleted:
                 lines += ["已删除："] + [f"- `{name}`" for name in result.sync_deleted] + [""]
+        if result.sync_conflicts:
+            lines += [
+                "### ⚠️ 同步冲突（主仓库改动未被覆盖）",
+                "",
+                "以下文件在主仓库与 codebuddy 之间分叉，出于安全未自动覆盖。" +
+                "请人工比对备份目录中的 `.main` / `.codebuddy` 版本后手动合并：",
+                "",
+            ] + [f"- {name}" for name in result.sync_conflicts] + [""]
         if result.sync_skipped:
             lines += ["同步时跳过（忽略规则/路径不安全/失败）：", ""] + [
                 f"- `{name}`" for name in result.sync_skipped

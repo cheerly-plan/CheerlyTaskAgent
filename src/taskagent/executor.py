@@ -315,6 +315,7 @@ class CodeBuddyExecutor:
             synced_files=list(sync.get("synced_files") or []),
             sync_deleted=list(sync.get("sync_deleted") or []),
             sync_skipped=list(sync.get("sync_skipped") or []),
+            sync_conflicts=list(sync.get("sync_conflicts") or []),
             sync_backup_dir=sync.get("sync_backup_dir") if isinstance(sync.get("sync_backup_dir"), str) else None,
             sync_error=sync.get("sync_error") if isinstance(sync.get("sync_error"), str) else None,
         )
@@ -576,6 +577,78 @@ class CodeBuddyExecutor:
         except OSError:
             return False
 
+    @staticmethod
+    def _sync_backup_bytes(data: bytes, backup_root: Path, rel: str) -> bool:
+        """Persist raw bytes into the backup tree (e.g. codebuddy's conflicted version)."""
+        try:
+            dest = backup_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _sync_base_bytes(worktree: Path, rel: str) -> tuple[bool, bytes | None]:
+        """Return ``(has_head, base_bytes)`` for a changed file.
+
+        ``base`` is the version in the worktree's HEAD — the shared ancestor
+        codebuddy started from — used for three-way conflict detection.
+        ``has_head=False`` means the worktree has no git baseline at all (plain
+        dirs in tests / unusual setups); callers then fall back to legacy copy.
+        ``has_head=True, base=None`` means a git repo where the file is new
+        (not present in HEAD).
+        """
+        import subprocess
+
+        # A git baseline is only meaningful when the worktree is its own repo
+        # root. A plain dir nested inside some parent repo would otherwise
+        # resolve HEAD against that parent and produce a false "diverged" base.
+        top = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
+            capture_output=True, check=False, text=True,
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != worktree.resolve():
+            return False, None
+
+        rel_git = rel.replace("\\", "/")
+        shown = subprocess.run(
+            ["git", "-C", str(worktree), "show", f"HEAD:{rel_git}"],
+            capture_output=True, check=False,
+        )
+        if shown.returncode == 0:
+            return True, shown.stdout
+        head = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--verify", "HEAD"],
+            capture_output=True, check=False,
+        )
+        return (head.returncode == 0), None
+
+    @staticmethod
+    def _sync_three_way_merge(base: bytes, ours: bytes, theirs: bytes) -> tuple[bytes | None, bool]:
+        """Three-way merge via ``git merge-file``. Returns (merged, clean).
+
+        ``clean=True`` only when git reports no conflicts (exit 0), so an auto
+        merge can never introduce conflict markers into the main repo.
+        """
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "base").write_bytes(base)
+            (d / "ours").write_bytes(ours)
+            (d / "theirs").write_bytes(theirs)
+            merged = subprocess.run(
+                ["git", "merge-file", "--stdout",
+                 "-L", "main", "-L", "base", "-L", "codebuddy",
+                 str(d / "ours"), str(d / "base"), str(d / "theirs")],
+                capture_output=True, check=False,
+            )
+            if merged.returncode == 0:
+                return merged.stdout, True
+            return None, False
+
     def sync_to_repo(
         self,
         worktree: Path,
@@ -584,16 +657,21 @@ class CodeBuddyExecutor:
         item_id: str,
         changed: list[str],
     ) -> dict[str, object]:
-        """Copy codebuddy's changed files from the worktree into the real repo.
+        """Merge codebuddy's changed files from the worktree into the real repo.
 
-        Safety properties:
-          - Only paths reported as changed by codebuddy are touched.
-          - Paths are normalized, checked against ignore rules, and verified to
-            stay inside the repo root (no ``..``, no absolute, no symlink escape).
-          - Any existing file that would be overwritten or deleted is backed up
-            first into ``backups_dir/<item_id>/<timestamp>/``.
-          - Failures are collected, never raised: sync is best-effort and does
-            not invalidate a successful apply.
+        Three-way safety: for each file compare ``base`` (worktree HEAD, the
+        shared ancestor) with ``ours`` (current main repo) and ``theirs``
+        (codebuddy's worktree result). A file is only overwritten/deleted when
+        the main repo still matches base; otherwise a clean 3-way merge is
+        attempted, and on conflict nothing is clobbered — both versions are
+        backed up and the conflict is reported. This prevents a stale worktree
+        from wiping later main-repo changes that were not in its base.
+
+        Also keeps the earlier guarantees: only changed paths are touched;
+        paths are normalized, ignore-filtered and checked to stay inside the
+        repo (no ``..``/absolute/symlink escape); failures are collected, never
+        raised. Worktrees with no git HEAD fall back to the legacy copy so that
+        plain-directory sandboxes still sync.
         """
         from .commitfilter import CommitFileFilter
 
@@ -604,6 +682,7 @@ class CodeBuddyExecutor:
             "synced_files": [],
             "sync_deleted": [],
             "sync_skipped": [],
+            "sync_conflicts": [],
             "sync_backup_dir": None,
             "sync_error": None,
         }
@@ -615,12 +694,12 @@ class CodeBuddyExecutor:
         synced: list[str] = []
         deleted: list[str] = []
         skipped: list[str] = []
+        conflicts: list[str] = []
         filt = CommitFileFilter(self.sync_ignore_patterns)
 
         backup_root = self.backups_dir / item_id / time.strftime("%Y%m%d-%H%M%S")
         backup_used = False
 
-        # Build the set of (normalized) changed paths, de-duplicated.
         seen: set[str] = set()
         pending: list[str] = []
         for raw in changed:
@@ -639,34 +718,112 @@ class CodeBuddyExecutor:
                 continue
 
             src = worktree / rel
-            if src.is_file():
-                # New or modified file: back up the target if it exists,
-                # then copy the worktree version over.
-                try:
-                    if target.exists() and self._sync_backup(target, backup_root, rel):
+            has_head, base = self._sync_base_bytes(worktree, rel)
+            theirs = src.read_bytes() if src.is_file() else None
+            ours = target.read_bytes() if target.is_file() else None
+
+            # No git baseline available: keep legacy behavior (backup + copy).
+            if not has_head:
+                if theirs is not None:
+                    try:
+                        if ours is not None and self._sync_backup(target, backup_root, rel):
+                            backup_used = True
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, target)
+                        synced.append(rel)
+                    except OSError as error:
+                        skipped.append(f"{rel} (复制失败: {error})")
+                elif ours is not None:
+                    if self._sync_backup(target, backup_root, rel):
                         backup_used = True
+                        try:
+                            target.unlink()
+                            deleted.append(rel)
+                        except OSError as error:
+                            skipped.append(f"{rel} (删除失败: {error})")
+                    else:
+                        skipped.append(f"{rel} (备份失败，已跳过删除)")
+                continue
+
+            # codebuddy deleted the file in the worktree.
+            if theirs is None:
+                if ours is None:
+                    continue  # nothing on either side
+                if base is not None and ours == base:
+                    # Repo unchanged since base -> safe to mirror deletion.
+                    if self._sync_backup(target, backup_root, rel):
+                        backup_used = True
+                        try:
+                            target.unlink()
+                            deleted.append(rel)
+                        except OSError as error:
+                            skipped.append(f"{rel} (删除失败: {error})")
+                    else:
+                        skipped.append(f"{rel} (备份失败，已跳过删除)")
+                else:
+                    # Repo modified (or file added) after base -> don't delete.
+                    if self._sync_backup_bytes(ours, backup_root, rel + ".main"):
+                        backup_used = True
+                    conflicts.append(f"{rel} (codebuddy 删除，但主仓库在 base 之后已改动，未删除；主仓库版本已备份为 .main)")
+                continue
+
+            # codebuddy has a file (new or modified).
+            if ours is None:
+                if base is not None:
+                    # Repo deleted it after base while codebuddy modified it.
+                    if self._sync_backup_bytes(theirs, backup_root, rel + ".codebuddy"):
+                        backup_used = True
+                    conflicts.append(f"{rel} (主仓库在 base 之后删除了此文件，codebuddy 又修改了它，未重建；codebuddy 版本已备份为 .codebuddy)")
+                else:
+                    # Genuinely new file on both sides; nothing to clobber.
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, target)
+                        synced.append(rel)
+                    except OSError as error:
+                        skipped.append(f"{rel} (复制失败: {error})")
+                continue
+
+            # Both sides have the file.
+            if ours == theirs:
+                continue  # already identical, no action
+            if base is not None and ours == base:
+                # Repo still matches base -> safe overwrite (with backup).
+                if self._sync_backup(target, backup_root, rel):
+                    backup_used = True
+                try:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, target)
                     synced.append(rel)
                 except OSError as error:
                     skipped.append(f"{rel} (复制失败: {error})")
-            elif target.is_file():
-                # Deleted in the worktree but present in the repo: mirror the
-                # deletion, but only after backing the file up.
-                if self._sync_backup(target, backup_root, rel):
-                    backup_used = True
+                continue
+
+            # Diverged: both changed since base (or no common ancestor).
+            if base is not None:
+                merged, clean = self._sync_three_way_merge(base, ours, theirs)
+                if clean and merged is not None:
+                    if self._sync_backup(target, backup_root, rel):
+                        backup_used = True
                     try:
-                        target.unlink()
-                        deleted.append(rel)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(merged)
+                        synced.append(f"{rel} (三方合并)")
                     except OSError as error:
-                        skipped.append(f"{rel} (删除失败: {error})")
-                else:
-                    skipped.append(f"{rel} (备份失败，已跳过删除)")
-            # else: neither side has a real file — nothing to do.
+                        skipped.append(f"{rel} (合并写入失败: {error})")
+                    continue
+
+            # Cannot merge cleanly -> back up both, leave main repo untouched.
+            if self._sync_backup(target, backup_root, rel + ".main"):
+                backup_used = True
+            if self._sync_backup_bytes(theirs, backup_root, rel + ".codebuddy"):
+                backup_used = True
+            conflicts.append(f"{rel} (主仓库与 codebuddy 均修改且无法自动合并，未覆盖；双方版本已备份为 .main / .codebuddy)")
 
         result["synced_files"] = synced
         result["sync_deleted"] = deleted
         result["sync_skipped"] = skipped
+        result["sync_conflicts"] = conflicts
         if backup_used:
             result["sync_backup_dir"] = str(backup_root)
         return result
