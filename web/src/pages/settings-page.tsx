@@ -110,10 +110,10 @@ export function SettingsPage() {
     .map(([id, cfg]) => ({value: id, label: cfg.label || id}));
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       {/* ── 执行后端：完全由配置驱动，可增删 ─────────────────────────── */}
-      <div>
-        <div className="mb-0.5 flex flex-wrap items-start justify-between gap-2">
+      <div className="flex min-h-[200px] flex-1 flex-col">
+        <div className="mb-0.5 flex shrink-0 flex-wrap items-start justify-between gap-2">
           <div>
             <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
               <Server className="size-4 text-primary" />
@@ -134,8 +134,8 @@ export function SettingsPage() {
             还没有配置执行后端，点击「添加后端」新建一个。
           </Card>
         ) : (
-          <Card className="mt-3 overflow-hidden">
-            <div className="max-h-[46vh] overflow-auto">
+          <Card className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full border-collapse text-[12.5px]">
                 <thead className="sticky top-0 z-10 bg-card">
                   <tr className="border-b border-border text-left text-[11.5px] text-faint">
@@ -286,7 +286,7 @@ export function SettingsPage() {
 
       {/* ── 调度策略：没有后端时无默认后端/并发可配置，隐藏 ─────────── */}
       {backendEntries.length > 0 && (
-        <Card className="p-5">
+        <Card className="shrink-0 p-5">
           <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
             <SlidersHorizontal className="size-4 text-primary" />
             调度策略
@@ -313,7 +313,7 @@ export function SettingsPage() {
       )}
 
       {/* ── 操作栏 ───────────────────────────────────────────────── */}
-      <Card className="flex flex-wrap items-center gap-2 p-4">
+      <Card className="flex shrink-0 flex-wrap items-center gap-2 p-4">
         <Button onClick={() => void saveSettings(draft)}>
           <Save />
           保存设置

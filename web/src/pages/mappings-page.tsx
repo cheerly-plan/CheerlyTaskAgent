@@ -26,8 +26,8 @@ export function MappingsPage() {
     });
 
   return (
-    <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div>
           <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">项目映射</h3>
         </div>
@@ -54,7 +54,7 @@ export function MappingsPage() {
           description="点右上角「手动新增」直接填写，或用「选择 / 扫描文件夹」从本地目录批量导入。"
         />
       ) : (
-        <Table className="min-w-[860px]" containerClassName="max-h-[56vh]">
+        <Table className="min-w-[860px]" containerClassName="min-h-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="pl-5">项目名</TableHead>

@@ -324,42 +324,44 @@ export function TasksPage() {
           </div>
         )}
 
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
-          <span className="text-[11.5px] tabular-nums text-faint">
-            共 {itemsTotal} 条
-            {visible.length !== items.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
-            {itemsTotal > items.length ? `（当前已加载最近 ${items.length} 条）` : ''}
-          </span>
-          <div className="flex items-center gap-2">
-            <span className="text-[11.5px] text-faint">每页</span>
-            <SelectField
-              size="sm"
-              className="w-[76px]"
-              value={String(pageSize)}
-              options={[20, 50, 100].map((size) => ({value: String(size), label: `${size} 条`}))}
-              onChange={(value) => setPageSize(Number(value) || 20)}
-            />
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={safePage <= 1}
-              onClick={() => setPage(Math.max(1, safePage - 1))}
-            >
-              上一页
-            </Button>
-            <span className="tabular-nums text-[11.5px] text-faint">
-              {safePage} / {pageCount}
+        {pageCount > 1 ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
+            <span className="text-[11.5px] tabular-nums text-faint">
+              共 {itemsTotal} 条
+              {visible.length !== items.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
+              {itemsTotal > items.length ? `（当前已加载最近 ${items.length} 条）` : ''}
             </span>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={safePage >= pageCount}
-              onClick={() => setPage(Math.min(pageCount, safePage + 1))}
-            >
-              下一页
-            </Button>
+            <div className="flex items-center gap-2">
+              <span className="text-[11.5px] text-faint">每页</span>
+              <SelectField
+                size="sm"
+                className="w-[76px]"
+                value={String(pageSize)}
+                options={[20, 50, 100].map((size) => ({value: String(size), label: `${size} 条`}))}
+                onChange={(value) => setPageSize(Number(value) || 20)}
+              />
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={safePage <= 1}
+                onClick={() => setPage(Math.max(1, safePage - 1))}
+              >
+                上一页
+              </Button>
+              <span className="tabular-nums text-[11.5px] text-faint">
+                {safePage} / {pageCount}
+              </span>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={safePage >= pageCount}
+                onClick={() => setPage(Math.min(pageCount, safePage + 1))}
+              >
+                下一页
+              </Button>
+            </div>
           </div>
-        </div>
+        ) : null}
       </Card>
 
       <p className="mt-3 shrink-0 text-[11.5px] text-faint">
