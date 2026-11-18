@@ -414,7 +414,7 @@ export function TapdSourceCard({
           label="项目"
           hint="勾选要拉取的 TAPD 项目；改动点「保存」生效。仓库关联在「拉取」里配置。"
         >
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             <FloatingRepoSelect
               options={allSavedProjects.map((p) => ({
                 id: p.id,
