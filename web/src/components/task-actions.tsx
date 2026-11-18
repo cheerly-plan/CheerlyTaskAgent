@@ -23,6 +23,8 @@ interface TaskActionsProps {
   compact?: boolean;
   /** 首次展开模型下拉时触发后端能力探测。 */
   onProbe?: (executorId?: string) => void;
+  /** 是否在操作区渲染模型下拉；表格视图把它挪到「模型」列下方。 */
+  showModelSelect?: boolean;
 }
 
 /**
@@ -40,6 +42,7 @@ export function TaskActions({
   backends,
   compact,
   onProbe,
+  showModelSelect = true,
 }: TaskActionsProps) {
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
   const retryable = ['failed', 'cancelled'].includes(item.status);
@@ -114,7 +117,7 @@ export function TaskActions({
         </Button>
       ) : null}
 
-      {!terminal && !running ? (
+      {showModelSelect && !terminal && !running ? (
         canPickModel && modelOptions.length > 0 ? (
           <SelectField
             size="sm"

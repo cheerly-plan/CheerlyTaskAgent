@@ -3,10 +3,19 @@ import {ArrowDown, ArrowUp, ChevronsUpDown, FileText, FolderGit2} from 'lucide-r
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
 import {Badge} from '@/components/ui/badge';
 import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
+import {SelectField} from '@/components/select-field';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
-import {shortTime, sourceLabel} from '@/lib/labels';
-import {cn, effectiveDefaultModelId, modelMatches, resolvedModelLabel} from '@/lib/utils';
+import {ACTIVE_STATUSES, TERMINAL_STATUSES, shortTime, sourceLabel} from '@/lib/labels';
+import {
+  cn,
+  effectiveDefaultModelId,
+  modelCategory,
+  modelHint,
+  modelMatches,
+  resolvedModelLabel,
+  sortModelsByCategory,
+} from '@/lib/utils';
 
 export type SortField = 'created' | 'title' | 'status' | 'source' | 'repo' | 'kind';
 
@@ -79,21 +88,82 @@ interface TaskTableProps {
   containerClassName?: string;
 }
 
-/** 模型单元格：固定模型的后端只读展示；其余展示工单实际携带的具体模型名。 */
-function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) {
+/** 模型单元格：模型名 + 就地选择框（不可选的后端只读展示 profile 钉住的模型）。 */
+function ModelCell({
+  item,
+  backends,
+  models,
+  selection,
+  onSelect,
+  onProbe,
+}: {
+  item: WorkItem;
+  backends: BackendInfo[];
+  models: ModelChoice[];
+  selection: ActionSelection;
+  onSelect: (key: keyof ActionSelection, value: string) => void;
+  onProbe?: (executorId?: string) => void;
+}) {
   const backend = backends.find((entry) => entry.id === item.executor);
-  if (backend?.model_selection === false) {
-    const pinned = backend.models?.find((model) => model.current)?.id;
+  const canPickModel = backend?.model_selection !== false;
+  const modelList = backend?.models?.length ? backend.models : models;
+
+  if (!canPickModel) {
+    const pinned = backend?.models?.find((model) => model.current)?.id;
     return (
       <span
         className="text-xs text-faint"
-        title={pinned ? `由 ${backend.label} profile 决定：${pinned}` : `由 ${backend.label} profile 决定`}
+        title={pinned ? `由 ${backend?.label ?? ''} profile 决定：${pinned}` : `由 ${backend?.label ?? ''} profile 决定`}
       >
         由 profile 决定{pinned ? ` · ${pinned}` : ''}
       </span>
     );
   }
-  const list = backend?.models ?? [];
+
+  const fallback = effectiveDefaultModelId(modelList, backend?.default_model);
+  const selected = selection.model || item.model || fallback;
+  const options = sortModelsByCategory(modelList).map((model) => ({
+    value: model.id,
+    // 下拉本身就是展示：自定义模型把标记并进选项文案，避免和上方标签重复。
+    label: model.custom ? `${model.label ?? model.id} · 自定义` : (model.label ?? model.id),
+    hint: modelHint(model),
+    group: modelCategory(model),
+  }));
+  const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
+  const terminal = TERMINAL_STATUSES.includes(item.status) && !dryDone;
+  const running = ACTIVE_STATUSES.includes(item.status);
+  const showSelect = !terminal && !running && options.length > 0;
+
+  if (!showSelect) {
+    return <ModelTag item={item} backends={backends} models={models} />;
+  }
+  return (
+    <SelectField
+      size="sm"
+      className="w-[168px]"
+      value={selected}
+      options={options}
+      onChange={(value) => onSelect('model', value)}
+      onOpenChange={(open) => {
+        if (open) onProbe?.(item.executor);
+      }}
+      title="本任务使用的模型"
+    />
+  );
+}
+
+/** 模型名（自定义模型合并成一个紫色标签）。 */
+function ModelTag({
+  item,
+  backends,
+  models,
+}: {
+  item: WorkItem;
+  backends: BackendInfo[];
+  models: ModelChoice[];
+}) {
+  const backend = backends.find((entry) => entry.id === item.executor);
+  const list = backend?.models?.length ? backend.models : models;
   const modelId = item.model || effectiveDefaultModelId(list, backend?.default_model);
   const custom = list.some((model) => modelMatches(model, modelId) && model.custom);
   const label = resolvedModelLabel(list, modelId);
@@ -181,7 +251,14 @@ export function TaskTable({
               <Mono>{item.exec_mode || '—'}</Mono>
             </TableCell>
             <TableCell>
-              <ModelCell item={item} backends={backends} />
+              <ModelCell
+                item={item}
+                backends={backends}
+                models={models}
+                selection={selections[item.id] ?? {}}
+                onSelect={(key, value) => onSelect(item.id, key, value)}
+                onProbe={onProbe}
+              />
             </TableCell>
             <TableCell>
               <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
@@ -198,6 +275,7 @@ export function TaskTable({
                 models={models}
                 backends={backends}
                 onProbe={onProbe}
+                showModelSelect={false}
               />
             </TableCell>
           </TableRow>
