@@ -35,7 +35,6 @@ export interface WorkItem {
 export interface ProjectMapping {
   id: string;
   name: string;
-  aliases: string[];
   path: string;
   enabled: boolean;
   note: string;
@@ -160,7 +159,6 @@ export interface ScanResult {
 
 export interface MappingDraft {
   name: string;
-  aliases: string[];
   path: string;
   note: string;
   enabled?: boolean;

@@ -26,7 +26,6 @@ interface MappingDialogProps {
 
 interface FormState {
   name: string;
-  aliases: string;
   path: string;
   note: string;
   tapd_workspace_id: string;
@@ -34,7 +33,6 @@ interface FormState {
 
 const toForm = (mapping: ProjectMapping | null): FormState => ({
   name: mapping?.name ?? '',
-  aliases: (mapping?.aliases ?? []).join(', '),
   path: mapping?.path ?? '',
   note: mapping?.note ?? '',
   tapd_workspace_id: mapping?.tapd_workspace_id ?? '',
@@ -53,10 +51,6 @@ export function MappingDialog({open, onOpenChange, editing, onSave, onPickFolder
   const submit = () => {
     onSave({
       name: form.name.trim(),
-      aliases: form.aliases
-        .split(',')
-        .map((alias) => alias.trim())
-        .filter(Boolean),
       path: form.path.trim(),
       note: form.note.trim(),
       tapd_workspace_id: form.tapd_workspace_id.trim(),
@@ -77,13 +71,6 @@ export function MappingDialog({open, onOpenChange, editing, onSave, onPickFolder
               value={form.name}
               placeholder="如 CheerlyAIChat"
               onChange={(event) => patch('name', event.target.value)}
-            />
-          </Field>
-          <Field label="别名（逗号分隔）">
-            <Input
-              value={form.aliases}
-              placeholder="ai_chat, AI聊天"
-              onChange={(event) => patch('aliases', event.target.value)}
             />
           </Field>
           <Field label="本地路径">

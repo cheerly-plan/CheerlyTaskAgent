@@ -681,10 +681,11 @@ def test_recover_interrupted_items_on_restart(env):
 
 def test_import_raw_with_bound_repo_name(env, tmp_path):
     """TAPD workspace 绑定的本地项目名传入后，直接决定 item.repo。"""
-    scheduler, store, gitmap, events, data = env
-    from taskagent.projectmap import ProjectMappingStore, ProjectRegistry
+    scheduler, _store, _gitmap, _events, data = env
     # 造一个本地映射目录
     from pathlib import Path
+
+    from taskagent.projectmap import ProjectMappingStore, ProjectRegistry
     path = str(tmp_path / "bound_repo")
     Path(path).mkdir(exist_ok=True)
     projects = ProjectRegistry(ProjectMappingStore(data / "projects.json"))

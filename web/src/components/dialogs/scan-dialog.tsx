@@ -73,7 +73,6 @@ export function ScanDialog({open, onOpenChange, path, onAdded}: ScanDialogProps)
     }
     const payload: MappingDraft[] = chosen.map((row) => ({
       name: row.candidate_name || row.name,
-      aliases: [row.name],
       path: row.path,
       enabled: true,
       note: row.is_git ? `git: ${row.origin ?? ''}` : '手动扫描添加',

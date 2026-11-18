@@ -18,7 +18,6 @@ export function MappingsPage() {
       openMappingModal({
         id: '',
         name,
-        aliases: [name],
         path,
         note: '',
         enabled: true,
@@ -59,7 +58,6 @@ export function MappingsPage() {
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="pl-5">项目名</TableHead>
-              <TableHead>别名</TableHead>
               <TableHead>本地路径</TableHead>
               <TableHead>仓库信息 / 备注</TableHead>
               <TableHead>TAPD 项目</TableHead>
@@ -71,19 +69,6 @@ export function MappingsPage() {
             {mappings.map((mapping) => (
               <TableRow key={mapping.id}>
                 <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
-                <TableCell>
-                  {mapping.aliases?.length ? (
-                    <div className="flex flex-wrap gap-1">
-                      {mapping.aliases.map((alias) => (
-                        <Badge key={alias} variant="info">
-                          {alias}
-                        </Badge>
-                      ))}
-                    </div>
-                  ) : (
-                    <span className="text-xs text-faint">用项目名匹配</span>
-                  )}
-                </TableCell>
                 <TableCell>
                   <Mono className="break-all">{mapping.path}</Mono>
                 </TableCell>

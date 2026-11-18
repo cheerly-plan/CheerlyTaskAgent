@@ -124,5 +124,4 @@ class FolderBrowser:
             "origin": origin,
             "is_git": is_git,
             "candidate_name": suggested,
-            "aliases": [folder.name] if folder.name else [],
         }
