@@ -50,6 +50,7 @@ function sortValue(item: WorkItem, field: string): string {
 export function TasksPage() {
   const {
     items,
+    itemsTotal,
     mappings,
     models,
     backends,
@@ -67,6 +68,8 @@ export function TasksPage() {
   const [keyword, setKeyword] = React.useState('');
   const [view, setView] = React.useState<ViewMode>('table');
   const [refreshing, setRefreshing] = React.useState(false);
+  const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(20);
 
   const visible = React.useMemo(() => {
     let list = items.slice();
@@ -91,6 +94,18 @@ export function TasksPage() {
     });
     return list;
   }, [items, filters, keyword, sort]);
+
+  // 筛选、搜索、排序或每页数量变化后回到第一页，避免停在越界页。
+  React.useEffect(() => {
+    setPage(1);
+  }, [filters, keyword, sort, pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const pageItems = React.useMemo(
+    () => visible.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [visible, safePage, pageSize],
+  );
 
   const counts = React.useMemo(() => {
     const result = {running: 0, succeeded: 0, failed: 0};
@@ -277,7 +292,8 @@ export function TasksPage() {
           />
         ) : view === 'table' ? (
           <TaskTable
-            items={visible}
+            items={pageItems}
+            containerClassName="max-h-[56vh]"
             sort={sort}
             onSort={toggleSort}
             selections={selections}
@@ -290,8 +306,8 @@ export function TasksPage() {
             onProbe={(id) => ensureBackendProbe(id)}
           />
         ) : (
-          <div className="grid gap-3 bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {visible.map((item) => (
+          <div className="grid max-h-[56vh] gap-3 overflow-auto bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
+            {pageItems.map((item) => (
               <TaskCard
                 key={item.id}
                 item={item}
@@ -307,6 +323,43 @@ export function TasksPage() {
             ))}
           </div>
         )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
+          <span className="text-[11.5px] tabular-nums text-faint">
+            共 {itemsTotal} 条
+            {visible.length !== items.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
+            {itemsTotal > items.length ? `（当前已加载最近 ${items.length} 条）` : ''}
+          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11.5px] text-faint">每页</span>
+            <SelectField
+              size="sm"
+              className="w-[76px]"
+              value={String(pageSize)}
+              options={[20, 50, 100].map((size) => ({value: String(size), label: `${size} 条`}))}
+              onChange={(value) => setPageSize(Number(value) || 20)}
+            />
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={safePage <= 1}
+              onClick={() => setPage(Math.max(1, safePage - 1))}
+            >
+              上一页
+            </Button>
+            <span className="tabular-nums text-[11.5px] text-faint">
+              {safePage} / {pageCount}
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={safePage >= pageCount}
+              onClick={() => setPage(Math.min(pageCount, safePage + 1))}
+            >
+              下一页
+            </Button>
+          </div>
+        </div>
       </Card>
 
       <p className="mt-3 text-[11.5px] text-faint">

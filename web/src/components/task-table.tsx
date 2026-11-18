@@ -75,6 +75,8 @@ interface TaskTableProps {
   sort: SortState;
   onProbe?: (executorId?: string) => void;
   onSort: (field: SortField) => void;
+  /** 滚动容器 class（长列表限制最大高度）。 */
+  containerClassName?: string;
 }
 
 /** 模型单元格：固定模型的后端只读展示；其余展示工单实际携带的具体模型名。 */
@@ -118,9 +120,10 @@ export function TaskTable({
   sort,
   onProbe,
   onSort,
+  containerClassName,
 }: TaskTableProps) {
   return (
-    <Table className="min-w-[980px]">
+    <Table className="min-w-[980px]" containerClassName={containerClassName}>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <SortableHead label="标题" field="title" sort={sort} onSort={onSort} className="pl-4" />

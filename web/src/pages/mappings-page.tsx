@@ -54,7 +54,7 @@ export function MappingsPage() {
           description="点右上角「手动新增」直接填写，或用「选择 / 扫描文件夹」从本地目录批量导入。"
         />
       ) : (
-        <Table className="min-w-[860px]">
+        <Table className="min-w-[860px]" containerClassName="max-h-[56vh]">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="pl-5">项目名</TableHead>

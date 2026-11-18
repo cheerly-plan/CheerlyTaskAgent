@@ -522,8 +522,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"deleted": True}
 
     @app.get("/api/items")
-    def api_items(limit: int = 200) -> dict[str, Any]:
-        return {"items": [item.summary() for item in store.list(limit=limit)]}
+    def api_items(limit: int = 200, offset: int = 0) -> dict[str, Any]:
+        # Clamp: the UI paginates locally over a bounded window, and an
+        # unbounded limit would let one request load the whole store.
+        safe_limit = max(1, min(2000, limit))
+        return {
+            "items": [item.summary() for item in store.list(limit=safe_limit, offset=offset)],
+            "total": store.count(),
+            "limit": safe_limit,
+            "offset": max(0, offset),
+        }
 
     @app.post("/api/import", status_code=201)
     def api_import(body: ImportBody) -> dict[str, Any]:

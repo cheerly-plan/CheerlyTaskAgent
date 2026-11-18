@@ -135,9 +135,9 @@ export function SettingsPage() {
           </Card>
         ) : (
           <Card className="mt-3 overflow-hidden">
-            <div className="overflow-x-auto">
+            <div className="max-h-[46vh] overflow-auto">
               <table className="w-full border-collapse text-[12.5px]">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-card">
                   <tr className="border-b border-border text-left text-[11.5px] text-faint">
                     <th className="px-4 py-2.5 font-medium">名称</th>
                     <th className="px-4 py-2.5 font-medium">CLI 命令 / 路径</th>

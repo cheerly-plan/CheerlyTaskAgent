@@ -223,7 +223,8 @@ export const endpoints = {
       jsonInit('POST', {items}),
     ),
 
-  items: () => api<{items: WorkItem[]}>('/api/items'),
+  items: (params?: {limit?: number; offset?: number}) =>
+    api<{items: WorkItem[]; total?: number}>(`/api/items?limit=${params?.limit ?? 1000}&offset=${params?.offset ?? 0}`),
   mapItem: (id: string, repo: string) =>
     api<WorkItem>(`/api/items/${id}/map`, jsonInit('POST', {repo_name: repo})),
   runItem: (id: string, body: {exec_mode: ExecMode; model?: string | null; approved?: boolean; executor?: string}) =>

@@ -924,3 +924,27 @@ def test_codebuddy_reads_top_level_array_models_file(tmp_path, monkeypatch):
     assert models["qwen4-max-preview"]["custom"] is True
     assert models["qwen4-max-preview"]["vendor"] == "Custom"
     assert models["qwen4-max-preview"]["context"] == 131072
+
+
+def test_items_api_paginates_with_total(tmp_path):
+    """The task list paginates: offset/limit slice plus an honest total."""
+    from fastapi.testclient import TestClient
+
+    from taskagent.api import create_app
+    from taskagent.config import Settings
+
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        for index in range(3):
+            client.post(
+                "/api/tasks/manual",
+                json={"title": f"t{index}", "description": "d", "repo_name": ""},
+            )
+        page = client.get("/api/items", params={"limit": 2, "offset": 0}).json()
+        assert page["total"] == 3
+        assert len(page["items"]) == 2
+        second = client.get("/api/items", params={"limit": 2, "offset": 2}).json()
+        assert len(second["items"]) == 1
+        assert {item["id"] for item in page["items"]} & {
+            item["id"] for item in second["items"]
+        } == set()

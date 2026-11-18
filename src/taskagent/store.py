@@ -35,7 +35,8 @@ class TaskStore:
         except (OSError, ValueError, KeyError):
             return None
 
-    def list(self, limit: int = 200) -> list[WorkItem]:
+    def list(self, limit: int = 200, offset: int = 0) -> list[WorkItem]:
+        """Newest-first page of work items; ``offset`` supports pagination."""
         items: list[WorkItem] = []
         for path in self.root.glob("work-*.json"):
             try:
@@ -43,4 +44,9 @@ class TaskStore:
             except (OSError, ValueError, KeyError):
                 continue
         items.sort(key=lambda item: item.created_at, reverse=True)
-        return items[: max(1, limit)]
+        start = max(0, offset)
+        return items[start : start + max(1, limit)]
+
+    def count(self) -> int:
+        """Total number of item files (used by the paginated UI)."""
+        return sum(1 for _ in self.root.glob("work-*.json"))

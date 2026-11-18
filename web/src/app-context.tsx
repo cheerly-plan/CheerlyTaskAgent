@@ -24,6 +24,8 @@ import {
 
 interface AppContextValue {
   items: WorkItem[];
+  /** 存储里的工作项总数（可能多于已加载的 items）。 */
+  itemsTotal: number;
   mappings: ProjectMapping[];
   models: ModelChoice[];
   defaultModel: string;
@@ -83,6 +85,7 @@ const EMPTY_REPORT: ReportState = {open: false, title: '', html: '', downloadUrl
 
 export function AppProvider({children}: {children: React.ReactNode}) {
   const [items, setItems] = React.useState<WorkItem[]>([]);
+  const [itemsTotal, setItemsTotal] = React.useState(0);
   const [mappings, setMappings] = React.useState<ProjectMapping[]>([]);
   const [models, setModels] = React.useState<ModelChoice[]>([]);
   const [defaultModel, setDefaultModel] = React.useState('');
@@ -121,8 +124,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   // ── 数据加载 ──────────────────────────────────────────────────────────────
   const reloadItems = React.useCallback(async () => {
     try {
-      const data = await endpoints.items();
+      const data = await endpoints.items({limit: 1000});
       setItems(data.items ?? []);
+      setItemsTotal(data.total ?? data.items?.length ?? 0);
     } catch (error) {
       toast.error('加载任务失败：' + (error as Error).message);
     }
@@ -539,6 +543,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
 
   const value: AppContextValue = {
     items,
+    itemsTotal,
     mappings,
     models,
     defaultModel,
