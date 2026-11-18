@@ -134,7 +134,7 @@ export function SettingsPage() {
             还没有配置执行后端，点击「添加后端」新建一个。
           </Card>
         ) : (
-          <Card className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <Card className="mt-3 flex max-h-full min-h-0 flex-col overflow-hidden">
             <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full border-collapse text-[12.5px]">
                 <thead className="sticky top-0 z-10 bg-card">

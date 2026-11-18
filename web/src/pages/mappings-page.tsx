@@ -26,7 +26,7 @@ export function MappingsPage() {
     });
 
   return (
-    <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+    <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div>
           <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">项目映射</h3>
