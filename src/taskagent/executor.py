@@ -23,9 +23,9 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from . import dsh_profile
+from . import dialect, dsh_profile
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
 
 ProgressFn = Callable[[float, str], None]
@@ -70,67 +70,15 @@ class Executor(ABC):
     def build_command(self, item: WorkItem) -> list[str]: ...
 
     def supports_model_selection_check(self) -> bool:
-        """Probe whether this machine can really override the model per run."""
-        if self._capability is not None:
-            return self._capability
-        self._capability = self._probe_capability()
-        self.supports_model_selection = self._capability
-        return self._capability
+        """Whether this backend can honour a per-task model choice.
+
+        Base behaviour is purely static; dialects that can only verify at
+        runtime override this with a real probe.
+        """
+        return bool(self.supports_model_selection)
 
     def _probe_capability(self) -> bool:
-        import subprocess
-
-        def run(args: list[str]) -> tuple[int, str, str]:
-            try:
-                proc = subprocess.run(
-                    [self.command, *args],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                    env=self._clean_env(),
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                return -1, "", ""
-            return proc.returncode, proc.stdout or "", proc.stderr or ""
-
-        # 1) The CLI must know --patch at all.
-        _code, help_text, _err = run(["--help"])
-        if "--patch" not in help_text:
-            return False
-
-        # 2) The profile must expose a patchable agent-default-model entry.
-        pinned = self._pinned_target()
-        if pinned is None:
-            return False
-
-        # 3) Round-trip a patch switching to ANOTHER real model from the catalog:
-        #    if the overlay is ignored (unknown entry, version drift) the composed
-        #    model stays pinned and the mismatch exposes it. A synthetic model id
-        #    cannot be used here — dsh validates ids against the provider config
-        #    and silently drops unknown ones, which would look identical to an
-        #    ignored overlay.
-        provider, pinned_model = pinned
-        candidate = next((e for e in self.catalog if e.model_id != pinned_model), None)
-        if candidate is None:
-            return False  # nothing else to select => nothing to verify
-        probe_dir = self.patch_dir / ".probe"
-        probe_dir.mkdir(parents=True, exist_ok=True)
-        probe_path = probe_dir / "capability.yml"
-        probe_path.write_text(
-            dsh_profile.build_patch_yaml(
-                provider=candidate.provider,
-                model_id=candidate.model_id,
-                entry=candidate,
-                default_provider=provider,
-            ),
-            encoding="utf-8",
-        )
-        _code, composed, _err = run(
-            ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
-        )
-        target = dsh_profile.parse_pinned_target(composed)
-        return bool(target and target[1] == candidate.model_id)
+        return bool(self.supports_model_selection)
 
     def list_models(self) -> list[dict[str, Any]]:
         """Discover models this backend supports: ``[{id, label, ...}, ...]``.
@@ -186,44 +134,8 @@ _EXEC_EVENT_RE = re.compile(
 
 
 def _no_execution_detected(stdout: str) -> bool:
-    """Return True only when codebuddy exited 0 without ever running the prompt.
-
-    The original failure this guards against: a variadic option swallowed the
-    positional prompt, codebuddy printed "…/path not found" and returned an
-    empty result with 0 tokens. That is different from a *successful* run whose
-    final JSON fragment happens to have no top-level ``result`` — e.g. the
-    streamed event-array format, or a run that ran tools then found an empty
-    repo. Judge by evidence of real execution anywhere in stdout, not by the
-    last balanced pair of braces.
-    """
-    text = stdout.strip()
-    if not text:
-        return True
-
-    # Any non-zero token count anywhere => the model actually ran.
-    if any(int(n) > 0 for n in _TOKEN_RE.findall(text)):
-        return False
-    # Any genuine execution event (tool call / assistant message / reasoning) => ran.
-    if _EXEC_EVENT_RE.search(text):
-        return False
-
-    # Legacy single-object format: {"result": "", "usage": {0 tokens}}.
-    start, end = text.rfind("{"), text.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            payload = json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            payload = None
-        if isinstance(payload, dict):
-            if payload.get("is_error"):
-                return True
-            result = str(payload.get("result") or "").strip()
-            usage = payload.get("usage") or {}
-            tokens = int(usage.get("input_tokens") or 0) + int(
-                usage.get("output_tokens") or 0
-            )
-            return not result and tokens == 0
-    return "not found" in text.lower()
+    """Backward-compatible alias; the policy lives in :mod:`dialect`."""
+    return dialect.no_execution_detected(stdout)
 
 
 def build_prompt(item: WorkItem) -> str:
@@ -298,6 +210,28 @@ class CodeBuddyExecutor(Executor):
             if backups_dir is not None
             else self.worktrees_dir.parent / "sync-backups"
         )
+        # The dialect is the only place CLI-specific behaviour lives; the rest
+        # of this class is protocol-agnostic mechanics (worktree/git/sync).
+        self.dialect = dialect.CliDialect(
+            catalog=dialect.ChainCatalog(
+                (dialect.LocalCacheCatalog(), dialect.HelpRegexCatalog())
+            ),
+            injector=dialect.FlagInjector("--model"),
+            probe=dialect.AlwaysProbe(True),
+        )
+        self._capability: bool | None = None
+
+    def _dialect_ctx(self) -> dialect.DialectContext:
+        """Snapshot what strategies may need (env is rebuilt per call)."""
+        env = self._clean_env()
+        return dialect.DialectContext(
+            command=self.command,
+            env=env,
+            patch_dir=self.worktrees_dir.parent / "dsh-patches",
+            profile_home=dsh_profile.dsh_home(),
+            run_cli=lambda args: dialect.run_cli(self.command, env, args),
+            model=self.model,
+        )
 
     # Only these vars are passed to the CLI. WorkBuddy injects 100+ vars
     # (CODEBUDDY_*, CLAUDE_*, ACC_*, ELECTRON_*, ...) that make codebuddy take a
@@ -340,59 +274,10 @@ class CodeBuddyExecutor(Executor):
         return self._capability
 
     def _probe_capability(self) -> bool:
-        import subprocess
-
-        def run(args: list[str]) -> tuple[int, str, str]:
-            try:
-                proc = subprocess.run(
-                    [self.command, *args],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                    env=self._clean_env(),
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                return -1, "", ""
-            return proc.returncode, proc.stdout or "", proc.stderr or ""
-
-        # 1) The CLI must know --patch at all.
-        _code, help_text, _err = run(["--help"])
-        if "--patch" not in help_text:
+        """codebuddy advertises ``--model``; the dialect probe verifies it."""
+        if not self.supports_model_selection:
             return False
-
-        # 2) The profile must expose a patchable agent-default-model entry.
-        pinned = self._pinned_target()
-        if pinned is None:
-            return False
-
-        # 3) Round-trip a patch switching to ANOTHER real model from the catalog:
-        #    if the overlay is ignored (unknown entry, version drift) the composed
-        #    model stays pinned and the mismatch exposes it. A synthetic model id
-        #    cannot be used here — dsh validates ids against the provider config
-        #    and silently drops unknown ones, which would look identical to an
-        #    ignored overlay.
-        provider, pinned_model = pinned
-        candidate = next((e for e in self.catalog if e.model_id != pinned_model), None)
-        if candidate is None:
-            return False  # nothing else to select => nothing to verify
-        probe_dir = self.patch_dir / ".probe"
-        probe_dir.mkdir(parents=True, exist_ok=True)
-        probe_path = probe_dir / "capability.yml"
-        probe_path.write_text(
-            dsh_profile.build_patch_yaml(
-                provider=candidate.provider,
-                model_id=candidate.model_id,
-                entry=candidate,
-                default_provider=provider,
-            ),
-            encoding="utf-8",
-        )
-        _code, composed, _err = run(
-            ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
-        )
-        target = dsh_profile.parse_pinned_target(composed)
-        return bool(target and target[1] == candidate.model_id)
+        return self.dialect.capability(self._dialect_ctx(), self.list_models())
 
     def list_models(self) -> list[dict[str, Any]]:
         """Discover the models this backend's CLI supports, as ``[{id, label, ...}]``.
@@ -720,11 +605,11 @@ class CodeBuddyExecutor(Executor):
             "--output-format", "json",
             "--permission-mode", self.permission_mode,
         ]
-        # Per-task model wins; fall back to the executor/global default.
-        # Skipped entirely for backends whose CLI has no --model flag.
+        # Per-task model wins; fall back to the executor/global default. How it
+        # reaches the CLI is the dialect's business (flag / env / overlay).
         model = item.model or self.model
         if model and self.supports_model_selection:
-            argv += ["--model", model]
+            argv += self.dialect.inject(self._dialect_ctx(), item_id=item.id, model=model)
         # Do NOT pass --add-dir here. It is variadic (<directories...>) and
         # swallows the following positional prompt, so codebuddy starts with an
         # empty prompt and treats both values as paths to open. The subprocess
@@ -821,20 +706,12 @@ class CodeBuddyExecutor(Executor):
         changed = self._changed_files(worktree_path)
         progress(1.0, f"{self.label} 完成")
 
-        # The CLI may exit 0 while only printing an auth error to stderr.
-        # Treat that as a failure so we never report a phantom "success".
-        auth_markers = ("authentication required", "please use /login", "not logged in")
-        auth_failed = any(marker in stderr.lower() for marker in auth_markers)
-        no_exec = self._no_execution_detected(stdout)
-        ok = proc.returncode == 0 and not auth_failed and not no_exec
-        if auth_failed:
-            error = f"{self.label} 未登录：请在终端运行 CLI 后执行 /login，再重试此任务"
-        elif proc.returncode != 0:
-            error = f"exit code {proc.returncode}"
-        elif no_exec:
-            error = f"{self.label} 未执行提示词（空结果/0 token），请查看报告 stdout"
-        else:
-            error = None
+        # Strict verdict: an exit code of 0 is not proof of work. Auth errors on
+        # stderr and no-execution envelopes are failures, never phantom
+        # successes — silently accepting them hides real breakage.
+        ok, error = self.dialect.verdict.decide(
+            returncode=proc.returncode, stdout=stdout, stderr=stderr, label=self.label
+        )
 
         # Auto-sync successful apply changes back into the real repo so the
         # user sees them in their normal checkout without a manual copy. This
@@ -1449,12 +1326,12 @@ class CodeBuddyExecutor(Executor):
 
 
 # ── Additional CLI backends ───────────────────────────────────────────────────
-# DSH uses the same non-interactive CLI protocol as codebuddy
-# (``-p --permission-mode --output-format json``), so it reuses the entire
-# worktree / commit / sync pipeline and differs only in binary + presentation.
-# The binary is resolved at construction time from the matching backend config,
-# so an empty command simply yields a backend that reports "CLI not found" on
-# an apply — never a silent fallback to another backend.
+# DSH reuses the worktree / commit / sync mechanics but speaks a different
+# dialect: the boot command is ``dsh --profile headless``, the headless app
+# takes ``--json`` instead of ``--output-format json``, permission presets are
+# a fixed three-value set, and the model travels in a ``--patch`` overlay
+# (launcher flags must precede app flags). Those differences live in the
+# dialect strategies, not in the pipeline.
 
 
 class DshExecutor(CodeBuddyExecutor):
@@ -1513,6 +1390,26 @@ class DshExecutor(CodeBuddyExecutor):
         # CLI silently ignores must all degrade to "read-only model" instead of
         # accepting a choice we cannot honour.
         self._capability: bool | None = None
+        # Builtin escape hatch: no --model flag, so the choice arrives as a
+        # generated overlay. The probe re-composes the config to prove the
+        # overlay is not silently ignored.
+        self.dialect = dialect.CliDialect(
+            catalog=dialect.ProfileYamlCatalog(self.profile_home),
+            injector=dialect.DshPatchInjector(self.profile_home),
+            probe=dialect.ComposeVerifyProbe(),
+            verdict=dialect.NdjsonStrictVerdict(),
+        )
+
+    def _dialect_ctx(self) -> dialect.DialectContext:
+        env = self._clean_env()
+        return dialect.DialectContext(
+            command=self.command,
+            env=env,
+            patch_dir=self.patch_dir,
+            profile_home=self.profile_home,
+            run_cli=lambda args: dialect.run_cli(self.command, env, args),
+            model=self.model,
+        )
 
     # ── catalog / pinned model ────────────────────────────────────────────────
     @property
@@ -1551,59 +1448,8 @@ class DshExecutor(CodeBuddyExecutor):
         return self._capability
 
     def _probe_capability(self) -> bool:
-        import subprocess
-
-        def run(args: list[str]) -> tuple[int, str, str]:
-            try:
-                proc = subprocess.run(
-                    [self.command, *args],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                    env=self._clean_env(),
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                return -1, "", ""
-            return proc.returncode, proc.stdout or "", proc.stderr or ""
-
-        # 1) The CLI must know --patch at all.
-        _code, help_text, _err = run(["--help"])
-        if "--patch" not in help_text:
-            return False
-
-        # 2) The profile must expose a patchable agent-default-model entry.
-        pinned = self._pinned_target()
-        if pinned is None:
-            return False
-
-        # 3) Round-trip a patch switching to ANOTHER real model from the catalog:
-        #    if the overlay is ignored (unknown entry, version drift) the composed
-        #    model stays pinned and the mismatch exposes it. A synthetic model id
-        #    cannot be used here — dsh validates ids against the provider config
-        #    and silently drops unknown ones, which would look identical to an
-        #    ignored overlay.
-        provider, pinned_model = pinned
-        candidate = next((e for e in self.catalog if e.model_id != pinned_model), None)
-        if candidate is None:
-            return False  # nothing else to select => nothing to verify
-        probe_dir = self.patch_dir / ".probe"
-        probe_dir.mkdir(parents=True, exist_ok=True)
-        probe_path = probe_dir / "capability.yml"
-        probe_path.write_text(
-            dsh_profile.build_patch_yaml(
-                provider=candidate.provider,
-                model_id=candidate.model_id,
-                entry=candidate,
-                default_provider=provider,
-            ),
-            encoding="utf-8",
-        )
-        _code, composed, _err = run(
-            ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
-        )
-        target = dsh_profile.parse_pinned_target(composed)
-        return bool(target and target[1] == candidate.model_id)
+        """Overlay-based selection only counts if composing really changes it."""
+        return self.dialect.capability(self._dialect_ctx(), self.list_models())
 
     def list_models(self) -> list[dict[str, Any]]:
         """Pinned model first, then everything the profile layers declare."""
@@ -1645,43 +1491,36 @@ class DshExecutor(CodeBuddyExecutor):
     def _patch_path(self, item: WorkItem) -> Path:
         return self.patch_dir / f"{dsh_profile.safe_patch_name(item.id)}.yml"
 
-    def _write_patch(self, item: WorkItem, model: str) -> Path:
-        entry = dsh_profile.resolve_entry(self.catalog, model)
-        pinned = self._pinned_target()
-        provider = entry.provider if entry else (pinned[0] if pinned else "")
-        if not provider:
-            provider = "deepseek-official"
-        model_id = entry.model_id if entry else model
-        text = dsh_profile.build_patch_yaml(
-            provider=provider,
-            model_id=model_id,
-            entry=entry,
-            # Unknown pinned provider => assume "not declared yet" and include the
-            # provider block (safer: headless may not know this gateway).
-            default_provider=pinned[0] if pinned else "",
-        )
-        path = self._patch_path(item)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
-
     def cleanup_patch(self, item_id: str) -> None:
         try:
             (self.patch_dir / f"{dsh_profile.safe_patch_name(item_id)}.yml").unlink()
         except OSError:
             pass
 
+    # DSH's headless app has its own flags: no ``-p``/``--output-format``, but a
+    # required ``--profile headless`` and ``--json`` for machine-readable run
+    # events. Permission presets are also a fixed three-value set.
+    _PERMISSION_PRESETS: ClassVar[dict[str, str]] = {
+        "readonly": "read-only",
+        "read-only": "read-only",
+        "acceptedits": "workspace-write",
+        "workspace-write": "workspace-write",
+        "danger-full-access": "danger-full-access",
+        "bypasspermissions": "danger-full-access",
+    }
+
     def build_command(self, item: WorkItem) -> list[str]:
-        argv = [
-            self.command,
-            "-p",
-            "--output-format", "json",
-            "--permission-mode", self.permission_mode,
-        ]
+        # launcher flags must come first: once an app flag appears, everything
+        # after it (including --patch) is passed to the headless app, which
+        # rejects it as "unknown option".
+        argv = [self.command, "--profile", "headless"]
         model = item.model or self.model
         if model and self.supports_model_selection_check():
-            argv += ["--patch", str(self._write_patch(item, model))]
-        argv.append(build_prompt(item))
+            argv += self.dialect.inject(self._dialect_ctx(), item_id=item.id, model=model)
+        preset = self._PERMISSION_PRESETS.get(self.permission_mode.strip().lower())
+        if preset:
+            argv += ["--permission-mode", preset]
+        argv += ["--json", build_prompt(item)]
         return argv
 
     async def run(
@@ -1708,7 +1547,7 @@ class DshExecutor(CodeBuddyExecutor):
     def _clean_env(self) -> dict[str, str]:
         """Expose DSH_HOME and the provider credentials its config refers to."""
         env = super()._clean_env()
-        for name in ("DSH_HOME", "QWEN_TOKEN_PLAN_API_KEY", *(
+        for name in ("DSH_HOME", "QWEN_TOKEN_PLAN_API_KEY", "DEEPSEEK_API_KEY", *(
             entry.api_key_env for entry in self.catalog
         )):
             if name and name in os.environ:

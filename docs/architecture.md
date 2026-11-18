@@ -67,7 +67,7 @@ flowchart LR
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）。 |
 | `scheduler.py` | 导入去重（`source_ref`）、`create_manual`（手动指定项目直接 ready）、映射、按 `item.executor` 从 `ExecutorRegistry` 取后端派发、幂等、并发上限、退避重试、取消、事件发射。确定性代码，无 LLM。 |
-| `executor.py` | `Executor` 统一接口（`run`/`build_command`/`changed_files`/`commit_files`/`describe`/`list_models`）+ 两类真实后端 `CodeBuddyExecutor`/`DshExecutor`（共用 worktree/commit/sync 管线，仅二进制与标识不同）+ `ExecutorRegistry`（按 id 取，未知 id 回退默认后端）。两类都走 `<backend> -p --output-format json` 非交互协议：`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 以 worktree HEAD 为 base 做三方比较同步回主仓库（主仓库未分叉才覆盖，分叉则尝试干净合并、否则记冲突并备份双方；路径校验/忽略规则）。`list_models()` 解析 CLI `--help` 的 `--model` 参数动态获取模型列表。argv 列表拼接防命令注入。 |
+| `executor.py` | `Executor` 统一接口（`run`/`build_command`/`changed_files`/`commit_files`/`describe`/`list_models`） + 通用机制（worktree/commit/sync/超时/取消）+ `ExecutorRegistry`（按 id 取，未知 id 回退默认后端）。**方言隔离**：每个 CLI 的四层差异（调用 / 模型发现 / 能力探测 / 成功判定）收敛到 `dialect.py` 的封闭策略库——`FlagInjector`（codebuddy 的 `--model`）、`DshPatchInjector`（DSH 覆盖层，内置逃生）、`LocalCacheCatalog`/`HelpRegexCatalog`/`ProfileYamlCatalog`、`StrictVerdict`/`NdjsonStrictVerdict`；新增 CLI = 组合已有策略，不做配置化小语言。两类都走 `<backend>` 非交互协议：`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 三方比较同步回主仓库。DSH 协议不同：`dsh --profile headless [--patch …] --json`，权限预设有 `read-only/workspace-write/danger-full-access` 三档（`acceptEdits` 自动映射到 `workspace-write`）。 |
 | `backends.py` | 依据持久化的 UI `backends` 配置构建 `ExecutorRegistry`（每类后端一套独立 profile：命令/模型/超时/自动同步/启用），并向 `/api/config` 输出后端清单。 |
 | `report.py` | 每单生成精简 Markdown：概览、执行结果、改动文件、自动同步明细与备份位置、错误；codebuddy 原始 stdout 只提取最终结论、提示词/命令/输出放折叠附录（`<details>`），避免动辄 10 万字符。`render_report` 也供 `/api/items/{id}/report` 实时渲染，老报告一并精简呈现（磁盘 .md 存档不动）。前端轻量 Markdown 渲染器把表格/标题/折叠块结构化展示。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
@@ -123,7 +123,7 @@ flowchart LR
 
 ## 8. 落地状态与下一步
 
-**已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、邮件 IMAP 兜底接入、**TAPD 主源接入（Webhook + 定时拉取 + 幂等建单 + 状态/评论回填）**、**多执行后端（Executor 统一接口 + codebuddy/dsh 两类独立配置 + 任务按 executor 分派 + 模型动态探测）**、测试全绿（86 passed）、mock 端到端闭环验证通过。
+**已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、邮件 IMAP 兜底接入、**TAPD 主源接入（Webhook + 定时拉取 + 幂等建单 + 状态/评论回填）**、**多执行后端（Executor 统一接口 + codebuddy/dsh 两类独立配置 + 任务按 executor 分派 + 模型动态探测）**、**方言策略库（四层封闭策略 + DSH 内置逃生 + 严格执行证据）**、**设置保存热生效**、测试全绿（115 passed）、mock 端到端闭环验证通过。
 
 **下一步（按优先级）**：
 1. 申请 TAPD 应用凭证 + 项目授权（读 + 写权限），在「数据源」Tab 填入并开启；在 TAPD 后台配置 Webhook 事件订阅。

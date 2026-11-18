@@ -615,3 +615,72 @@ def test_parse_pinned_target_ignores_composer_comments():
         "- id: jobs\n"
     )
     assert dsh_profile.parse_pinned_target(composed) == ("qwen-token-plan", "deepseek-v4-pro")
+
+
+def test_dsh_build_command_uses_headless_profile_and_app_flags(tmp_path):
+    """DSH's headless app has its own protocol; launcher flags must come first.
+
+    A `--patch` after an app flag is parsed as an app argument and rejected as
+    "unknown option", so ordering is part of the contract.
+    """
+    _write_two_model_catalog(tmp_path)
+    dsh = DshExecutor(
+        command=str(_fake_dsh(tmp_path, supports_patch=True, applies_patch=True)),
+        worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches",
+        profile_home=tmp_path,
+    )
+    dsh._pinned_cache = ("deepseek-official", "deepseek-flash")
+    item = WorkItem.create(title="t", description="d", kind="task", model="kimi-k2.7-code")
+    argv = dsh.build_command(item)
+
+    assert argv[1:3] == ["--profile", "headless"]
+    assert "--json" in argv
+    assert "-p" not in argv and "--output-format" not in argv
+    # permission preset is translated into DSH's own vocabulary
+    assert argv[argv.index("--permission-mode") + 1] == "workspace-write"
+    # launcher flags precede app flags
+    assert argv.index("--patch") < argv.index("--permission-mode") < argv.index("--json")
+
+
+def test_dsh_permission_preset_translation(tmp_path):
+    _write_two_model_catalog(tmp_path)
+    dsh = DshExecutor(
+        command=str(_fake_dsh(tmp_path, supports_patch=True, applies_patch=True)),
+        worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches",
+        profile_home=tmp_path,
+        permission_mode="readOnly",
+    )
+    dsh._pinned_cache = ("deepseek-official", "deepseek-flash")
+    item = WorkItem.create(title="t", description="d", kind="task", model="kimi-k2.7-code")
+    argv = dsh.build_command(item)
+    assert argv[argv.index("--permission-mode") + 1] == "read-only"
+
+
+def test_ndjson_verdict_uses_event_stream():
+    from taskagent.dialect import NdjsonStrictVerdict
+
+    policy = NdjsonStrictVerdict()
+    ok_events = (
+        '{"type":"session","sessionId":"s"}\n'
+        '{"type":"status","phase":"turn_start","turn":1}\n'
+        '{"type":"message","role":"assistant","content":"done"}\n'
+        '{"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"stop"}}\n'
+    )
+    ok, error = policy.decide(returncode=0, stdout=ok_events, stderr="", label="DSH")
+    assert ok and error is None
+
+    # a turn that ended in error is a failure even with exit code 0
+    failed_events = (
+        '{"type":"status","phase":"turn_end","turn":1,'
+        '"reason":{"kind":"error","error":{"message":"no API key"}}}\n'
+    )
+    ok, error = policy.decide(returncode=0, stdout=failed_events, stderr="", label="DSH")
+    assert not ok and "no API key" in (error or "")
+
+    # only lifecycle noise, no real work
+    ok, error = policy.decide(
+        returncode=0, stdout='{"type":"session"}\n', stderr="", label="DSH"
+    )
+    assert not ok

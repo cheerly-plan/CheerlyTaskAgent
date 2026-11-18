@@ -38,6 +38,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
   - **邮件（兜底通知）**：在「数据源」Tab 填 IMAP 凭证（host/port/user/password/use_ssl），开启「自动拉取」后按间隔（默认 5 分钟）轮询收件箱未读邮件 → 规则式解析 → 按 message-id 幂等建单；也可点「立即拉取」。邮件是非结构化文本、无状态机、无法回填，仅作临时入口 / 通知提醒，**接入 TAPD 后建议保持关闭**。
   - 旧的 `/api/import`、`/api/import/emails` 端点保留供程序化调用/兼容，但界面不再暴露手动邮件入口。
 - **按任务选模型**：新建任务时可选本次执行的模型（默认「跟随后端默认」）；工作项上也随时可切，dry-run/apply 时按该选择下发 `--model`。候选由**当前后端的 CLI 实测发现**：codebuddy 走 `--help` 里的 `--model` 列表（含 `hy4std/hy4flash`、`deepseek-v4.1-flash`/`deepseek-v4-pro`、`glm-5.3` 等），可用 `TASKAGENT_MODELS` 收窄候选；全局默认由后端 profile 的 `model` 字段指定。报告里记录每个任务实际用的模型。
+  - **DSH 协议差异**：启动命令是 `dsh --profile headless`，headless 应用用 `--json`（NDJSON 事件流）而不是 `--output-format json`，权限预设有 `read-only / workspace-write / danger-full-access` 三档（`acceptEdits` 自动映射到 `workspace-write`），且 launcher 参数（`--profile` / `--patch`）必须排在应用参数之前。
   - **DSH 模型选择**：`dsh --profile headless` 没有 `--model` 选项，模型钉在 profile 的 `agent-default-model` 里；但它接受 `--patch <文件>`，所以调度台把「本次用哪个模型」写成一个临时 patch（`agent-default-model`，必要时连同 `llm-pi-ai.providers` 的网关定义），随命令下发，跑完即删。
     - 模型清单从 profile 层读取：`~/.dsh/profiles/*/cordis.patch.yml` 里 `llm-pi-ai.providers.<provider>.models[]`，因此界面显示的是人类可读名称（DeepSeek V4 Pro / Kimi K2.7 Code / Qwen3.8 Max …）。
     - **并发安全**：每个任务一个独立 patch 文件，不写你的 profile，互不覆盖。
