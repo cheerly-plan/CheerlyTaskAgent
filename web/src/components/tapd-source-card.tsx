@@ -222,9 +222,16 @@ export function TapdSourceCard({
       toast.warning('请先选择项目');
       return;
     }
-    patchTapd('company_id', cid);
-    patchTapd('workspace_id', selectedWorkspaces.join(','));
-    patchTapd('projects', workspaces);
+    // 一次性更新 company_id / workspace_id / projects（避免连续 patchTapd 相互覆盖）。
+    onPatch({
+      ...source,
+      tapd: {
+        ...tapd,
+        company_id: cid,
+        workspace_id: selectedWorkspaces.join(','),
+        projects: workspaces,
+      },
+    });
     try {
       const selectedSet = new Set(selectedWorkspaces);
       const desiredByMapping = new Map<string, string[]>();
@@ -259,11 +266,18 @@ export function TapdSourceCard({
   };
 
   const addNewProject = async (project: {id: string; name: string}, repoIds: string[]) => {
-    patchTapd('workspace_id', [...new Set([...selectedIds, project.id])].join(','));
-    patchTapd('projects', [
-      ...allSavedProjects.filter((item) => item.id !== project.id),
-      {id: project.id, name: project.name, pretty_name: '', company_id: (tapd.company_id || '').trim()},
-    ]);
+    // 一次性更新 workspace_id 和 projects（避免连续 patchTapd 相互覆盖）。
+    onPatch({
+      ...source,
+      tapd: {
+        ...tapd,
+        workspace_id: [...new Set([...selectedIds, project.id])].join(','),
+        projects: [
+          ...allSavedProjects.filter((item) => item.id !== project.id),
+          {id: project.id, name: project.name, pretty_name: '', company_id: (tapd.company_id || '').trim()},
+        ],
+      },
+    });
     if (repoIds.length) {
       try {
         for (const mid of repoIds) {
@@ -286,6 +300,35 @@ export function TapdSourceCard({
     toast.success(`已新增项目：${project.name}，记得点「保存」`);
   };
 
+  const removeProject = async (projectId: string) => {
+    // 一次性从项目缓存和选中 workspace_id 中移除（避免连续 patchTapd 相互覆盖）。
+    const nextIds = selectedIds.filter((id) => id !== projectId);
+    onPatch({
+      ...source,
+      tapd: {
+        ...tapd,
+        projects: allSavedProjects.filter((item) => item.id !== projectId),
+        workspace_id: nextIds.join(','),
+      },
+    });
+    // 解除映射里对该项目的关联。
+    const touched: string[] = [];
+    for (const mapping of mappings) {
+      const ids = mapping.tapd_workspace_ids?.length
+        ? mapping.tapd_workspace_ids
+        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+      if (!ids.includes(projectId)) continue;
+      const nextMappingIds = ids.filter((id) => id !== projectId);
+      await endpoints.updateMapping(mapping.id, {
+        tapd_workspace_ids: nextMappingIds,
+        tapd_workspace_id: nextMappingIds[0] ?? '',
+      });
+      touched.push(mapping.id);
+    }
+    if (touched.length) await reloadMappings();
+    toast.success('已删除项目，记得点「保存」');
+  };
+
   return (
     <Card className="p-5">
       <div className="mb-1 flex items-center gap-2.5">
@@ -298,19 +341,37 @@ export function TapdSourceCard({
           className="w-40"
         />
         </h3>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Button onClick={() => void sync()} disabled={syncing || !tapdConfigured} title="增量拉取：只拉上次同步后修改的条目">
+            <RefreshCw className={syncing ? 'animate-spin' : ''} />
+            {syncing ? '同步中…' : '立即同步'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void sync(true)}
+            disabled={syncing || !tapdConfigured}
+            title="忽略增量游标，重新拉取全部工单（已存在的按 source_ref 去重）"
+          >
+            <RefreshCw className={syncing ? 'animate-spin' : ''} />
+            全量重拉
+          </Button>
+          <Button onClick={onSave}>
+            <Save />
+            保存
+          </Button>
+        </div>
       </div>
 
       <Field
         label="API 地址"
-        labelExtra={
-          <span className="text-[11px] text-faint">内网用 apiv2.tapd.woa.com</span>
-        }
         hint={
           <span className="flex items-center gap-2">
             <button type="button" className="text-[11px] text-primary hover:underline"
               onClick={() => patchTapd('base_url', 'https://api.tapd.cn')}>公网</button>
+              <span className="text-[11px] text-faint">https://api.tapd.cn</span>
             <button type="button" className="text-[11px] text-primary hover:underline"
               onClick={() => patchTapd('base_url', 'https://apiv2.tapd.woa.com')}>内网</button>
+            <span className="text-[11px] text-faint">apiv2.tapd.woa.com</span>
           </span>
         }
       >
@@ -353,6 +414,7 @@ export function TapdSourceCard({
               }))}
               selected={selectedIds}
               onToggle={() => {}}
+              onRemove={(id) => void removeProject(id)}
               placeholder="未选择项目"
               emptyText="暂无项目，点右侧「新增」或「拉取」登记。"
             />
@@ -439,26 +501,6 @@ export function TapdSourceCard({
             onChange={(event) => patchTapd('interval_minutes', Number(event.target.value))}
           />
         </Field>
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={() => void sync()} disabled={syncing || !tapdConfigured} title="增量拉取：只拉上次同步后修改的条目">
-          <RefreshCw className={syncing ? 'animate-spin' : ''} />
-          {syncing ? '同步中…' : '立即同步'}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => void sync(true)}
-          disabled={syncing || !tapdConfigured}
-          title="忽略增量游标，重新拉取全部工单（已存在的按 source_ref 去重）"
-        >
-          <RefreshCw className={syncing ? 'animate-spin' : ''} />
-          全量重拉
-        </Button>
-        <Button className="ml-auto" onClick={onSave}>
-          <Save />
-          保存
-        </Button>
       </div>
 
       <PullProjectsDialog

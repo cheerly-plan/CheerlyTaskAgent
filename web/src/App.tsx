@@ -52,8 +52,10 @@ function Shell() {
           <TabsContent value="mapping" className="mt-6 min-h-0 flex-1 overflow-y-auto">
             <MappingsPage />
           </TabsContent>
-          <TabsContent value="sources" className="mt-6 min-h-0 flex-1 overflow-y-auto">
-            <DataSourcesPage />
+          <TabsContent value="sources" className="mt-6 min-h-0 flex-1 overflow-y-auto -mx-[calc(50vw-50%)] px-5 pb-4 lg:px-8">
+            <div className="mx-auto w-full max-w-[1520px]">
+              <DataSourcesPage />
+            </div>
           </TabsContent>
           <TabsContent value="settings" className="mt-6 min-h-0 flex-1 overflow-y-auto">
             <SettingsPage />

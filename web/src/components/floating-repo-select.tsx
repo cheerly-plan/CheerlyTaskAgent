@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
-import {Check, ChevronDown} from 'lucide-react';
+import {Check, ChevronDown, X} from 'lucide-react';
 
 import {Badge} from '@/components/ui/badge';
 import {cn} from '@/lib/utils';
@@ -29,6 +29,8 @@ interface FloatingRepoSelectProps {
   maxHeight?: number;
   /** 只读模式：不显示复选框、不可勾选，仅展示（选项右侧可带 trailing 文本）。 */
   readOnly?: boolean;
+  /** 提供后，每个选项右侧渲染「×」删除按钮，点击回调（通常用于只读展示态下删除条目）。 */
+  onRemove?: (id: string) => void;
 }
 
 /**
@@ -45,6 +47,7 @@ export function FloatingRepoSelect({
   size = 'default',
   maxHeight = 260,
   readOnly = false,
+  onRemove,
 }: FloatingRepoSelectProps) {
   const triggerRef = React.useRef<HTMLButtonElement>(null);
   const popRef = React.useRef<HTMLDivElement>(null);
@@ -168,17 +171,17 @@ export function FloatingRepoSelect({
         options.map((option) => {
           const checked = selectedSet.has(option.id);
           return (
-            <button
+            <div
               key={option.id}
-              type="button"
-              onClick={() => !readOnly && onToggle(option.id)}
+              role="button"
+              tabIndex={readOnly && !onRemove ? -1 : 0}
               title={option.path}
-              disabled={readOnly}
+              onClick={() => !readOnly && onToggle(option.id)}
               className={cn(
                 'flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-[12px]',
                 readOnly
                   ? 'cursor-default'
-                  : cn('transition-colors', checked ? 'bg-primary/10 text-foreground' : 'hover:bg-secondary/60'),
+                  : cn('cursor-pointer transition-colors', checked ? 'bg-primary/10 text-foreground' : 'hover:bg-secondary/60'),
               )}
             >
               {!readOnly && (
@@ -191,16 +194,29 @@ export function FloatingRepoSelect({
                   {checked ? <Check className="size-3" /> : null}
                 </span>
               )}
-              <span className="min-w-0 truncate">{option.name}</span>
+              <span className="min-w-0 flex-1 truncate">{option.name}</span>
               {option.trailing && (
-                <span className="min-w-0 shrink text-right text-[11px] text-faint">
-                  <span className="max-w-[40%] truncate">{option.trailing}</span>
-                </span>
+                <span className="max-w-[45%] shrink-0 truncate text-[11px] text-faint">{option.trailing}</span>
               )}
               {option.path && !option.trailing && (
                 <span className="max-w-[45%] truncate text-[11px] text-faint">{option.path}</span>
               )}
-            </button>
+              {onRemove && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  title="删除"
+                  aria-label={`删除 ${option.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemove(option.id);
+                  }}
+                  className="ml-1 flex size-4 shrink-0 items-center justify-center rounded text-faint transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
           );
         })
       )}
