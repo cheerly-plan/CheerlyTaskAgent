@@ -55,6 +55,16 @@ class TapdConfig:
     # Author name used for write-back (current_user field).
     current_user: str = "taskagent"
 
+    def __post_init__(self) -> None:
+        # 凭证从网页/终端复制时经常带上首尾空白、制表符或换行；Basic Auth 会
+        # 原样 base64 编码，导致 TAPD 返回 401。统一在这里清理，覆盖所有构造入口。
+        self.base_url = (self.base_url or DEFAULT_BASE_URL).strip().rstrip("/")
+        for attr in (
+            "workspace_id", "api_user", "api_password", "webhook_secret",
+            "status_on_success", "status_on_failure", "current_user",
+        ):
+            setattr(self, attr, (getattr(self, attr) or "").strip())
+
     def is_configured(self) -> bool:
         return bool(self.workspace_id and self.api_user and self.api_password)
 

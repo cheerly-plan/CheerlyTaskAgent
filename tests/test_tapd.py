@@ -8,6 +8,22 @@ from taskagent.sources import RawItem
 from taskagent.tapd import TapdClient, TapdConfig, TapdError, TapdItem
 
 
+def test_tapd_config_strips_whitespace_from_credentials():
+    """粘贴凭证时带入的制表符/换行会被清理，否则 Basic Auth 返回 401。"""
+    cfg = TapdConfig(
+        base_url="  https://api.tapd.cn/  ",
+        workspace_id="\t32312011 ",
+        api_user=" iuu4oPy6\n",
+        api_password="\tD9D3BD3D-87BA-FB8E-8B28-7DB923CCE92B\n",
+        webhook_secret="  shh  ",
+    )
+    assert cfg.base_url == "https://api.tapd.cn"
+    assert cfg.workspace_id == "32312011"
+    assert cfg.api_user == "iuu4oPy6"
+    assert cfg.api_password == "D9D3BD3D-87BA-FB8E-8B28-7DB923CCE92B"
+    assert cfg.webhook_secret == "shh"
+
+
 def test_tapd_settings_defaults_and_roundtrip(tmp_path):
     s = Settings(data_dir=tmp_path)
     initial = s.load_ui_settings()["tapd"]

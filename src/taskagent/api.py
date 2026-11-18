@@ -174,11 +174,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Build a TAPD client from the latest saved UI settings."""
         cfg = settings.load_ui_settings().get("tapd", {})
         tapd_cfg = TapdConfig(
-            base_url=(cfg.get("base_url") or TapdConfig.base_url).rstrip("/"),
-            workspace_id=str(cfg.get("workspace_id", "") or ""),
-            api_user=str(cfg.get("api_user", "") or ""),
-            api_password=str(cfg.get("api_password", "") or ""),
-            webhook_secret=str(cfg.get("webhook_secret", "") or ""),
+            base_url=str(cfg.get("base_url") or TapdConfig.base_url).strip().rstrip("/"),
+            workspace_id=str(cfg.get("workspace_id", "") or "").strip(),
+            # 凭证从网页复制时可能带首尾空白/制表符/换行，Basic Auth 会原样编码导致 401。
+            api_user=str(cfg.get("api_user", "") or "").strip(),
+            api_password=str(cfg.get("api_password", "") or "").strip(),
+            webhook_secret=str(cfg.get("webhook_secret", "") or "").strip(),
             entity_types=list(cfg.get("entity_types") or ["story", "bug"]),
             pull_statuses=list(cfg.get("pull_statuses") or []),
             status_on_success=str(cfg.get("status_on_success", "resolved") or "resolved"),
