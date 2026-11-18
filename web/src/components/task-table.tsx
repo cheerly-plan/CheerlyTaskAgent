@@ -96,16 +96,15 @@ function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) 
   const list = backend?.models ?? [];
   const modelId = item.model || effectiveDefaultModelId(list, backend?.default_model);
   const custom = list.some((model) => modelMatches(model, modelId) && model.custom);
-  return (
-    <span className="inline-flex items-center gap-1">
-      <Mono>{resolvedModelLabel(list, modelId)}</Mono>
-      {custom ? (
-        <Badge variant="purple" title="用户在 CLI 中自行配置的模型">
-          自定义
-        </Badge>
-      ) : null}
-    </span>
-  );
+  const label = resolvedModelLabel(list, modelId);
+  if (custom) {
+    return (
+      <Badge variant="purple" title="用户在 CLI 中自行配置的模型">
+        {label} · 自定义
+      </Badge>
+    );
+  }
+  return <Mono>{label}</Mono>;
 }
 
 export function TaskTable({

@@ -86,7 +86,7 @@ export function TaskCard({
             return (
               <Badge variant="secondary" className="font-mono">
                 {resolvedModelLabel(list, modelId)}
-                {custom ? '（自定义）' : ''}
+                {custom ? ' · 自定义' : ''}
               </Badge>
             );
           })()
