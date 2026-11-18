@@ -4,7 +4,7 @@ import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {ACTIVE_STATUSES, TERMINAL_STATUSES} from '@/lib/labels';
-import {defaultModelLabel, modelHint} from '@/lib/utils';
+import {effectiveDefaultModelId, modelHint} from '@/lib/utils';
 
 export interface ActionSelection {
   map?: string;
@@ -52,14 +52,14 @@ export function TaskActions({
   const backendModels = backend?.models?.length ? backend.models : null;
   const pinnedModel = !canPickModel ? backendModels?.[0]?.id ?? '' : '';
   const modelList = backendModels ?? models;
-  const modelOptions = [
-    {value: '', label: defaultModelLabel(modelList, backend?.default_model)},
-    ...modelList.map((model) => ({
-      value: model.id,
-      label: model.label ?? model.id,
-      hint: modelHint(model),
-    })),
-  ];
+  // 任务一定带具体模型：已选 > 工单已有 > 后端默认/current/第一个。无空选项。
+  const fallbackModel = effectiveDefaultModelId(modelList, backend?.default_model);
+  const selectedModel = selection.model || item.model || fallbackModel;
+  const modelOptions = modelList.map((model) => ({
+    value: model.id,
+    label: model.label ?? model.id,
+    hint: modelHint(model),
+  }));
 
   return (
     <div
@@ -109,11 +109,11 @@ export function TaskActions({
       ) : null}
 
       {!terminal && !running ? (
-        canPickModel ? (
+        canPickModel && modelOptions.length > 0 ? (
           <SelectField
             size="sm"
             className={compact ? 'w-[120px]' : 'w-[132px]'}
-            value={selection.model ?? ''}
+            value={selectedModel}
             options={modelOptions}
             onChange={(value) => onSelect('model', value)}
             title="本任务使用的模型"
@@ -122,12 +122,16 @@ export function TaskActions({
           <span
             className="inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[11px] text-faint"
             title={
-              pinnedModel
-                ? `该后端不支持 --model，实际使用 profile 中钉住的模型：${pinnedModel}`
-                : '该后端不支持 --model，模型由它自己的 profile 决定'
+              !canPickModel
+                ? pinnedModel
+                  ? `该后端不支持 --model，实际使用 profile 中钉住的模型：${pinnedModel}`
+                  : '该后端不支持 --model，模型由它自己的 profile 决定'
+                : '未探测到可用模型，由 CLI 自行决定'
             }
           >
-            模型由 profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
+            {!canPickModel
+              ? `模型由 profile 决定${pinnedModel ? ` · ${pinnedModel}` : ''}`
+              : '模型待探测'}
           </span>
         )
       ) : null}

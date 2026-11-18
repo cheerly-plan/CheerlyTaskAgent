@@ -10,7 +10,7 @@ import {ScanDialog} from '@/components/dialogs/scan-dialog';
 import type {ConnState} from '@/components/app-header';
 import type {ActionSelection} from '@/components/task-actions';
 import {esc, renderMarkdown} from '@/lib/markdown';
-import {defaultModelLabel} from '@/lib/utils';
+import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
 import {
   endpoints,
   type BackendInfo,
@@ -221,9 +221,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
               ? backends.find((entry) => entry.id === item.executor)
               : undefined;
             const backendModels = backend?.models?.length ? backend.models : models;
-            const modelLine = item.model
-              ? '模型：' + item.model
-              : '模型：' + defaultModelLabel(backendModels, backend?.default_model);
+            const modelId = item.model || effectiveDefaultModelId(backendModels, backend?.default_model);
+            const modelLine = '模型：' + resolvedModelLabel(backendModels, modelId);
             return [
               '标题：' + item.title,
               '状态：' + item.status,

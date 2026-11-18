@@ -53,11 +53,12 @@ export function canonicalModelId(
 
 /**
  * 任务未显式指定模型时，该后端实际会落到哪个模型。
- * 优先级：后端 profile 的 default_model → CLI 当前使用的（current）→ 无。
- * 返回命中的模型 id（可能为空串）。
+ * 优先级：后端 profile 的 default_model → CLI 当前使用的（current）→ 列表第一个。
+ * 只要模型列表非空就返回具体 id，保证下拉/回填不会出现空值；
+ * 列表为空时返回空串（此时调用方应禁用模型选择）。
  */
 export function effectiveDefaultModelId(
-  models: {id: string; current?: boolean}[],
+  models: {id: string; current?: boolean; aliases?: string[]}[],
   backendDefault: string | null | undefined,
 ): string {
   if (backendDefault) {
@@ -66,25 +67,21 @@ export function effectiveDefaultModelId(
     return backendDefault;
   }
   const current = models.find((model) => model.current);
-  return current?.id ?? '';
+  if (current) return current.id;
+  return models[0]?.id ?? '';
 }
 
 /**
- * 空选项「默认」的展示文案：把模糊的「跟随全局」替换成实际会生效的模型名。
- * 后端 profile 有默认 → 显示其 label；否则 CLI 当前使用的模型；都没有 → 「CLI 决定」。
+ * 已落地模型的纯展示名：拿到具体模型 id 后取其 label（找不到则回显 id）。
+ * 任务一旦创建就带具体模型，展示位直接显示模型名，不再有「默认（X）」这类模糊包装。
  */
-export function defaultModelLabel(
-  models: {id: string; label: string; current?: boolean; aliases?: string[]}[],
-  backendDefault: string | null | undefined,
+export function resolvedModelLabel(
+  models: {id: string; label: string; aliases?: string[]}[],
+  modelId: string | null | undefined,
 ): string {
-  if (backendDefault) {
-    const hit = models.find((model) => modelMatches(model, backendDefault));
-    if (hit) return `默认（${hit.label}）`;
-    return `默认（${backendDefault}）`;
-  }
-  const current = models.find((model) => model.current);
-  if (current) return `默认（${current.label}）`;
-  return '默认（CLI 决定）';
+  if (!modelId) return '—';
+  const hit = models.find((model) => modelMatches(model, modelId));
+  return hit?.label ?? modelId;
 }
 
 /**

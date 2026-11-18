@@ -6,7 +6,7 @@ import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {shortTime, sourceLabel} from '@/lib/labels';
-import {cn, defaultModelLabel} from '@/lib/utils';
+import {cn, effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
 
 export type SortField = 'created' | 'title' | 'status' | 'source' | 'repo' | 'kind';
 
@@ -76,9 +76,8 @@ interface TaskTableProps {
   onSort: (field: SortField) => void;
 }
 
-/** 模型单元格：固定模型的后端只展示它 profile 里实际会用的模型，不暗示可选。 */
+/** 模型单元格：固定模型的后端只读展示；其余展示工单实际携带的具体模型名。 */
 function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) {
-  if (item.model) return <Mono>{item.model}</Mono>;
   const backend = backends.find((entry) => entry.id === item.executor);
   if (backend?.model_selection === false) {
     const pinned = backend.models?.[0]?.id;
@@ -91,11 +90,8 @@ function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) 
       </span>
     );
   }
-  return (
-    <span className="text-xs text-faint">
-      {defaultModelLabel(backend?.models ?? [], backend?.default_model)}
-    </span>
-  );
+  const modelId = item.model || effectiveDefaultModelId(backend?.models ?? [], backend?.default_model);
+  return <Mono>{resolvedModelLabel(backend?.models ?? [], modelId)}</Mono>;
 }
 
 export function TaskTable({

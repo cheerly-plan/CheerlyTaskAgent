@@ -5,7 +5,7 @@ import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {sourceLabel} from '@/lib/labels';
-import {defaultModelLabel} from '@/lib/utils';
+import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
 
 interface TaskCardProps {
   item: WorkItem;
@@ -72,18 +72,20 @@ export function TaskCard({
         <Badge variant="secondary" className="font-mono">
           {item.exec_mode}
         </Badge>
-        {item.model ? (
-          <Badge variant="secondary" className="font-mono">
-            {item.model}
-          </Badge>
-        ) : modelLocked ? (
+        {modelLocked ? (
           <Badge variant="muted" title={`由 ${backend?.label ?? ''} profile 决定`}>
             profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
           </Badge>
         ) : (
-          <Badge variant="muted">
-            {defaultModelLabel(backend?.models?.length ? backend.models : models, backend?.default_model)}
-          </Badge>
+          (() => {
+            const list = backend?.models?.length ? backend.models : models;
+            const modelId = item.model || effectiveDefaultModelId(list, backend?.default_model);
+            return (
+              <Badge variant="secondary" className="font-mono">
+                {resolvedModelLabel(list, modelId)}
+              </Badge>
+            );
+          })()
         )}
         {dryDone ? <Badge variant="warning">待 apply</Badge> : null}
       </div>
