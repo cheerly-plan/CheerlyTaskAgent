@@ -16,6 +16,7 @@ interface TaskCardProps {
   mappings: ProjectMapping[];
   models: ModelChoice[];
   backends: BackendInfo[];
+  onProbe?: (executorId?: string) => void;
 }
 
 export function TaskCard({
@@ -27,11 +28,12 @@ export function TaskCard({
   mappings,
   models,
   backends,
+  onProbe,
 }: TaskCardProps) {
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
   const backend = backends.find((entry) => entry.id === item.executor);
   const modelLocked = backend?.model_selection === false;
-  const pinnedModel = modelLocked ? backend?.models?.[0]?.id : undefined;
+  const pinnedModel = modelLocked ? backend?.models?.find((model) => model.current)?.id : undefined;
   return (
     <div
       role="button"
@@ -113,6 +115,7 @@ export function TaskCard({
           mappings={mappings}
           models={models}
           backends={backends}
+          onProbe={onProbe}
         />
       </div>
     </div>

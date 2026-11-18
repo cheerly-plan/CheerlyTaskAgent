@@ -59,6 +59,7 @@ export function TasksPage() {
     openReport,
     openNewTask,
     reloadItems,
+    ensureBackendProbe,
   } = useApp();
 
   const [filters, setFilters] = React.useState<Filters>(DEFAULT_FILTERS);
@@ -286,6 +287,7 @@ export function TasksPage() {
             mappings={mappings}
             models={models}
             backends={backends}
+            onProbe={(id) => ensureBackendProbe(id)}
           />
         ) : (
           <div className="grid gap-3 bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -300,6 +302,7 @@ export function TasksPage() {
                 mappings={mappings}
                 models={models}
                 backends={backends}
+                onProbe={(id) => ensureBackendProbe(id)}
               />
             ))}
           </div>

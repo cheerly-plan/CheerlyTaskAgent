@@ -34,6 +34,8 @@ interface NewTaskDialogProps {
   backends: BackendInfo[];
   /** 系统设置里选的默认后端；缺失时退回列表第一个。 */
   defaultExecutor?: string;
+  /** 首次展开模型下拉时探测该后端能否按任务指定模型。 */
+  onProbe?: (executorId?: string) => void;
   onManualCreate: (draft: ManualTaskDraft, mode: 'draft' | 'dry' | 'apply') => void;
 }
 
@@ -47,6 +49,7 @@ export function NewTaskDialog({
   defaultModel,
   backends,
   defaultExecutor,
+  onProbe,
   onManualCreate,
 }: NewTaskDialogProps) {
   const [manual, setManual] = React.useState<ManualTaskDraft>(EMPTY_MANUAL);
@@ -84,7 +87,7 @@ export function NewTaskDialog({
   // 该后端把模型钉在自己的 profile 里（model_selection === false）时，不给假的选项。
   const backendInfo = backends.find((backend) => backend.id === manual.executor);
   const canPickModel = backendInfo?.model_selection !== false;
-  const pinnedModel = !canPickModel ? backendInfo?.models?.[0]?.id : undefined;
+  const pinnedModel = !canPickModel ? backendInfo?.models?.find((model) => model.current)?.id : undefined;
 
   // 模型选项必须来自「当前选中的后端」：codebuddy 与 DSH 的模型集合完全不同，
   // 混用会出现「选了 DSH 却列出 codebuddy 模型」的错配。
@@ -168,6 +171,9 @@ export function NewTaskDialog({
                     value={manual.model}
                     options={modelOptions}
                     onChange={(value) => setManual((prev) => ({...prev, model: value}))}
+                    onOpenChange={(open) => {
+                      if (open) onProbe?.(effectiveExecutor);
+                    }}
                   />
                 ) : (
                   <div className="flex h-9 items-center rounded-lg border border-dashed border-border bg-[#fbfbfd] px-3 text-xs text-faint">

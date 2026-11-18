@@ -32,6 +32,8 @@ interface SelectFieldProps {
   disabled?: boolean;
   title?: string;
   id?: string;
+  /** 下拉展开回调：用于「首次打开时才探测」这类惰性动作。 */
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function SelectField({
@@ -44,12 +46,14 @@ export function SelectField({
   disabled,
   title,
   id,
+  onOpenChange,
 }: SelectFieldProps) {
   const current = options.find((option) => option.value === value);
   return (
     <Select
       value={value === '' ? EMPTY_VALUE : value}
       onValueChange={(next) => onChange(next === EMPTY_VALUE ? '' : next)}
+      onOpenChange={onOpenChange}
       disabled={disabled}
     >
       <SelectTrigger

@@ -21,6 +21,8 @@ interface TaskActionsProps {
   backends: BackendInfo[];
   /** 卡片视图里按钮换行更紧凑 */
   compact?: boolean;
+  /** 首次展开模型下拉时触发后端能力探测。 */
+  onProbe?: (executorId?: string) => void;
 }
 
 /**
@@ -37,6 +39,7 @@ export function TaskActions({
   models,
   backends,
   compact,
+  onProbe,
 }: TaskActionsProps) {
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
   const retryable = ['failed', 'cancelled'].includes(item.status);
@@ -50,7 +53,8 @@ export function TaskActions({
   const backend = backends.find((entry) => entry.id === item.executor);
   const canPickModel = backend?.model_selection !== false;
   const backendModels = backend?.models?.length ? backend.models : null;
-  const pinnedModel = !canPickModel ? backendModels?.[0]?.id ?? '' : '';
+  // 只认 backend 自己标记的 current（profile 钉住的那个）；目录第一条不是默认。
+  const pinnedModel = !canPickModel ? backendModels?.find((model) => model.current)?.id ?? '' : '';
   const modelList = backendModels ?? models;
   // 任务一定带具体模型：已选 > 工单已有 > 后端默认/current/第一个。无空选项。
   const fallbackModel = effectiveDefaultModelId(modelList, backend?.default_model);
@@ -116,6 +120,9 @@ export function TaskActions({
             value={selectedModel}
             options={modelOptions}
             onChange={(value) => onSelect('model', value)}
+            onOpenChange={(open) => {
+              if (open) onProbe?.(item.executor);
+            }}
             title="本任务使用的模型"
           />
         ) : (

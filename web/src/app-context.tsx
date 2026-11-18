@@ -51,6 +51,11 @@ interface AppContextValue {
   confirm: (message: string) => Promise<boolean>;
   /** 该后端是否接受按任务指定模型（DSH 之类把模型钉在 profile 里 → false）。 */
   modelSelectionSupported: (executorId?: string) => boolean;
+  /**
+   * 首次要用某个后端的模型下拉时调用：跑一次真实探测并回写结果。
+   * 缓存按后端 id，避免每次下拉都起子进程。
+   */
+  ensureBackendProbe: (executorId?: string) => void;
 }
 
 const AppContext = React.createContext<AppContextValue | null>(null);
@@ -178,6 +183,37 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     };
     return () => source.close();
   }, [reloadItems]);
+
+  const probedBackends = React.useRef(new Set<string>());
+  const ensureBackendProbe = React.useCallback(
+    (executorId?: string) => {
+      if (!executorId || probedBackends.current.has(executorId)) return;
+      probedBackends.current.add(executorId);
+      void (async () => {
+        try {
+          const result = await endpoints.probeBackend(executorId);
+          setBackends((prev) =>
+            prev.map((backend) =>
+              backend.id === executorId
+                ? {
+                    ...backend,
+                    model_selection: result.model_selection,
+                    models: result.models?.length ? result.models : backend.models,
+                  }
+                : backend,
+            ),
+          );
+          if (!result.model_selection) {
+            toast.info('该后端无法按任务指定模型，已改为只读展示');
+          }
+        } catch (error) {
+          probedBackends.current.delete(executorId);  // 允许下次重试
+          toast.error('探测后端能力失败：' + (error as Error).message);
+        }
+      })();
+    },
+    [],
+  );
 
   const modelSelectionSupported = React.useCallback(
     (executorId?: string) => {
@@ -474,6 +510,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       };
       try {
         await endpoints.saveSettings(payload);
+        probedBackends.current.clear();  // 后端配置变了，能力需重新探测
         await reloadSettings();
         toast.success('设置已保存并已生效');
       } catch (error) {
@@ -511,6 +548,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     openReport,
     confirm,
     modelSelectionSupported,
+    ensureBackendProbe,
   };
 
   // 新建任务要回填的默认模型：系统设置里「默认执行后端」真正保存的 model 值。
@@ -533,6 +571,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         defaultModel={effectiveDefaultModel}
         backends={backends}
         defaultExecutor={settings?.executor || ''}
+        onProbe={(id) => ensureBackendProbe(id)}
         onManualCreate={(draft, mode) => void createManual(draft, mode)}
       />
 

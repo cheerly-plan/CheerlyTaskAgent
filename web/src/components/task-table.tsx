@@ -73,6 +73,7 @@ interface TaskTableProps {
   models: ModelChoice[];
   backends: BackendInfo[];
   sort: SortState;
+  onProbe?: (executorId?: string) => void;
   onSort: (field: SortField) => void;
 }
 
@@ -80,7 +81,7 @@ interface TaskTableProps {
 function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) {
   const backend = backends.find((entry) => entry.id === item.executor);
   if (backend?.model_selection === false) {
-    const pinned = backend.models?.[0]?.id;
+    const pinned = backend.models?.find((model) => model.current)?.id;
     return (
       <span
         className="text-xs text-faint"
@@ -104,6 +105,7 @@ export function TaskTable({
   models,
   backends,
   sort,
+  onProbe,
   onSort,
 }: TaskTableProps) {
   return (
@@ -182,6 +184,7 @@ export function TaskTable({
                 mappings={mappings}
                 models={models}
                 backends={backends}
+                onProbe={onProbe}
               />
             </TableCell>
           </TableRow>

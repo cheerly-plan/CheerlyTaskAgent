@@ -90,3 +90,28 @@ def test_saving_settings_applies_without_restart(tmp_path):
         assert dsh["command"].endswith("custom-dsh")
         # scheduler's gate was resized too
         assert app.state.ctx.scheduler.settings.max_concurrent == 3
+
+
+def test_backend_probe_reports_capability_on_demand(tmp_path):
+    """The probe endpoint verifies capability without being on the config path.
+
+    /api/config must not spawn CLI processes; the UI calls this once, the first
+    time the user opens a model picker.
+    """
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        # config is optimistic (no probe yet)
+        config = client.get("/api/config").json()
+        dsh = next(b for b in config["backends"] if b["id"] == "dsh")
+        assert dsh["model_selection"] is True
+
+        # probing a backend whose CLI cannot be run degrades to False, not a 500
+        probed = client.post("/api/backends/dsh/probe")
+        assert probed.status_code == 200
+        body = probed.json()
+        assert body["id"] == "dsh"
+        assert body["model_selection"] is False
+        assert isinstance(body["models"], list)
+
+        missing = client.post("/api/backends/nope/probe")
+        assert missing.status_code == 404

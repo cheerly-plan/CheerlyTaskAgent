@@ -247,6 +247,12 @@ export const endpoints = {
 
   tapdWebhookUrl: () => `${location.origin}/api/tapd/webhook`,
 
+  probeBackend: (id: string) =>
+    api<{id: string; model_selection: boolean; models: ModelChoice[]; error?: string}>(
+      `/api/backends/${encodeURIComponent(id)}/probe`,
+      {method: 'POST'},
+    ),
+
   browse: (path: string) => api<BrowseResult>(`/api/fs/browse?path=${encodeURIComponent(path)}`),
   scan: (path: string, depth = 2) =>
     api<ScanResult>('/api/fs/scan', jsonInit('POST', {path, depth})),

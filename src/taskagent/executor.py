@@ -1595,7 +1595,9 @@ class DshExecutor(CodeBuddyExecutor):
 
     def list_models(self) -> list[dict[str, Any]]:
         """Pinned model first, then everything the profile layers declare."""
-        self.supports_model_selection_check()
+        # Deliberately NOT probing capability here: probing runs the CLI twice
+        # more, and every /api/config call would pay it. The UI asks for it
+        # once, the first time the user opens a model picker (POST …/probe).
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         target = self._pinned_target()

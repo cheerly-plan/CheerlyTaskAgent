@@ -447,6 +447,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         apply_runtime_settings()
         return saved
 
+    @app.post("/api/backends/{backend_id}/probe")
+    def api_probe_backend(backend_id: str) -> dict[str, Any]:
+        """Verify on demand whether a backend can honour a per-task model.
+
+        Kept out of /api/config so page loads never spawn extra CLI processes:
+        the UI calls this the first time the user opens a model picker.
+        """
+        executor = executor_registry.get(backend_id)
+        if executor is None:
+            raise HTTPException(404, f"backend not found: {backend_id}")
+        check = getattr(executor, "supports_model_selection_check", None)
+        try:
+            capable = bool(check()) if callable(check) else bool(
+                getattr(executor, "supports_model_selection", True)
+            )
+            models = executor.list_models()
+        except (OSError, ValueError, RuntimeError) as error:  # never 500 the UI
+            logger.warning("探测后端 %s 失败：%s", backend_id, error)
+            return {"id": backend_id, "model_selection": False, "models": [], "error": str(error)}
+        return {"id": backend_id, "model_selection": capable, "models": models}
+
     # ── read-only folder browser + on-demand scanner ────────────────────────
     @app.get("/api/fs/browse")
     def api_fs_browse(path: str = "") -> dict[str, Any]:

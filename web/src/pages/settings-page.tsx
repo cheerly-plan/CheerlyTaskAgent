@@ -21,7 +21,7 @@ const DEFAULT_BACKEND: BackendConfig = {
 };
 
 export function SettingsPage() {
-  const {settings, saveSettings, reloadSettings, backends: backendInfos} = useApp();
+  const {settings, saveSettings, reloadSettings, backends: backendInfos, ensureBackendProbe} = useApp();
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
 
   React.useEffect(() => {
@@ -148,7 +148,7 @@ export function SettingsPage() {
                     const info = backendInfos.find((entry) => entry.id === id);
                     // 有些 CLI（DSH）没有 --model：模型钉在它自己的 profile 里，只读展示。
                     const canPickModel = info?.model_selection !== false;
-                    const pinnedName = (info?.models ?? [])[0]?.id ?? '';
+                    const pinnedName = (info?.models ?? []).find((model) => model.current)?.id ?? '';
                     const cliDefault = cliDefaultLabel(modelsByBackend[id] ?? []);
                     return (
                       <tr key={id} className="border-b border-border/70 align-middle last:border-0">
@@ -188,6 +188,9 @@ export function SettingsPage() {
                                   ? [{value: current.model, label: current.model}]
                                   : []),
                               ]}
+                              onOpenChange={(open) => {
+                                if (open) ensureBackendProbe(id);
+                              }}
                               onChange={(value) => patchBackend(id, 'model', value)}
                             />
                           ) : (

@@ -122,8 +122,9 @@ def test_describe_backends_flags_model_selection(tmp_path):
     })
     described = {d["id"]: d for d in describe_backends(s, build_registry(s))}
     assert described["codebuddy"]["model_selection"] is True
-    # No runnable dsh binary => no verifiable overlay => no fake choice.
-    assert described["dsh"]["model_selection"] is False
+    # /api/config stays optimistic: probing is deferred to the first model
+    # selection (POST /api/backends/{id}/probe), so page loads never shell out.
+    assert described["dsh"]["model_selection"] is True
 
 
 def test_build_registry_reads_per_type_profiles(tmp_path):
