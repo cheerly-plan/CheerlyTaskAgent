@@ -1,8 +1,8 @@
 import * as React from 'react';
-import {Plus, RefreshCw, Save, Webhook} from 'lucide-react';
+import {RefreshCw, Save, Settings2, Webhook} from 'lucide-react';
 
 import {FloatingRepoSelect} from '@/components/floating-repo-select';
-import {NewTapdProjectDialog} from '@/components/dialogs/new-tapd-project-dialog';
+import {TapdProjectsDialog} from '@/components/dialogs/tapd-projects-dialog';
 import {PullProjectsDialog} from '@/components/dialogs/pull-projects-dialog';
 import {Field, SelectField} from '@/components/select-field';
 import {Button} from '@/components/ui/button';
@@ -71,7 +71,7 @@ export function TapdSourceCard({
   const [pullCompanyId, setPullCompanyId] = React.useState('');
   const [selectedWorkspaces, setSelectedWorkspaces] = React.useState<string[]>([]);
   const [repoSelection, setRepoSelection] = React.useState<Record<string, string[]>>({});
-  const [newProjectOpen, setNewProjectOpen] = React.useState(false);
+  const [projectsOpen, setProjectsOpen] = React.useState(false);
   const hydrated = React.useRef(false);
 
   const patchTapd = <K extends keyof TapdSettings>(key: K, value: TapdSettings[K]) => {
@@ -116,13 +116,15 @@ export function TapdSourceCard({
     }
   }
 
-  // 项目 ID → 关联的本地仓库名列表（从映射反推）。
+  // 项目 ID → 关联的本地映射 ID / 仓库名（从映射反推）。
+  const repoIdsByProject: Record<string, string[]> = {};
   const repoNameByProject: Record<string, string[]> = {};
   for (const mapping of mappings) {
     const ids = mapping.tapd_workspace_ids?.length
       ? mapping.tapd_workspace_ids
       : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
     for (const wid of ids) {
+      (repoIdsByProject[wid] ??= []).push(mapping.id);
       (repoNameByProject[wid] ??= []).push(mapping.name);
     }
   }
@@ -140,10 +142,14 @@ export function TapdSourceCard({
     (p) => !pullCompanyId || p.company_id === pullCompanyId,
   );
 
+  // 拉取只处理「尚未登记」的项目；已登记的通过字段内勾选或「管理」编辑。
+  const savedProjectIds = new Set(allSavedProjects.map((p) => p.id));
+  const pullCandidates = visibleWorkspaces.filter((p) => !savedProjectIds.has(p.id));
+
   const openPull = () => {
     const cid = (tapd.company_id || '').trim();
     setPullCompanyId(cid);
-    setSelectedWorkspaces(selectedIds);
+    setSelectedWorkspaces([]);
     const initialRepos: Record<string, string[]> = {};
     for (const mapping of mappings) {
       const ids = mapping.tapd_workspace_ids?.length
@@ -153,7 +159,7 @@ export function TapdSourceCard({
         initialRepos[wid] = [...(initialRepos[wid] ?? []), mapping.id];
       }
     }
-    setRepoSelection(initialRepos);
+    setRepoSelection({});
     setWorkspaces(allSavedProjects);
     setPullOpen(true);
     if (cid && tapdCredentialsReady) void fetchWorkspaces(cid);
@@ -307,6 +313,43 @@ export function TapdSourceCard({
     patchTapd('workspace_id', next.join(','));
   };
 
+  const updateProject = async (
+    projectId: string,
+    patch: {name: string; repoIds: string[]},
+  ) => {
+    onPatch({
+      ...source,
+      tapd: {
+        ...tapd,
+        projects: allSavedProjects.map((project) =>
+          project.id === projectId ? {...project, name: patch.name} : project,
+        ),
+      },
+    });
+    const desired = new Set(patch.repoIds);
+    let changed = false;
+    for (const mapping of mappings) {
+      const ids = mapping.tapd_workspace_ids?.length
+        ? mapping.tapd_workspace_ids
+        : mapping.tapd_workspace_id
+          ? [mapping.tapd_workspace_id]
+          : [];
+      const bound = ids.includes(projectId);
+      const shouldBind = desired.has(mapping.id);
+      if (bound === shouldBind) continue;
+      const nextIds = shouldBind
+        ? [...ids, projectId]
+        : ids.filter((id) => id !== projectId);
+      await endpoints.updateMapping(mapping.id, {
+        tapd_workspace_ids: nextIds,
+        tapd_workspace_id: nextIds[0] ?? '',
+      });
+      changed = true;
+    }
+    if (changed) await reloadMappings();
+    toast.success(`已更新项目：${patch.name}，记得点「保存」`);
+  };
+
   const removeProject = async (projectId: string) => {
     // 一次性从项目缓存和选中 workspace_id 中移除（避免连续 patchTapd 相互覆盖）。
     const nextIds = selectedIds.filter((id) => id !== projectId);
@@ -437,11 +480,11 @@ export function TapdSourceCard({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setNewProjectOpen(true)}
-              title="输入项目名称和项目 ID，并勾选管理的本地仓库"
+              onClick={() => setProjectsOpen(true)}
+              title="管理 TAPD 项目：新增，或编辑已有项目的名称与仓库关联"
             >
-              <Plus />
-              新增
+              <Settings2 />
+              管理
             </Button>
             <Button
               variant="outline"
@@ -536,7 +579,7 @@ export function TapdSourceCard({
         onCompanyIdChange={changePullCompany}
         credentialsReady={tapdCredentialsReady}
         availableCompanies={[...new Set(workspaces.map((p) => p.company_id).filter(Boolean))]}
-        workspaces={visibleWorkspaces}
+        workspaces={pullCandidates}
         loading={loadingWorkspaces}
         onFetch={(cid) => void fetchWorkspaces(cid)}
         selectedWorkspaces={selectedWorkspaces}
@@ -549,11 +592,14 @@ export function TapdSourceCard({
         onApply={() => void applyPull()}
       />
 
-      <NewTapdProjectDialog
-        open={newProjectOpen}
-        onOpenChange={setNewProjectOpen}
+      <TapdProjectsDialog
+        open={projectsOpen}
+        onOpenChange={setProjectsOpen}
         mappings={mappings}
-        onAdd={(project, repoIds) => void addNewProject(project, repoIds)}
+        projects={allSavedProjects}
+        reposByProject={repoIdsByProject}
+        onAdd={(project, repoIds) => addNewProject(project, repoIds)}
+        onUpdate={(projectId, patch) => updateProject(projectId, patch)}
       />
     </Card>
   );

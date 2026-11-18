@@ -110,7 +110,7 @@ export function PullProjectsDialog({
         <DialogHeader>
           <DialogTitle>项目</DialogTitle>
           <DialogDescription>
-            选择企业后自动拉取项目；每个项目单独勾选它管理的本地仓库。应用后写回项目与关联关系。
+            这里只展示「尚未添加」的项目；选企业后自动拉取，勾选并指定各自管理的本地仓库。已添加的项目请在「管理」里编辑。
           </DialogDescription>
         </DialogHeader>
 
@@ -185,7 +185,11 @@ export function PullProjectsDialog({
             </div>
             {workspaces.length === 0 ? (
               <div className="flex h-24 items-center justify-center rounded-lg border border-dashed border-border bg-[#fbfbfd] px-4 text-center text-[11.5px] text-faint">
-                {loading ? '正在拉取…' : effectiveCompanyId ? '该企业下暂无项目，点「拉取」刷新' : '先选择企业 ID'}
+                {loading
+                  ? '正在拉取…'
+                  : effectiveCompanyId
+                    ? '没有可添加的新项目（已添加的项目在「管理」里编辑）'
+                    : '先选择企业 ID'}
               </div>
             ) : (
               <div className="scrollbar-thin max-h-[min(52vh,420px)] space-y-1.5 overflow-y-auto pr-1">
