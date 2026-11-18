@@ -32,6 +32,8 @@ interface NewTaskDialogProps {
   models: ModelChoice[];
   defaultModel: string;
   backends: BackendInfo[];
+  /** 系统设置里选的默认后端；缺失时退回列表第一个。 */
+  defaultExecutor?: string;
   onManualCreate: (draft: ManualTaskDraft, mode: 'draft' | 'dry' | 'apply') => void;
 }
 
@@ -44,6 +46,7 @@ export function NewTaskDialog({
   models,
   defaultModel,
   backends,
+  defaultExecutor,
   onManualCreate,
 }: NewTaskDialogProps) {
   const [manual, setManual] = React.useState<ManualTaskDraft>(EMPTY_MANUAL);
@@ -54,24 +57,39 @@ export function NewTaskDialog({
     label: backend.label,
     hint: backend.command || undefined,
   }));
-  const firstExecutor = backendOptions[0]?.value ?? 'codebuddy';
+  // 初始后端优先跟随系统设置的默认后端，而不是列表顺序里的第一个。
+  const firstExecutor =
+    backendOptions.find((option) => option.value === defaultExecutor)?.value ??
+    backendOptions[0]?.value ??
+    'codebuddy';
 
   // 每次打开都重置草稿；模型/后端预填系统设置里真正保存的值，避免歧义。
   // 已保存值若是被去重折叠的别名（如 hy4flash），归一到规范 id 才能选中。
   React.useEffect(() => {
     if (open) {
-      // 回填一个具体模型：系统设置保存值 > 别名归一 > 后端默认/current/第一个。
-      const model = canonicalModelId(models, defaultModel) || effectiveDefaultModelId(models, defaultModel);
+      // 回填一个具体模型：系统设置保存值 > 别名归一 > 该后端默认/current/第一个。
+      // 必须用「首个后端」自己的清单：不同 CLI 的模型完全不重叠。
+      const firstBackend = backends.find((backend) => backend.id === firstExecutor);
+      const firstModels = firstBackend?.models?.length ? firstBackend.models : models;
+      // 已保存值可能属于另一个后端（如从 codebuddy 切到 DSH）：只有命中当前
+      // 后端清单才回填，否则落到该后端的默认模型，避免下拉出现「空选中」。
+      const canonical = canonicalModelId(firstModels, defaultModel);
+      const model = firstModels.some((item) => modelMatches(item, canonical))
+        ? canonical
+        : effectiveDefaultModelId(firstModels, '');
       setManual({...EMPTY_MANUAL, executor: firstExecutor, model});
     }
-  }, [open, defaultModel, firstExecutor, models]);
+  }, [open, defaultModel, firstExecutor, models, backends]);
 
   // 该后端把模型钉在自己的 profile 里（model_selection === false）时，不给假的选项。
   const backendInfo = backends.find((backend) => backend.id === manual.executor);
   const canPickModel = backendInfo?.model_selection !== false;
   const pinnedModel = !canPickModel ? backendInfo?.models?.[0]?.id : undefined;
 
-  const modelOptions = models.map((model) => ({
+  // 模型选项必须来自「当前选中的后端」：codebuddy 与 DSH 的模型集合完全不同，
+  // 混用会出现「选了 DSH 却列出 codebuddy 模型」的错配。
+  const backendModels = backendInfo?.models?.length ? backendInfo.models : models;
+  const modelOptions = backendModels.map((model) => ({
     value: model.id,
     label: model.label,
     hint: modelHint(model, modelMatches(model, defaultModel) ? '全局默认' : undefined),
@@ -122,7 +140,19 @@ export function NewTaskDialog({
                 <SelectField
                   value={effectiveExecutor}
                   options={backendOptions}
-                  onChange={(value) => setManual((prev) => ({...prev, executor: value}))}
+                  onChange={(value) =>
+                    setManual((prev) => {
+                      const nextBackend = backends.find((backend) => backend.id === value);
+                      const nextModels = nextBackend?.models?.length ? nextBackend.models : models;
+                      const kept = canonicalModelId(nextModels, prev.model);
+                      const compatible = nextModels.some((model) => modelMatches(model, kept));
+                      return {
+                        ...prev,
+                        executor: value,
+                        model: compatible ? kept : effectiveDefaultModelId(nextModels, ''),
+                      };
+                    })
+                  }
                 />
               </Field>
               <Field

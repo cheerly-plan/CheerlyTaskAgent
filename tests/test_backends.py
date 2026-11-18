@@ -439,3 +439,60 @@ def test_list_models_falls_back_to_help_without_cache(monkeypatch, tmp_path):
     ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
     # No cache + nonexistent CLI => empty, not a crash.
     assert ex.list_models() == []
+
+
+def test_dsh_marks_pinned_model_as_current(tmp_path):
+    """The pinned profile model carries ``current`` so the UI can name it.
+
+    Without the flag the settings page can only say "由 CLI 决定"; codebuddy
+    already reports ``current`` from its local cache, and DSH should match.
+    """
+    profiles = tmp_path / "profiles" / "desktop"
+    profiles.mkdir(parents=True)
+    (profiles / "cordis.patch.yml").write_text(
+        "- id: llm-pi-ai\n"
+        '  name: "@deepseek-ai/dsh-llm-pi-ai"\n'
+        "  config:\n"
+        "    providers:\n"
+        "      qwen-token-plan:\n"
+        "        models:\n"
+        "          - id: deepseek-v4.1-flash\n"
+        "            name: DeepSeek V4.1 Flash\n"
+        "            contextWindow: 1000000\n",
+        encoding="utf-8",
+    )
+    dsh = DshExecutor(
+        command="/bin/true",
+        worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches",
+        profile_home=tmp_path,
+    )
+    dsh._pinned_cache = ("qwen-token-plan", "deepseek-v4.1-flash")  # avoid a CLI call
+
+    models = {entry["id"]: entry for entry in dsh.list_models()}
+    assert models["deepseek-v4.1-flash"]["current"] is True
+    assert models["deepseek-v4.1-flash"]["label"] == "DeepSeek V4.1 Flash"
+    assert models["deepseek-v4.1-flash"]["context"] == 1000000
+
+
+def test_parse_pinned_target_reads_real_dump_shape():
+    """Parsing is pinned to the shape `dsh --dump-config` actually emits.
+
+    Fixture is a verbatim excerpt from a real headless dump; the entry ends at
+    the next ``- id:`` marker, so the parser must not run past it.
+    """
+    dump = """- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+- id: jobs
+  name: '@deepseek-ai/dsh-jobs-local'
+- id: llm-retry
+"""
+    assert dsh_profile.parse_pinned_target(dump) == ("deepseek-official", "deepseek-flash")
+    assert dsh_profile.parse_pinned_target("no such entry here") is None
+    # provider 存在但缺少 model 时不返回半截结果
+    assert dsh_profile.parse_pinned_target(
+        "- id: agent-default-model\n  config:\n    provider: x\n- id: next\n"
+    ) is None

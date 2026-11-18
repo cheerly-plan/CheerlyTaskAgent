@@ -297,7 +297,7 @@ export function SettingsPage() {
           重新载入
         </Button>
         <span className="ml-1 text-[11.5px] text-faint">
-          后端的新增 / 删除，以及 CLI 路径、默认模型等运行时参数，在保存后需重启服务才会对新任务生效。
+          后端的新增 / 删除、CLI 路径、默认模型与并发数在保存后立即生效；正在执行的任务不受影响。
         </span>
       </Card>
     </div>

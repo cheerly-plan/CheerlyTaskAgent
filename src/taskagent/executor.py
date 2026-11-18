@@ -1407,17 +1407,7 @@ class DshExecutor(CodeBuddyExecutor):
         except (OSError, subprocess.SubprocessError):
             proc = None
         text = (proc.stdout or "") if proc is not None else ""
-        found = re.search(
-            r"id:\s*agent-default-model.*?\n((?:\s+.*\n)*?)(?=- id:|\Z)", text
-        )
-        provider = model = ""
-        if found:
-            block = found.group(1)
-            provider_match = re.search(r"^\s+provider:\s*([A-Za-z0-9._-]+)", block, re.MULTILINE)
-            model_match = re.search(r"^\s+model:\s*([A-Za-z0-9._-]+)", block, re.MULTILINE)
-            provider = provider_match.group(1) if provider_match else ""
-            model = model_match.group(1) if model_match else ""
-        self._pinned_cache = (provider, model) if provider and model else None
+        self._pinned_cache = dsh_profile.parse_pinned_target(text)
         return self._pinned_cache  # type: ignore[return-value]
 
     def list_models(self) -> list[dict[str, Any]]:
@@ -1426,8 +1416,21 @@ class DshExecutor(CodeBuddyExecutor):
         seen: set[str] = set()
         target = self._pinned_target()
         if target:
-            entries.append({"id": target[1], "label": target[1]})
-            seen.add(target[1])
+            provider, pinned_id = target
+            entry = dsh_profile.resolve_entry(self.catalog, pinned_id)
+            pinned: dict[str, Any] = {
+                "id": pinned_id,
+                # ``current`` lets the UI name the model instead of falling back
+                # to "由 CLI 决定" — the same contract codebuddy's cache provides.
+                "current": True,
+                "label": (entry.label if entry else "") or pinned_id,
+            }
+            if provider:
+                pinned["vendor"] = provider
+            if entry and entry.context:
+                pinned["context"] = entry.context
+            entries.append(pinned)
+            seen.add(pinned_id)
         for entry in self.catalog:
             if entry.model_id in seen:
                 continue
@@ -1435,6 +1438,8 @@ class DshExecutor(CodeBuddyExecutor):
             item: dict[str, Any] = {"id": entry.model_id, "label": entry.label or entry.model_id}
             if entry.provider:
                 item["vendor"] = entry.provider
+            if entry.context:
+                item["context"] = entry.context
             entries.append(item)
         return entries
 

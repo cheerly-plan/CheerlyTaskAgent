@@ -173,7 +173,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     browser = FolderBrowser(settings.browse_root)
     events = EventBus()
 
-    executor_registry = build_registry(settings)
+    # 启动时就用「已保存的 UI 设置」而不是环境变量：保存过的并发数/后端配置
+    # 重启后应当继续生效，而不是被 env 默认值覆盖。
+    initial_ui = settings.load_ui_settings()
+    executor_registry = build_registry(settings, ui=initial_ui)
     executor = executor_registry.resolve(executor_registry.default_backend_id)
 
     def make_tapd_client() -> tuple[TapdClient, dict[str, Any]]:
@@ -229,7 +232,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         executors=executor_registry,
         events=events,
         settings=SchedulerSettings(
-            max_concurrent=settings.max_concurrent, reports_dir=settings.reports_dir
+            max_concurrent=int(initial_ui.get("max_concurrent") or settings.max_concurrent),
+            reports_dir=settings.reports_dir,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
@@ -363,7 +367,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="CheerlyTaskAgent", version="0.2.0", lifespan=lifespan)
     app.state.ctx = SimpleNamespace(
         settings=settings, store=store, gitmap=gitmap, projects=projects,
-        browser=browser, events=events, executor=executor, scheduler=scheduler,
+        browser=browser, events=events, executor=executor, executors=executor_registry,
+        scheduler=scheduler,
     )
 
     # 前端由 `web/` 的 Vite 工程构建到 web_dir；产物不入仓，因此首次运行需先 build。
@@ -399,7 +404,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "executor": executor_registry.default_backend_id or "codebuddy",
             "backends": describe_backends(settings, executor_registry),
             "codebuddy_command": settings.codebuddy_command,
-            "max_concurrent": settings.max_concurrent,
+            "max_concurrent": scheduler.settings.max_concurrent,
             "default_exec_mode": "dry-run",
             "project_map_file": str(
                 settings.project_map_file or settings.data_dir / "projects.json"
@@ -416,11 +421,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_get_settings() -> dict[str, Any]:
         return settings.load_ui_settings()
 
+    def apply_runtime_settings() -> None:
+        """Rebuild executors and concurrency from the saved UI settings.
+
+        Everything the 系统设置 tab can edit is applied here, so saving no
+        longer requires a restart. In-flight runs keep the executor they
+        started with; new runs pick up the fresh registry.
+        """
+        nonlocal executor_registry, executor
+        ui = settings.load_ui_settings()
+        executor_registry = build_registry(settings, ui=ui)
+        executor = executor_registry.resolve(executor_registry.default_backend_id)
+        app.state.ctx.executor = executor
+        app.state.ctx.executors = executor_registry
+        scheduler.reconfigure(
+            executors=executor_registry,
+            max_concurrent=int(ui.get("max_concurrent") or 1),
+        )
+
     @app.put("/api/settings")
     def api_put_settings(body: UISettingsBody) -> dict[str, Any]:
         # exclude_unset: fields the client didn't send (e.g. ``backends`` from
         # an older client) must not be treated as "clear everything".
-        return settings.save_ui_settings(body.model_dump(exclude_unset=True))
+        saved = settings.save_ui_settings(body.model_dump(exclude_unset=True))
+        apply_runtime_settings()
+        return saved
 
     # ── read-only folder browser + on-demand scanner ────────────────────────
     @app.get("/api/fs/browse")

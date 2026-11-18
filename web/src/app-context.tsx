@@ -475,7 +475,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       try {
         await endpoints.saveSettings(payload);
         await reloadSettings();
-        toast.success('设置已保存（部分参数需重启服务后生效）');
+        toast.success('设置已保存并已生效');
       } catch (error) {
         toast.error('保存失败：' + (error as Error).message);
       }
@@ -532,6 +532,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         models={models}
         defaultModel={effectiveDefaultModel}
         backends={backends}
+        defaultExecutor={settings?.executor || ''}
         onManualCreate={(draft, mode) => void createManual(draft, mode)}
       />
 

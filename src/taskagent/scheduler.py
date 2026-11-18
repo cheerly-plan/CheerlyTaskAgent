@@ -375,6 +375,30 @@ class Scheduler:
         )
         return result
 
+    def reconfigure(
+        self,
+        *,
+        executors: ExecutorRegistry | None = None,
+        max_concurrent: int | None = None,
+    ) -> None:
+        """Apply settings that used to be fixed at construction time.
+
+        Called when the UI saves settings: the registry carries each backend's
+        command / model / timeout / auto_sync, and ``max_concurrent`` sizes the
+        concurrency gate. Runs already inside the gate keep the semaphore they
+        entered with, so swapping it cannot corrupt in-flight accounting.
+        """
+        if executors is not None:
+            self.executors = executors
+            self.executor = (
+                executors.resolve(executors.default_backend_id) if executors.ids() else None
+            )
+        if max_concurrent is not None:
+            value = max(1, int(max_concurrent))
+            if value != self.settings.max_concurrent:
+                self.settings.max_concurrent = value
+                self._sem = asyncio.Semaphore(value)
+
     # ── execution ──────────────────────────────────────────────────────────────
     async def _execute(self, item_id: str) -> None:
         async with self._sem:

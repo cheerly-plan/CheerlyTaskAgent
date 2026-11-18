@@ -60,3 +60,33 @@ def test_settings_api_roundtrip(tmp_path):
 
         # Reload through the app to prove persistence, not just response echo.
         assert client.get("/api/settings").json() == saved
+
+
+def test_saving_settings_applies_without_restart(tmp_path):
+    """PUT /api/settings must refresh executors and concurrency in place.
+
+    Previously both were snapshotted at startup, so the UI told the user to
+    restart the service. Saving should now take effect for the next run.
+    """
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        before = client.get("/api/config").json()
+        assert before["max_concurrent"] == 1
+
+        payload = client.get("/api/settings").json()
+        payload["max_concurrent"] = 3
+        payload["backends"]["dsh"]["command"] = "/opt/custom-dsh"
+        payload["backends"]["dsh"]["enabled"] = True
+        payload["executor"] = "dsh"
+        saved = client.put("/api/settings", json=payload)
+        assert saved.status_code == 200
+
+        after = client.get("/api/config").json()
+        # concurrency and default backend are live
+        assert after["max_concurrent"] == 3
+        assert after["executor"] == "dsh"
+        dsh = next(b for b in after["backends"] if b["id"] == "dsh")
+        # the rebuilt executor reads the new command (no restart)
+        assert dsh["command"].endswith("custom-dsh")
+        # scheduler's gate was resized too
+        assert app.state.ctx.scheduler.settings.max_concurrent == 3

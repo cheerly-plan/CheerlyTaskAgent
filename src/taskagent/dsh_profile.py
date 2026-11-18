@@ -31,6 +31,7 @@ class ModelEntry:
     label: str = ""
     base_url: str = ""
     api_key_env: str = ""
+    context: int | None = None
 
 
 def dsh_home() -> Path:
@@ -192,6 +193,7 @@ def load_catalog(home: Path | None = None) -> list[ModelEntry]:
                         label=str(model.get("name") or model_id),
                         base_url=slot["base_url"],
                         api_key_env=slot["api_key_env"],
+                        context=_as_int(model.get("contextWindow")),
                     )
 
     # fill provider connection details that may have been declared without models
@@ -202,9 +204,39 @@ def load_catalog(home: Path | None = None) -> list[ModelEntry]:
             label=entry.label,
             base_url=providers.get(entry.provider, {}).get("base_url", entry.base_url),
             api_key_env=providers.get(entry.provider, {}).get("api_key_env", entry.api_key_env),
+            context=entry.context,
         )
         for entry in seen.values()
     ]
+
+
+def parse_pinned_target(dump_text: str) -> tuple[str, str] | None:
+    """Extract ``(provider, model)`` from ``dsh --profile headless --dump-config``.
+
+    The composed tree lists the ``agent-default-model`` entry with its config on
+    following indented lines; the entry ends at the next ``- id:`` marker.
+    """
+    found = re.search(
+        r"id:\s*agent-default-model.*?\n((?:\s+.*\n)*?)(?=- id:|\Z)", dump_text
+    )
+    if not found:
+        return None
+    block = found.group(1)
+    provider = re.search(r"^\s+provider:\s*([A-Za-z0-9._-]+)", block, re.MULTILINE)
+    model = re.search(r"^\s+model:\s*([A-Za-z0-9._-]+)", block, re.MULTILINE)
+    if provider and model:
+        return provider.group(1), model.group(1)
+    return None
+
+
+def _as_int(value: Any) -> int | None:
+    """YAML scalars arrive as strings from the subset parser; normalise to int."""
+    if value is None:
+        return None
+    try:
+        return int(str(value).replace("_", ""))
+    except (TypeError, ValueError):
+        return None
 
 
 def resolve_entry(catalog: list[ModelEntry], model_id: str) -> ModelEntry | None:
