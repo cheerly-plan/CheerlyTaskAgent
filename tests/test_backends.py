@@ -61,7 +61,7 @@ def test_dsh_uses_patch_overlay_instead_of_model_flag(tmp_path):
     )
 
     dsh = DshExecutor(
-        command="/bin/true",
+        command=str(_fake_dsh(tmp_path, supports_patch=True, applies_patch=True)),
         worktrees_dir=tmp_path / "wt",
         patch_dir=tmp_path / "patches",
         profile_home=tmp_path,
@@ -106,7 +106,12 @@ def test_dsh_patch_includes_provider_when_not_default(tmp_path):
 
 
 def test_describe_backends_flags_model_selection(tmp_path):
-    """The UI needs to know which backends can honour a model choice."""
+    """The UI needs to know which backends can honour a model choice.
+
+    codebuddy advertises ``--model`` in its help, so selection is always
+    supported; DSH is capability-probed, and a missing binary must degrade to
+    False rather than promising a choice it cannot apply.
+    """
     s = Settings(data_dir=tmp_path)
     s.save_ui_settings({
         "executor": "codebuddy",
@@ -117,8 +122,8 @@ def test_describe_backends_flags_model_selection(tmp_path):
     })
     described = {d["id"]: d for d in describe_backends(s, build_registry(s))}
     assert described["codebuddy"]["model_selection"] is True
-    # DSH can select a model, but through a --patch overlay rather than --model.
-    assert described["dsh"]["model_selection"] is True
+    # No runnable dsh binary => no verifiable overlay => no fake choice.
+    assert described["dsh"]["model_selection"] is False
 
 
 def test_build_registry_reads_per_type_profiles(tmp_path):
@@ -496,3 +501,71 @@ def test_parse_pinned_target_reads_real_dump_shape():
     assert dsh_profile.parse_pinned_target(
         "- id: agent-default-model\n  config:\n    provider: x\n- id: next\n"
     ) is None
+
+
+def _fake_dsh(tmp_path: Path, *, supports_patch: bool, applies_patch: bool) -> Path:
+    """Stand-in CLI: emulates just the two commands discovery/probing uses."""
+    script = tmp_path / "fake-dsh"
+    patch_help = "  --patch <path>  extra patch-list overlay\n" if supports_patch else ""
+    # 3.11 的 f-string 不允许反斜杠/复用引号，脚本片段先拼好再插入
+    apply_line = "model=$(sed -n 's/^ *model: //p' \"$patch\" | tail -1)" if applies_patch else ":"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  --help)\n"
+        f'    printf "Usage: dsh [--profile] <name>\\n{patch_help}"\n'
+        "    exit 0;;\n"
+        "esac\n"
+        'patch=""; prev=""\n'
+        'for a in "$@"; do if [ "$prev" = "--patch" ]; then patch="$a"; fi; prev="$a"; done\n'
+        'model="deepseek-flash"\n'
+        'if [ -n "$patch" ]; then\n'
+        f"  {apply_line}\n"
+        "fi\n"
+        'printf -- "- id: agent-default-model\\n  name: \'@deepseek-ai/dsh-agent-default-model\'\\n'
+        '  config:\\n    provider: deepseek-official\\n    model: %s\\n- id: next\\n" "$model"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def test_dsh_capability_requires_patch_flag(tmp_path):
+    """A DSH build without --patch must not offer a model choice."""
+    script = _fake_dsh(tmp_path, supports_patch=False, applies_patch=False)
+    ex = DshExecutor(
+        command=str(script), worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    assert ex.supports_model_selection_check() is False
+    item = WorkItem.create(title="t", description="d", kind="task", model="kimi-k2.7-code")
+    assert "--patch" not in ex.build_command(item)
+
+
+def test_dsh_capability_requires_applied_overlay(tmp_path):
+    """If the CLI ignores the overlay, selection is disabled (no phantom choice)."""
+    script = _fake_dsh(tmp_path, supports_patch=True, applies_patch=False)
+    ex = DshExecutor(
+        command=str(script), worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    assert ex.supports_model_selection_check() is False
+
+
+def test_dsh_capability_true_when_overlay_applies(tmp_path):
+    script = _fake_dsh(tmp_path, supports_patch=True, applies_patch=True)
+    ex = DshExecutor(
+        command=str(script), worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    assert ex.supports_model_selection_check() is True
+    item = WorkItem.create(title="t", description="d", kind="task", model="kimi-k2.7-code")
+    assert "--patch" in ex.build_command(item)
+
+
+def test_patch_ignored_warning_flags_silent_default():
+    """An ignored overlay must not be reported as a successful model run."""
+    stderr = 'dsh: [/tmp/bad.yml] patch: entry "agent-default-model" not found\n'
+    warning = dsh_profile.patch_ignored_warning(stderr)
+    assert warning and "默认模型" in warning
+    assert dsh_profile.patch_ignored_warning("all good") is None

@@ -69,6 +69,65 @@ class Executor(ABC):
     @abstractmethod
     def build_command(self, item: WorkItem) -> list[str]: ...
 
+    def supports_model_selection_check(self) -> bool:
+        """Probe whether this machine can really override the model per run."""
+        if self._capability is not None:
+            return self._capability
+        self._capability = self._probe_capability()
+        self.supports_model_selection = self._capability
+        return self._capability
+
+    def _probe_capability(self) -> bool:
+        import subprocess
+
+        def run(args: list[str]) -> tuple[int, str, str]:
+            try:
+                proc = subprocess.run(
+                    [self.command, *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    env=self._clean_env(),
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return -1, "", ""
+            return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+        # 1) The CLI must know --patch at all.
+        _code, help_text, _err = run(["--help"])
+        if "--patch" not in help_text:
+            return False
+
+        # 2) The profile must expose a patchable agent-default-model entry.
+        pinned = self._pinned_target()
+        if pinned is None:
+            return False
+
+        # 3) Round-trip a patch carrying a sentinel model id: an overlay the CLI
+        #    ignores (unknown id, version drift) leaves the composed model at the
+        #    pinned value, so only the sentinel proves the patch really applied.
+        #    Composing config performs no model validation, so a fake id is safe.
+        provider, _pinned_model = pinned
+        sentinel = "taskagent-capability-probe"
+        probe_dir = self.patch_dir / ".probe"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_path = probe_dir / "capability.yml"
+        probe_path.write_text(
+            dsh_profile.build_patch_yaml(
+                provider=provider,
+                model_id=sentinel,
+                entry=None,
+                default_provider=provider,
+            ),
+            encoding="utf-8",
+        )
+        _code, composed, _err = run(
+            ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
+        )
+        target = dsh_profile.parse_pinned_target(composed)
+        return bool(target and target[1] == sentinel)
+
     def list_models(self) -> list[dict[str, Any]]:
         """Discover models this backend supports: ``[{id, label, ...}, ...]``.
 
@@ -267,6 +326,65 @@ class CodeBuddyExecutor(Executor):
         recognises the codebuddy JSON / event-array formats.
         """
         return _no_execution_detected(stdout)
+
+    def supports_model_selection_check(self) -> bool:
+        """Probe whether this machine can really override the model per run."""
+        if self._capability is not None:
+            return self._capability
+        self._capability = self._probe_capability()
+        self.supports_model_selection = self._capability
+        return self._capability
+
+    def _probe_capability(self) -> bool:
+        import subprocess
+
+        def run(args: list[str]) -> tuple[int, str, str]:
+            try:
+                proc = subprocess.run(
+                    [self.command, *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    env=self._clean_env(),
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return -1, "", ""
+            return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+        # 1) The CLI must know --patch at all.
+        _code, help_text, _err = run(["--help"])
+        if "--patch" not in help_text:
+            return False
+
+        # 2) The profile must expose a patchable agent-default-model entry.
+        pinned = self._pinned_target()
+        if pinned is None:
+            return False
+
+        # 3) Round-trip a patch carrying a sentinel model id: an overlay the CLI
+        #    ignores (unknown id, version drift) leaves the composed model at the
+        #    pinned value, so only the sentinel proves the patch really applied.
+        #    Composing config performs no model validation, so a fake id is safe.
+        provider, _pinned_model = pinned
+        sentinel = "taskagent-capability-probe"
+        probe_dir = self.patch_dir / ".probe"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_path = probe_dir / "capability.yml"
+        probe_path.write_text(
+            dsh_profile.build_patch_yaml(
+                provider=provider,
+                model_id=sentinel,
+                entry=None,
+                default_provider=provider,
+            ),
+            encoding="utf-8",
+        )
+        _code, composed, _err = run(
+            ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
+        )
+        target = dsh_profile.parse_pinned_target(composed)
+        return bool(target and target[1] == sentinel)
 
     def list_models(self) -> list[dict[str, Any]]:
         """Discover the models this backend's CLI supports, as ``[{id, label, ...}]``.
@@ -1381,6 +1499,12 @@ class DshExecutor(CodeBuddyExecutor):
         self.profile_home = Path(profile_home or dsh_profile.dsh_home())
         self._catalog_cache: list[dsh_profile.ModelEntry] | None = None
         self._pinned_cache: tuple[str, str] | None | bool = False  # False = not probed
+        # Whether per-task model selection actually works on THIS machine.
+        # Probed lazily: a DSH build without ``--patch``, a profile whose
+        # ``agent-default-model`` entry is missing/renamed, or an overlay the
+        # CLI silently ignores must all degrade to "read-only model" instead of
+        # accepting a choice we cannot honour.
+        self._capability: bool | None = None
 
     # ── catalog / pinned model ────────────────────────────────────────────────
     @property
@@ -1410,8 +1534,68 @@ class DshExecutor(CodeBuddyExecutor):
         self._pinned_cache = dsh_profile.parse_pinned_target(text)
         return self._pinned_cache  # type: ignore[return-value]
 
+    def supports_model_selection_check(self) -> bool:
+        """Probe whether this machine can really override the model per run."""
+        if self._capability is not None:
+            return self._capability
+        self._capability = self._probe_capability()
+        self.supports_model_selection = self._capability
+        return self._capability
+
+    def _probe_capability(self) -> bool:
+        import subprocess
+
+        def run(args: list[str]) -> tuple[int, str, str]:
+            try:
+                proc = subprocess.run(
+                    [self.command, *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    env=self._clean_env(),
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return -1, "", ""
+            return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+        # 1) The CLI must know --patch at all.
+        _code, help_text, _err = run(["--help"])
+        if "--patch" not in help_text:
+            return False
+
+        # 2) The profile must expose a patchable agent-default-model entry.
+        pinned = self._pinned_target()
+        if pinned is None:
+            return False
+
+        # 3) Round-trip a patch carrying a sentinel model id: an overlay the CLI
+        #    ignores (unknown id, version drift) leaves the composed model at the
+        #    pinned value, so only the sentinel proves the patch really applied.
+        #    Composing config performs no model validation, so a fake id is safe.
+        provider, _pinned_model = pinned
+        sentinel = "taskagent-capability-probe"
+        probe_dir = self.patch_dir / ".probe"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_path = probe_dir / "capability.yml"
+        probe_path.write_text(
+            dsh_profile.build_patch_yaml(
+                provider=provider,
+                model_id=sentinel,
+                entry=None,
+                default_provider=provider,
+            ),
+            encoding="utf-8",
+        )
+        _code, composed, _err = run(
+            ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
+        )
+        target = dsh_profile.parse_pinned_target(composed)
+        return bool(target and target[1] == sentinel)
+
     def list_models(self) -> list[dict[str, Any]]:
         """Pinned model first, then everything the profile layers declare."""
+        self.supports_model_selection_check()
         entries: list[dict[str, Any]] = []
         seen: set[str] = set()
         target = self._pinned_target()
@@ -1481,7 +1665,7 @@ class DshExecutor(CodeBuddyExecutor):
             "--permission-mode", self.permission_mode,
         ]
         model = item.model or self.model
-        if model and self.supports_model_selection:
+        if model and self.supports_model_selection_check():
             argv += ["--patch", str(self._write_patch(item, model))]
         argv.append(build_prompt(item))
         return argv
@@ -1494,10 +1678,18 @@ class DshExecutor(CodeBuddyExecutor):
         should_cancel: ShouldCancelFn,
     ) -> RunResult:
         try:
-            return await super().run(item, progress=progress, should_cancel=should_cancel)
+            result = await super().run(item, progress=progress, should_cancel=should_cancel)
         finally:
             # The overlay only matters while the CLI is starting up.
             self.cleanup_patch(item.id)
+
+        warning = dsh_profile.patch_ignored_warning(result.stderr)
+        if warning:
+            # The run used the profile default instead of the picked model:
+            # surface it as a failure rather than a phantom success.
+            result.ok = False
+            result.error = warning if not result.error else f"{result.error}；{warning}"
+        return result
 
     def _clean_env(self) -> dict[str, str]:
         """Expose DSH_HOME and the provider credentials its config refers to."""

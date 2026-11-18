@@ -294,6 +294,20 @@ def build_patch_yaml(
     return "\n".join(lines) + "\n"
 
 
+def patch_ignored_warning(stderr: str) -> str | None:
+    """Detect the CLI's "patch entry not found" note.
+
+    ``dsh`` exits 0 and merely warns on stderr when an overlay targets an id the
+    profile does not have. In that case the task silently ran with the profile's
+    default model, so the caller must not report success.
+    """
+    for line in (stderr or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("dsh:") and "patch" in stripped and "not found" in stripped:
+            return f"模型覆盖未被 DSH 接受（{stripped}），任务使用了 profile 默认模型"
+    return None
+
+
 def safe_patch_name(item_id: str) -> str:
     """File name for an item's patch overlay (ids are already tame; stay safe)."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", item_id)[:120] or "item"
