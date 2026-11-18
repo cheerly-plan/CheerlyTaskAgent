@@ -42,7 +42,6 @@ interface AppContextValue {
   saveSettings: (next: UISettings) => Promise<void>;
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
   openNewTask: () => void;
-  pullMail: () => Promise<void>;
   syncTapd: () => Promise<void>;
   pickFolder: (apply: (path: string) => void) => void;
   openScan: (path: string) => void;
@@ -144,8 +143,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   const reloadSettings = React.useCallback(async () => {
     try {
       const data = await endpoints.settings();
-      // 密码不回显：保留空串，用户不填即沿用已保存的值
-      setSettings({...data, imap: {...(data.imap ?? {}), password: ''}} as UISettings);
+      setSettings(data as UISettings);
     } catch (error) {
       toast.error('加载设置失败：' + (error as Error).message);
     }
@@ -336,7 +334,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     [confirm, items, modelSelectionSupported, openReport, reloadItems, selections],
   );
 
-  // ── 新建任务 / 邮件拉取 ───────────────────────────────────────────────────
+  // ── 新建任务 ──────────────────────────────────────────────────────────────
   const createManual = React.useCallback(
     async (draft: ManualTaskDraft, mode: 'draft' | 'dry' | 'apply') => {
       const title = draft.title.trim();
@@ -375,20 +373,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     },
     [confirm, reloadItems],
   );
-
-  const pullMail = React.useCallback(async () => {
-    try {
-      const result = await endpoints.pullMail();
-      await reloadItems();
-      if (result.created > 0) {
-        toast.success(`已从邮箱拉取 ${result.created} 封新邮件建单${result.skipped ? `，跳过 ${result.skipped} 封重复` : ''}`);
-      } else {
-        toast.info(`邮箱暂无新需求${result.skipped ? `（跳过 ${result.skipped} 封重复）` : ''}`);
-      }
-    } catch (error) {
-      toast.error('拉取邮件失败：' + (error as Error).message);
-    }
-  }, [reloadItems]);
 
   const syncTapd = React.useCallback(async () => {
     try {
@@ -460,8 +444,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   // ── 设置 ──────────────────────────────────────────────────────────────────
   const saveSettings = React.useCallback(
     async (next: UISettings) => {
-      const imap = next.imap ?? {host: '', port: 993, user: '', password: '', use_ssl: true};
-      const poll = next.mail_poll ?? {enabled: false, interval_minutes: 5, exec_mode: 'dry-run'};
       const tapd = next.tapd;
       const payload: UISettings = {
         executor: next.executor || 'codebuddy',
@@ -484,18 +466,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
             },
           ]),
         ),
-        imap: {
-          host: (imap.host || '').trim(),
-          port: Number(imap.port) || 993,
-          user: (imap.user || '').trim(),
-          password: imap.password || '',
-          use_ssl: imap.use_ssl !== false,
-        },
-        mail_poll: {
-          enabled: poll.enabled === true,
-          interval_minutes: Math.max(1, Number(poll.interval_minutes) || 5),
-          exec_mode: poll.exec_mode === 'apply' ? 'apply' : 'dry-run',
-        },
         tapd: tapd ? {
           enabled: tapd.enabled === true,
           base_url: (tapd.base_url || 'https://api.tapd.cn').trim(),
@@ -560,7 +530,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     saveSettings,
     runItemAction,
     openNewTask: () => setNewTaskOpen(true),
-    pullMail,
     syncTapd,
     pickFolder: (apply) => setFolderPicker({open: true, apply}),
     openScan: (path) => setScan({open: true, path}),

@@ -65,7 +65,7 @@ export function MappingDialog({open, onOpenChange, editing, onSave, onPickFolder
       <DialogContent className="max-w-[540px]">
         <DialogHeader>
           <DialogTitle>{editing ? '编辑项目映射' : '新增项目映射'}</DialogTitle>
-          <DialogDescription>项目名会被用来匹配邮件 / 任务里出现的仓库名。</DialogDescription>
+          <DialogDescription>项目名会被用来匹配任务标题 / 描述里出现的仓库名。</DialogDescription>
         </DialogHeader>
 
         <DialogBody>

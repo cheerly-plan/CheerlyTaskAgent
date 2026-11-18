@@ -18,11 +18,10 @@ from .config import Settings
 from .events import EventBus, sse_frame
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
-from .mailpoll import MailPoller
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .report import render_report
 from .scheduler import Scheduler, SchedulerSettings
-from .sources import EmailSource, ManualSource, RawItem
+from .sources import ManualSource, RawItem
 from .store import TaskStore
 from .tapd import TapdClient, TapdConfig, TapdError, TapdItem
 
@@ -35,12 +34,6 @@ class ImportBody(BaseModel):
     source: str = "manual"
     source_ref: str = ""
     git_url_hint: str = ""
-    exec_mode: str = "dry-run"
-    model: str | None = None
-
-
-class ImportEmailsBody(BaseModel):
-    messages: list[dict[str, Any]] = Field(default_factory=list)
     exec_mode: str = "dry-run"
     model: str | None = None
 
@@ -110,8 +103,6 @@ class UISettingsBody(BaseModel):
     max_concurrent: int = Field(default=1, ge=1)
     auto_sync: bool = True
     backends: dict[str, Any] = Field(default_factory=dict)
-    imap: dict[str, Any] = Field(default_factory=dict)
-    mail_poll: dict[str, Any] = Field(default_factory=dict)
     tapd: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -245,46 +236,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if recovered:
         logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
 
-    def pull_mail_now() -> dict[str, Any]:
-        """Fetch inbox -> parse -> import, using the latest saved settings.
-
-        Shared by the manual endpoint and the background poller. Always returns
-        a dict (never raises) so a bad mailbox can't break the caller.
-        """
-        ui = settings.load_ui_settings()
-        imap_cfg = ui.get("imap", {})
-        result = MailPoller(imap_cfg).poll()
-        if result.error:
-            return {"created": 0, "skipped": 0, "error": result.error}
-        exec_mode = ui.get("mail_poll", {}).get("exec_mode", "dry-run")
-        created = skipped = 0
-        for raw in EmailSource.from_mailtool(result.messages):
-            try:
-                _, was_created = scheduler.import_raw(raw, exec_mode=exec_mode)
-                if was_created:
-                    created += 1
-                else:
-                    skipped += 1
-            except ValueError as error:
-                logger.warning("邮件建单失败：%s", error)
-                skipped += 1
-        return {"created": created, "skipped": skipped, "error": None}
-
-    async def mail_poll_loop() -> None:
-        """Periodically poll the inbox while enabled; re-reads settings each tick."""
-        while True:
-            ui = settings.load_ui_settings()
-            poll_cfg = ui.get("mail_poll", {})
-            interval_s = max(1, int(poll_cfg.get("interval_minutes", 5) or 5)) * 60
-            if poll_cfg.get("enabled"):
-                # Blocking IMAP work runs in a thread so the event loop stays free.
-                result = await asyncio.to_thread(pull_mail_now)
-                if result.get("error"):
-                    logger.warning("定时拉取邮件失败：%s", result["error"])
-                elif result.get("created"):
-                    logger.info("定时拉取邮件：新建 %d 条", result["created"])
-            await asyncio.sleep(interval_s)
-
     # ── TAPD (authoritative source) ────────────────────────────────────────────
     _tapd_last_sync: dict[str, str] = {"modified": ""}  # incremental cursor, in-memory
 
@@ -352,15 +303,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        poll_task = asyncio.create_task(mail_poll_loop(), name="mail-poll")
         tapd_task = asyncio.create_task(tapd_poll_loop(), name="tapd-poll")
         try:
             yield
         finally:
             logger.info("关闭中：断开 SSE、取消后台任务…")
-            poll_task.cancel()
             tapd_task.cancel()
-            await asyncio.gather(poll_task, tapd_task, return_exceptions=True)
+            await asyncio.gather(tapd_task, return_exceptions=True)
             events.close()
             await scheduler.shutdown()
 
@@ -400,7 +349,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         default_model = (default_backend.model if default_backend is not None else "") or ""
         return {
             "version": "0.2.0",
-            "sources": ["manual", "tapd", "email"],
+            "sources": ["manual", "tapd"],
             "executor": executor_registry.default_backend_id or "codebuddy",
             "backends": describe_backends(settings, executor_registry),
             "codebuddy_command": settings.codebuddy_command,
@@ -576,27 +525,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return item.to_dict()
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
-
-    @app.post("/api/import/emails", status_code=201)
-    def api_import_emails(body: ImportEmailsBody) -> dict[str, Any]:
-
-        source = EmailSource(body.messages)
-        created, skipped = 0, 0
-        for raw in source.fetch():
-            _, was_created = scheduler.import_raw(raw, exec_mode=body.exec_mode, model=body.model)
-            if was_created:
-                created += 1
-            else:
-                skipped += 1
-        return {"created": created, "skipped": skipped}
-
-    @app.post("/api/mail/pull")
-    async def api_mail_pull() -> dict[str, Any]:
-        """Manually pull new mail from the configured IMAP inbox now."""
-        result = await asyncio.to_thread(pull_mail_now)
-        if result.get("error"):
-            raise HTTPException(400, result["error"])
-        return {"created": result["created"], "skipped": result["skipped"]}
 
     @app.post("/api/tapd/sync")
     async def api_tapd_sync(body: TapdSyncBody | None = None) -> dict[str, Any]:

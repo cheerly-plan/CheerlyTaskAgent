@@ -181,7 +181,6 @@ export function TasksPage() {
               options={[
                 {value: '', label: '全部来源'},
                 {value: 'manual', label: '手动'},
-                {value: 'email', label: '邮件'},
                 {value: 'tapd', label: 'TAPD'},
               ]}
             />
@@ -272,7 +271,7 @@ export function TasksPage() {
         {items.length === 0 ? (
           <EmptyState
             title="还没有任何工作项"
-            description="点右上角「新建任务」手动录入需求或 Bug；邮件、TAPD 等外部来源在「数据源」Tab 自动接入。"
+            description="点右上角「新建任务」手动录入需求或 Bug；TAPD 工单在「数据源」Tab 自动接入。"
             action={
               <Button className="mt-2" onClick={() => openNewTask()}>
                 新建任务

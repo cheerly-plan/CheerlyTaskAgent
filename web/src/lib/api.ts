@@ -87,20 +87,6 @@ export interface AppConfig {
   max_concurrent?: number;
 }
 
-export interface ImapSettings {
-  host: string;
-  port: number;
-  user: string;
-  password: string;
-  use_ssl: boolean;
-}
-
-export interface MailPollSettings {
-  enabled: boolean;
-  interval_minutes: number;
-  exec_mode: ExecMode;
-}
-
 export interface TapdSettings {
   enabled: boolean;
   base_url: string;
@@ -134,8 +120,6 @@ export interface UISettings {
   max_concurrent: number;
   auto_sync: boolean;
   backends: Record<string, BackendConfig>;
-  imap: ImapSettings;
-  mail_poll: MailPollSettings;
   tapd: TapdSettings;
 }
 
@@ -245,8 +229,6 @@ export const endpoints = {
     run_now: boolean;
     approved: boolean;
   }) => api<WorkItem>('/api/tasks/manual', jsonInit('POST', body)),
-
-  pullMail: () => api<{created: number; skipped: number}>('/api/mail/pull', {method: 'POST'}),
 
   syncTapd: (body?: {modified_since?: string; exec_mode?: string}) =>
     api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),

@@ -1,4 +1,4 @@
-"""Task sources: turn raw emails / manual input into WorkItems.
+"""Task sources: turn raw input into WorkItems.
 
 Rule-based only (no LLM in this phase):
   - title  = subject, with common [BUG]/【需求】 prefixes recognized
@@ -6,7 +6,9 @@ Rule-based only (no LLM in this phase):
   - git    = extract git URLs from body
   - description = body minus signatures/quotes (best effort)
 
-A real Agent Mail adapter only has to produce RawItem; the parser is shared.
+``RawItem.from_email`` is kept only as a lightweight constructor for the
+offline demo and tests; live email ingestion has been removed. New items come
+from manual entry or the TAPD adapter.
 """
 
 from __future__ import annotations
@@ -153,38 +155,6 @@ class ManualSource(Source):
 
     def fetch(self) -> list[RawItem]:
         return list(self._items)
-
-
-class EmailSource(Source):
-    """Agent Mail adapter.
-
-    Agent Mail is not bound yet in this environment, so fetch() is wired to a
-    caller-provided list of messages (already fetched via the mail tool). When
-    the mailbox is enabled, the caller passes real ListMessages/SearchMessages
-    results here. No mail logic is hard-coded, so the seam stays clean.
-    """
-
-    name = "email"
-
-    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
-        self._messages = messages or []
-
-    @staticmethod
-    def from_mailtool(messages: list[dict[str, Any]]) -> list[RawItem]:
-        raws: list[RawItem] = []
-        for message in messages:
-            raws.append(
-                RawItem.from_email(
-                    subject=message.get("subject", ""),
-                    body=message.get("body") or message.get("snippet", ""),
-                    message_id=message.get("id") or message.get("message_id", ""),
-                    attachments=message.get("attachments"),
-                )
-            )
-        return raws
-
-    def fetch(self) -> list[RawItem]:
-        return self.from_mailtool(self._messages)
 
 
 class TapdSource(Source):

@@ -93,8 +93,6 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "max_concurrent": 1,
     "auto_sync": True,
     "backends": _default_backends(),
-    "imap": {"host": "", "port": 993, "user": "", "password": "", "use_ssl": True},
-    "mail_poll": {"enabled": False, "interval_minutes": 5, "exec_mode": "dry-run"},
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
@@ -260,8 +258,6 @@ class Settings:
             "default_model": self.default_model or "",
             "max_concurrent": self.max_concurrent,
             "auto_sync": self.auto_sync,
-            "imap": dict(UI_SETTINGS_DEFAULTS["imap"]),
-            "mail_poll": dict(UI_SETTINGS_DEFAULTS["mail_poll"]),
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
         }
         path = self.ui_settings_path
@@ -292,7 +288,7 @@ class Settings:
                                     profile["label"] = profile.get("label") or backend_id.strip()
                                     merged[backend_id.strip()] = profile
                                 data["backends"] = merged
-                        elif key in {"imap", "mail_poll", "tapd"} and isinstance(value, dict):
+                        elif key == "tapd" and isinstance(value, dict):
                             data[key].update(value)
                         elif key in data:
                             data[key] = value
@@ -315,7 +311,7 @@ class Settings:
         return data
 
     def save_ui_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Merge and persist UI-managed settings; blank IMAP password keeps the old one."""
+        """Merge and persist UI-managed settings; blank secrets keep the old value."""
         data = self.load_ui_settings()
         for key, value in payload.items():
             if key == "backends" and isinstance(value, dict):
@@ -342,15 +338,6 @@ class Settings:
                 # current one was removed/never set. Empty backends -> empty.
                 if data.get("executor") not in data["backends"]:
                     data["executor"] = next(iter(data["backends"]), "")
-            elif key == "imap" and isinstance(value, dict):
-                imap = dict(value)
-                # The UI masks the stored password; an empty submission means
-                # "unchanged" instead of clearing it.
-                if not imap.get("password"):
-                    imap["password"] = data["imap"].get("password", "")
-                data["imap"].update(imap)
-            elif key == "mail_poll" and isinstance(value, dict):
-                data["mail_poll"].update(value)
             elif key == "tapd" and isinstance(value, dict):
                 tapd = dict(value)
                 # Blank password keeps the stored value (UI masks it).
@@ -367,11 +354,6 @@ class Settings:
             elif key in data:
                 data[key] = value
         data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
-        # Normalise mail_poll values to sane bounds.
-        poll = data["mail_poll"]
-        poll["enabled"] = bool(poll.get("enabled", False))
-        poll["interval_minutes"] = max(1, int(poll.get("interval_minutes", 5) or 5))
-        poll["exec_mode"] = "apply" if poll.get("exec_mode") == "apply" else "dry-run"
         # Normalise tapd values.
         tapd = data["tapd"]
         tapd["enabled"] = bool(tapd.get("enabled", False))
