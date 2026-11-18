@@ -112,7 +112,7 @@ export function SettingsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
       {/* ── 执行后端：完全由配置驱动，可增删 ─────────────────────────── */}
-      <div className="flex min-h-[200px] flex-1 flex-col">
+      <div className="flex min-h-[200px] min-h-0 flex-col">
         <div className="mb-0.5 flex shrink-0 flex-wrap items-start justify-between gap-2">
           <div>
             <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
