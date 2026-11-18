@@ -75,10 +75,10 @@ export function DataSourcesPage() {
   const tapdCredentialsReady = Boolean(tapd.api_user && (tapd.api_password || settings?.tapd?.api_password));
   const tapdConfigured = Boolean(tapd.workspace_id && tapdCredentialsReady);
 
-  const sync = async () => {
+  const sync = async (force = false) => {
     setSyncing(true);
     try {
-      await syncTapd();
+      await syncTapd(force);
     } finally {
       setSyncing(false);
     }
@@ -474,9 +474,18 @@ export function DataSourcesPage() {
           </Alert>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button onClick={() => void sync()} disabled={syncing || !tapdConfigured} title="立即从 TAPD 拉取一次">
+            <Button onClick={() => void sync()} disabled={syncing || !tapdConfigured} title="增量拉取：只拉上次同步后修改的条目">
               <RefreshCw className={syncing ? 'animate-spin' : ''} />
               {syncing ? '同步中…' : '立即同步'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void sync(true)}
+              disabled={syncing || !tapdConfigured}
+              title="忽略增量游标，重新拉取全部工单（已存在的按 source_ref 去重）"
+            >
+              <RefreshCw className={syncing ? 'animate-spin' : ''} />
+              全量重拉
             </Button>
             <Button variant="outline" onClick={() => void saveSettings(draft)}>
               <Save />

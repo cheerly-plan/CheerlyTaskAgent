@@ -119,6 +119,7 @@ class TapdSyncBody(BaseModel):
 
     exec_mode: str | None = None
     modified_since: str = ""
+    force: bool = False  # 忽略增量游标，全量重拉
 
 
 def web_not_built_page() -> str:
@@ -248,14 +249,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── TAPD (authoritative source) ────────────────────────────────────────────
     _tapd_last_sync: dict[str, str] = {"modified": ""}  # incremental cursor, in-memory
 
-    def sync_tapd_now(modified_since: str = "") -> dict[str, Any]:
-        """Pull stories/bugs from TAPD -> parse -> import. Never raises."""
+    def sync_tapd_now(modified_since: str = "", force: bool = False) -> dict[str, Any]:
+        """Pull stories/bugs from TAPD -> parse -> import. Never raises.
+
+        增量同步只拉 ``modified > 游标`` 的条目；游标在进程内维护，所以「本地删除
+        工单」不会让 TAPD 重新下发旧数据。``force=True`` 忽略游标做全量重拉。
+        """
         client, cfg = make_tapd_client()
         if not client.config.is_configured():
             return {
                 "created": 0, "skipped": 0, "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing()),
             }
-        result = client.fetch_all(modified_since=modified_since or _tapd_last_sync["modified"])
+        cursor = "" if force else (modified_since or _tapd_last_sync["modified"])
+        result = client.fetch_all(modified_since=cursor)
         if result.error:
             return {"created": 0, "skipped": 0, "error": result.error}
         exec_mode = cfg.get("exec_mode", "dry-run")
@@ -578,7 +584,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def api_tapd_sync(body: TapdSyncBody | None = None) -> dict[str, Any]:
         """Manually pull stories/bugs from TAPD and create work items."""
         result = await asyncio.to_thread(
-            sync_tapd_now, (body.modified_since if body else "") or ""
+            sync_tapd_now,
+            (body.modified_since if body else "") or "",
+            bool(body.force) if body else False,
         )
         if result.get("error"):
             raise HTTPException(400, result["error"])

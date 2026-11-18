@@ -244,7 +244,7 @@ export const endpoints = {
     approved: boolean;
   }) => api<WorkItem>('/api/tasks/manual', jsonInit('POST', body)),
 
-  syncTapd: (body?: {modified_since?: string; exec_mode?: string}) =>
+  syncTapd: (body?: {modified_since?: string; exec_mode?: string; force?: boolean}) =>
     api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
 
   tapdWorkspaces: (body?: {company_id?: string}) =>

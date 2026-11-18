@@ -258,3 +258,43 @@ def test_webhook_rejects_bad_secret_and_missing_fields(tmp_path):
         })
         assert r.status_code == 200
         assert r.json().get("ignored") is True
+
+
+def test_sync_force_ignores_incremental_cursor(tmp_path, monkeypatch):
+    """增量游标只拉「修改过」的条目；force=True 忽略游标做全量重拉。"""
+    from taskagent import tapd as tapd_module
+    from taskagent.api import create_app
+    from taskagent.config import Settings
+
+    settings = Settings(data_dir=tmp_path, project_roots=())
+    ui = settings.load_ui_settings()
+    # enabled=False 关掉后台定时轮询，避免它在测试期间也调用 fetch_all
+    ui["tapd"].update(
+        {"enabled": False, "workspace_id": "32312011", "api_user": "u", "api_password": "p"}
+    )
+    settings.save_ui_settings(ui)
+
+    item = tapd_module.TapdItem(
+        entity_type="story", id="1132312011001000017", workspace_id="32312011",
+        title="需求 A", description="", status="open", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-01 10:00:00",
+    )
+    cursors: list[str] = []
+
+    def fake_fetch_all(self, *, modified_since="", limit=200, max_pages=5):
+        cursors.append(modified_since)
+        result = tapd_module.TapdResult()
+        if not modified_since:  # 全量才返回条目
+            result.items.append(item)
+        return result
+
+    monkeypatch.setattr(tapd_module.TapdClient, "fetch_all", fake_fetch_all)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        client.post("/api/tapd/sync", json={})          # 首次：无游标
+        client.post("/api/tapd/sync", json={})          # 增量：带游标
+        client.post("/api/tapd/sync", json={"force": True})  # 全量：忽略游标
+
+    assert cursors[0] == ""
+    assert cursors[1] == "2026-01-01 10:00:00"
+    assert cursors[2] == ""

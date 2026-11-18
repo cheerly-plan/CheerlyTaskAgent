@@ -45,7 +45,7 @@ interface AppContextValue {
   saveSettings: (next: UISettings) => Promise<void>;
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
   openNewTask: () => void;
-  syncTapd: () => Promise<void>;
+  syncTapd: (force?: boolean) => Promise<void>;
   pickFolder: (apply: (path: string) => void) => void;
   openScan: (path: string) => void;
   openMappingModal: (mapping: ProjectMapping | null) => void;
@@ -406,9 +406,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     [confirm, reloadItems],
   );
 
-  const syncTapd = React.useCallback(async () => {
+  const syncTapd = React.useCallback(async (force = false) => {
     try {
-      const result = await endpoints.syncTapd();
+      const result = await endpoints.syncTapd({force});
       await reloadItems();
       if (result.created > 0) {
         toast.success(`已从 TAPD 同步 ${result.created} 条${result.skipped ? `，跳过 ${result.skipped} 条重复` : ''}`);
