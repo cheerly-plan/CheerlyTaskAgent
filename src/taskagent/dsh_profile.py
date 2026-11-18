@@ -297,6 +297,43 @@ def build_patch_yaml(
     return "\n".join(lines) + "\n"
 
 
+def credential_refs(home: Path | None = None) -> dict[str, str]:
+    """Env-style credentials stored by DSH's own credential service.
+
+    The desktop app writes ``$DSH_HOME/.credentials.yaml``; its ``refs:`` entry
+    maps provider api-key env names to secrets, in either block style::
+
+        refs:
+          {
+            QWEN_TOKEN_PLAN_API_KEY: sk-...
+          }
+
+    or the list form ``refs:\n  - KEY: value``. The headless CLI only reads
+    the *environment*, so a key configured in the app otherwise looks "not
+    set". Values are returned for injection into the subprocess env and must
+    never be logged.
+    """
+    path = (home or dsh_home()) / ".credentials.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    found = re.search(r"^refs:[ \t]*(.*?)$(.*?)(?=^[A-Za-z_][\w.-]*:|\Z)", text, re.MULTILINE | re.DOTALL)
+    if not found:
+        return {}
+    head, body = found.group(1).strip(), found.group(2)
+    block = head + "\n" + body if head else body
+
+    refs: dict[str, str] = {}
+    # flow map: { KEY: value, ... }  (possibly spread over lines)
+    for key, value in re.findall(
+        r"([A-Za-z_][\w.-]*)\s*:\s*([^\s,{}]+)", block
+    ):
+        refs[key] = value.strip("'\"")
+    return refs
+
+
 def patch_ignored_warning(stderr: str) -> str | None:
     """Detect the CLI's "patch entry not found" note.
 

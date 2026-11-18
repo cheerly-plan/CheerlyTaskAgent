@@ -42,7 +42,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
   - **DSH 模型选择**：`dsh --profile headless` 没有 `--model` 选项，模型钉在 profile 的 `agent-default-model` 里；但它接受 `--patch <文件>`，所以调度台把「本次用哪个模型」写成一个临时 patch（`agent-default-model`，必要时连同 `llm-pi-ai.providers` 的网关定义），随命令下发，跑完即删。
     - 模型清单从 profile 层读取：`~/.dsh/profiles/*/cordis.patch.yml` 里 `llm-pi-ai.providers.<provider>.models[]`，因此界面显示的是人类可读名称（DeepSeek V4 Pro / Kimi K2.7 Code / Qwen3.8 Max …）。
     - **并发安全**：每个任务一个独立 patch 文件，不写你的 profile，互不覆盖。
-    - **凭据**：走网关的模型需要对应环境变量（如 `QWEN_TOKEN_PLAN_API_KEY`）在执行环境里可见；`DSH_HOME` 与这些变量会透传给子进程。
+    - **凭据**：走网关的模型需要对应的 API Key。headless 只读环境变量，因此执行器会自动读取 DSH 自己的凭据库 `$DSH_HOME/.credentials.yaml` 的 `refs` 并注入子进程环境（显式导出的同名变量优先）；`DSH_HOME` 与这些变量都会透传。
     - **探测时机**：能力验证（`--patch` 可用 + 条目可覆盖 + 叠加生效）**不在页面加载时做**，而是第一次展开该后端的模型下拉时调 `POST /api/backends/{id}/probe`，结果缓存并回写界面；不满足就当场降级为只读。换机器/换版本不会因为一次探测失败而污染启动。
     - **可移植性**：模型目录来自本机 profile 配置，换机器能否显示取决于对方的 DSH 配置——装了 DSH 客户端并声明过 provider 就和你一样；只用官方账号登录时官方模型由服务端下发、本地拿不到目录，界面会如实退化为「由必选模型/由 CLI 决定」。DSH 选择能力是**实测探测**的（`--patch` 可用 + `agent-default-model` 可覆盖 + 叠加后确实生效），任一条不满足就自动降级为只读，绝不承诺做不到的选择；日志里若出现 `patch: entry ... not found`，该次任务会被判为失败而不是「成功但跑错模型」。
 - **项目映射配置（推荐）**：维护一张「项目名/别名 → 本地文件夹」列表，邮件标题/正文出现任一别名即命中，**不依赖 git**。列表默认为空（`data/projects.json`），**完全由你手动添加**——可在调度台逐级点选文件夹、或扫描一个父目录批量勾选加入；也可手工填写。增删改、启停即时生效。匹配规则：中文按子串、英文按词边界、多个命中取最长别名、可停用。

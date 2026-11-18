@@ -1548,13 +1548,28 @@ class DshExecutor(CodeBuddyExecutor):
         return result
 
     def _clean_env(self) -> dict[str, str]:
-        """Expose DSH_HOME and the provider credentials its config refers to."""
+        """Expose DSH_HOME and the provider credentials its config refers to.
+
+        headless only reads the *environment*, so keys stored via the desktop
+        app's credential service (``$DSH_HOME/.credentials.yaml``) are resolved
+        here. An explicit environment variable still wins.
+        """
         env = super()._clean_env()
-        for name in ("DSH_HOME", "QWEN_TOKEN_PLAN_API_KEY", "DEEPSEEK_API_KEY", *(
-            entry.api_key_env for entry in self.catalog
-        )):
-            if name and name in os.environ:
+        stored = dsh_profile.credential_refs(self.profile_home)
+        names = (
+            "DSH_HOME",
+            "QWEN_TOKEN_PLAN_API_KEY",
+            "DEEPSEEK_API_KEY",
+            *(entry.api_key_env for entry in self.catalog),
+            *stored.keys(),
+        )
+        for name in names:
+            if not name:
+                continue
+            if name in os.environ:
                 env[name] = os.environ[name]
+            elif name in stored:
+                env[name] = stored[name]
         return env
 
 

@@ -702,3 +702,55 @@ def test_dsh_patch_path_is_absolute(tmp_path, monkeypatch):
     assert patch_path.is_absolute()
     assert patch_path.is_file()
     dsh.cleanup_patch(item.id)
+
+
+def test_credential_refs_reads_flow_map(tmp_path):
+    """The desktop app writes refs as a flow map; headless only reads env."""
+    creds = tmp_path / ".credentials.yaml"
+    creds.write_text(
+        "version: 1\n"
+        "records:\n"
+        "  x:\n"
+        "    kind: grant\n"
+        "refs:\n"
+        "  {\n"
+        "    QWEN_TOKEN_PLAN_API_KEY: sk-test-value\n"
+        "  }\n"
+        "other:\n"
+        "  KEY: ignored\n",
+        encoding="utf-8",
+    )
+    assert dsh_profile.credential_refs(tmp_path) == {
+        "QWEN_TOKEN_PLAN_API_KEY": "sk-test-value"
+    }
+
+
+def test_credential_refs_reads_list_form(tmp_path):
+    creds = tmp_path / ".credentials.yaml"
+    creds.write_text(
+        "refs:\n  - QWEN_TOKEN_PLAN_API_KEY: sk-a\n  - DEEPSEEK_API_KEY: sk-b\n"
+        "tail: 1\n",
+        encoding="utf-8",
+    )
+    assert dsh_profile.credential_refs(tmp_path) == {
+        "QWEN_TOKEN_PLAN_API_KEY": "sk-a",
+        "DEEPSEEK_API_KEY": "sk-b",
+    }
+
+
+def test_dsh_env_injects_stored_credentials(tmp_path, monkeypatch):
+    """A key configured in the DSH app must reach the headless subprocess."""
+    _write_two_model_catalog(tmp_path)
+    (tmp_path / ".credentials.yaml").write_text(
+        "refs:\n  {\n    QWEN_TOKEN_PLAN_API_KEY: from-store\n  }\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("QWEN_TOKEN_PLAN_API_KEY", raising=False)
+    dsh = DshExecutor(
+        command="/bin/true", worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    assert dsh._clean_env()["QWEN_TOKEN_PLAN_API_KEY"] == "from-store"
+
+    # an explicit environment variable still wins over the stored value
+    monkeypatch.setenv("QWEN_TOKEN_PLAN_API_KEY", "from-env")
+    assert dsh._clean_env()["QWEN_TOKEN_PLAN_API_KEY"] == "from-env"
