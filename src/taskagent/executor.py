@@ -104,20 +104,24 @@ class Executor(ABC):
         if pinned is None:
             return False
 
-        # 3) Round-trip a patch carrying a sentinel model id: an overlay the CLI
-        #    ignores (unknown id, version drift) leaves the composed model at the
-        #    pinned value, so only the sentinel proves the patch really applied.
-        #    Composing config performs no model validation, so a fake id is safe.
-        provider, _pinned_model = pinned
-        sentinel = "taskagent-capability-probe"
+        # 3) Round-trip a patch switching to ANOTHER real model from the catalog:
+        #    if the overlay is ignored (unknown entry, version drift) the composed
+        #    model stays pinned and the mismatch exposes it. A synthetic model id
+        #    cannot be used here — dsh validates ids against the provider config
+        #    and silently drops unknown ones, which would look identical to an
+        #    ignored overlay.
+        provider, pinned_model = pinned
+        candidate = next((e for e in self.catalog if e.model_id != pinned_model), None)
+        if candidate is None:
+            return False  # nothing else to select => nothing to verify
         probe_dir = self.patch_dir / ".probe"
         probe_dir.mkdir(parents=True, exist_ok=True)
         probe_path = probe_dir / "capability.yml"
         probe_path.write_text(
             dsh_profile.build_patch_yaml(
-                provider=provider,
-                model_id=sentinel,
-                entry=None,
+                provider=candidate.provider,
+                model_id=candidate.model_id,
+                entry=candidate,
                 default_provider=provider,
             ),
             encoding="utf-8",
@@ -126,7 +130,7 @@ class Executor(ABC):
             ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
         )
         target = dsh_profile.parse_pinned_target(composed)
-        return bool(target and target[1] == sentinel)
+        return bool(target and target[1] == candidate.model_id)
 
     def list_models(self) -> list[dict[str, Any]]:
         """Discover models this backend supports: ``[{id, label, ...}, ...]``.
@@ -362,20 +366,24 @@ class CodeBuddyExecutor(Executor):
         if pinned is None:
             return False
 
-        # 3) Round-trip a patch carrying a sentinel model id: an overlay the CLI
-        #    ignores (unknown id, version drift) leaves the composed model at the
-        #    pinned value, so only the sentinel proves the patch really applied.
-        #    Composing config performs no model validation, so a fake id is safe.
-        provider, _pinned_model = pinned
-        sentinel = "taskagent-capability-probe"
+        # 3) Round-trip a patch switching to ANOTHER real model from the catalog:
+        #    if the overlay is ignored (unknown entry, version drift) the composed
+        #    model stays pinned and the mismatch exposes it. A synthetic model id
+        #    cannot be used here — dsh validates ids against the provider config
+        #    and silently drops unknown ones, which would look identical to an
+        #    ignored overlay.
+        provider, pinned_model = pinned
+        candidate = next((e for e in self.catalog if e.model_id != pinned_model), None)
+        if candidate is None:
+            return False  # nothing else to select => nothing to verify
         probe_dir = self.patch_dir / ".probe"
         probe_dir.mkdir(parents=True, exist_ok=True)
         probe_path = probe_dir / "capability.yml"
         probe_path.write_text(
             dsh_profile.build_patch_yaml(
-                provider=provider,
-                model_id=sentinel,
-                entry=None,
+                provider=candidate.provider,
+                model_id=candidate.model_id,
+                entry=candidate,
                 default_provider=provider,
             ),
             encoding="utf-8",
@@ -384,7 +392,7 @@ class CodeBuddyExecutor(Executor):
             ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
         )
         target = dsh_profile.parse_pinned_target(composed)
-        return bool(target and target[1] == sentinel)
+        return bool(target and target[1] == candidate.model_id)
 
     def list_models(self) -> list[dict[str, Any]]:
         """Discover the models this backend's CLI supports, as ``[{id, label, ...}]``.
@@ -1569,20 +1577,24 @@ class DshExecutor(CodeBuddyExecutor):
         if pinned is None:
             return False
 
-        # 3) Round-trip a patch carrying a sentinel model id: an overlay the CLI
-        #    ignores (unknown id, version drift) leaves the composed model at the
-        #    pinned value, so only the sentinel proves the patch really applied.
-        #    Composing config performs no model validation, so a fake id is safe.
-        provider, _pinned_model = pinned
-        sentinel = "taskagent-capability-probe"
+        # 3) Round-trip a patch switching to ANOTHER real model from the catalog:
+        #    if the overlay is ignored (unknown entry, version drift) the composed
+        #    model stays pinned and the mismatch exposes it. A synthetic model id
+        #    cannot be used here — dsh validates ids against the provider config
+        #    and silently drops unknown ones, which would look identical to an
+        #    ignored overlay.
+        provider, pinned_model = pinned
+        candidate = next((e for e in self.catalog if e.model_id != pinned_model), None)
+        if candidate is None:
+            return False  # nothing else to select => nothing to verify
         probe_dir = self.patch_dir / ".probe"
         probe_dir.mkdir(parents=True, exist_ok=True)
         probe_path = probe_dir / "capability.yml"
         probe_path.write_text(
             dsh_profile.build_patch_yaml(
-                provider=provider,
-                model_id=sentinel,
-                entry=None,
+                provider=candidate.provider,
+                model_id=candidate.model_id,
+                entry=candidate,
                 default_provider=provider,
             ),
             encoding="utf-8",
@@ -1591,7 +1603,7 @@ class DshExecutor(CodeBuddyExecutor):
             ["--profile", "headless", "--patch", str(probe_path), "--dump-config"]
         )
         target = dsh_profile.parse_pinned_target(composed)
-        return bool(target and target[1] == sentinel)
+        return bool(target and target[1] == candidate.model_id)
 
     def list_models(self) -> list[dict[str, Any]]:
         """Pinned model first, then everything the profile layers declare."""

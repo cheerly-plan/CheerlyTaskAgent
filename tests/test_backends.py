@@ -531,6 +531,24 @@ def _fake_dsh(tmp_path: Path, *, supports_patch: bool, applies_patch: bool) -> P
     return script
 
 
+def _write_two_model_catalog(root: Path) -> None:
+    path = root / "profiles" / "desktop"
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "cordis.patch.yml").write_text(
+        "- id: llm-pi-ai\n"
+        '  name: "@deepseek-ai/dsh-llm-pi-ai"\n'
+        "  config:\n"
+        "    providers:\n"
+        "      qwen-token-plan:\n"
+        "        models:\n"
+        "          - id: deepseek-v4-pro\n"
+        "            name: DeepSeek V4 Pro\n"
+        "          - id: kimi-k2.7-code\n"
+        "            name: Kimi K2.7 Code\n",
+        encoding="utf-8",
+    )
+
+
 def test_dsh_capability_requires_patch_flag(tmp_path):
     """A DSH build without --patch must not offer a model choice."""
     script = _fake_dsh(tmp_path, supports_patch=False, applies_patch=False)
@@ -545,6 +563,7 @@ def test_dsh_capability_requires_patch_flag(tmp_path):
 
 def test_dsh_capability_requires_applied_overlay(tmp_path):
     """If the CLI ignores the overlay, selection is disabled (no phantom choice)."""
+    _write_two_model_catalog(tmp_path)
     script = _fake_dsh(tmp_path, supports_patch=True, applies_patch=False)
     ex = DshExecutor(
         command=str(script), worktrees_dir=tmp_path / "wt",
@@ -554,6 +573,7 @@ def test_dsh_capability_requires_applied_overlay(tmp_path):
 
 
 def test_dsh_capability_true_when_overlay_applies(tmp_path):
+    _write_two_model_catalog(tmp_path)
     script = _fake_dsh(tmp_path, supports_patch=True, applies_patch=True)
     ex = DshExecutor(
         command=str(script), worktrees_dir=tmp_path / "wt",
@@ -564,9 +584,34 @@ def test_dsh_capability_true_when_overlay_applies(tmp_path):
     assert "--patch" in ex.build_command(item)
 
 
+def test_dsh_capability_false_without_alternate_model(tmp_path):
+    """Only the pinned model available => nothing to select, nothing to verify."""
+    script = _fake_dsh(tmp_path, supports_patch=True, applies_patch=True)
+    ex = DshExecutor(
+        command=str(script), worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    assert ex.supports_model_selection_check() is False
+
+
 def test_patch_ignored_warning_flags_silent_default():
     """An ignored overlay must not be reported as a successful model run."""
     stderr = 'dsh: [/tmp/bad.yml] patch: entry "agent-default-model" not found\n'
     warning = dsh_profile.patch_ignored_warning(stderr)
     assert warning and "默认模型" in warning
     assert dsh_profile.patch_ignored_warning("all good") is None
+
+
+def test_parse_pinned_target_ignores_composer_comments():
+    """Patched dumps wrap the entry in "# == … patched by …" comment lines."""
+    composed = (
+        "# == @deepseek-ai/dsh-base, patched by /tmp/probe.yml\n"
+        "- id: agent-default-model\n"
+        "  name: '@deepseek-ai/dsh-agent-default-model'\n"
+        "  config:\n"
+        "    provider: qwen-token-plan\n"
+        "    model: deepseek-v4-pro\n"
+        "# == @deepseek-ai/dsh-base\n"
+        "- id: jobs\n"
+    )
+    assert dsh_profile.parse_pinned_target(composed) == ("qwen-token-plan", "deepseek-v4-pro")

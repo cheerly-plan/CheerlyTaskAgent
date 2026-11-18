@@ -216,8 +216,11 @@ def parse_pinned_target(dump_text: str) -> tuple[str, str] | None:
     The composed tree lists the ``agent-default-model`` entry with its config on
     following indented lines; the entry ends at the next ``- id:`` marker.
     """
+    # The composer annotates patched entries with "# == … patched by <file>"
+    # comment lines on both sides, so comments must be allowed inside the block;
+    # otherwise the lookahead for the next "- id:" never matches.
     found = re.search(
-        r"id:\s*agent-default-model.*?\n((?:\s+.*\n)*?)(?=- id:|\Z)", dump_text
+        r"id:\s*agent-default-model.*?\n((?:(?:\s+.*|#.*)\n)*?)(?=- id:|\Z)", dump_text
     )
     if not found:
         return None
