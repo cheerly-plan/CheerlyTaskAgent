@@ -86,3 +86,15 @@ export function defaultModelLabel(
   if (current) return `默认（${current.label}）`;
   return '默认（CLI 决定）';
 }
+
+/**
+ * 系统设置页「默认模型」空选项的文案。空值表示不给后端传 --model，
+ * 由 CLI 自己决定 —— 而 CLI 当前实际用的就是被标记 current 的模型，
+ * 所以直接把它显示出来，避免「由 CLI 决定」这种含糊说法。
+ */
+export function cliDefaultLabel(
+  models: {id: string; label: string; current?: boolean}[],
+): string {
+  const current = models.find((model) => model.current);
+  return current ? `跟随 CLI 当前（${current.label}）` : '由 CLI 决定';
+}
