@@ -226,6 +226,8 @@ export const endpoints = {
   runItem: (id: string, body: {exec_mode: ExecMode; model?: string | null; approved?: boolean; executor?: string}) =>
     api<unknown>(`/api/items/${id}/run`, jsonInit('POST', body)),
   cancelItem: (id: string) => api<{cancelled: boolean}>(`/api/items/${id}/cancel`, {method: 'POST'}),
+  autoMapItems: () =>
+    api<{mapped: number; ambiguous: number; unmatched: number}>('/api/items/auto-map', {method: 'POST'}),
   deleteItem: (id: string) => api<unknown>(`/api/items/${id}`, {method: 'DELETE'}),
   report: (id: string) => fetchText(`/api/items/${encodeURIComponent(id)}/report`),
   reportUrl: (id: string) => `/api/items/${encodeURIComponent(id)}/report`,

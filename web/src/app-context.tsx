@@ -38,6 +38,8 @@ interface AppContextValue {
   selections: Record<string, ActionSelection>;
   setSelection: (id: string, key: keyof ActionSelection, value: string) => void;
   reloadItems: () => Promise<void>;
+  /** 按 TAPD 项目绑定，给未映射的历史工单补仓库。 */
+  autoMapItems: () => Promise<void>;
   reloadMappings: () => Promise<void>;
   reloadSettings: () => Promise<void>;
   saveSettings: (next: UISettings) => Promise<void>;
@@ -132,6 +134,25 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       toast.error('加载任务失败：' + (error as Error).message);
     }
   }, []);
+
+  const autoMapItems = React.useCallback(async () => {
+    try {
+      const result = await endpoints.autoMapItems();
+      await reloadItems();
+      if (result.mapped > 0) {
+        toast.success(
+          `已自动映射 ${result.mapped} 条` +
+            (result.ambiguous ? `，${result.ambiguous} 条项目绑定了多个仓库需人工选择` : ''),
+        );
+      } else if (result.ambiguous > 0) {
+        toast.info(`${result.ambiguous} 条工单所属项目绑定了多个仓库，需手动选择`);
+      } else {
+        toast.info('没有可自动映射的工单（检查项目映射里的 TAPD 项目绑定）');
+      }
+    } catch (error) {
+      toast.error('自动映射失败：' + (error as Error).message);
+    }
+  }, [reloadItems]);
 
   const reloadMappings = React.useCallback(async () => {
     try {
@@ -538,6 +559,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     selections,
     setSelection,
     reloadItems,
+    autoMapItems,
     reloadMappings,
     reloadSettings,
     saveSettings,

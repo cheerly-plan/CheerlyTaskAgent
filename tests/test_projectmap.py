@@ -151,3 +151,62 @@ def test_mapping_api_persists_tapd_bindings(tmp_path):
         listed = client.get("/api/mappings").json()["mappings"]
         assert listed[0]["tapd_workspace_ids"] == ["32312011", "1001"]
         assert listed[0]["tapd_workspace_id"] == "32312011"
+
+
+def test_auto_map_endpoint_backfills_unmapped_tapd_items(tmp_path):
+    """先建单、后补绑定：自动映射按 TAPD 项目把历史工单补上仓库。"""
+    from fastapi.testclient import TestClient
+
+    from taskagent.api import create_app
+    from taskagent.config import Settings
+    from taskagent.models import SourceType, WorkItem
+
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        client.post(
+            "/api/mappings",
+            json={"name": "Demo", "path": str(tmp_path), "tapd_workspace_ids": ["32312011"]},
+        )
+        store = app.state.ctx.store
+        item = WorkItem.create(
+            title="存量需求", description="", source=SourceType.TAPD.value,
+            source_ref="tapd:story:1132312011001000017",
+        )
+        store.save(item)
+
+        result = client.post("/api/items/auto-map").json()
+        assert result["mapped"] == 1
+
+        mapped = client.get(f"/api/items/{item.id}").json()
+        assert mapped["repo"]["name"] == "Demo"
+        assert mapped["status"] == "ready"
+
+
+def test_auto_map_leaves_ambiguous_workspace_alone(tmp_path):
+    """同一项目绑定多个仓库时无法自动选择，必须留给人工。"""
+    from fastapi.testclient import TestClient
+
+    from taskagent.api import create_app
+    from taskagent.config import Settings
+    from taskagent.models import SourceType, WorkItem
+
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        for name in ("A", "B"):
+            folder = tmp_path / name
+            folder.mkdir()
+            client.post(
+                "/api/mappings",
+                json={"name": name, "path": str(folder), "tapd_workspace_ids": ["35825536"]},
+            )
+        store = app.state.ctx.store
+        item = WorkItem.create(
+            title="多仓库需求", description="", source=SourceType.TAPD.value,
+            source_ref="tapd:story:1135825536001000036",
+        )
+        store.save(item)
+
+        result = client.post("/api/items/auto-map").json()
+        assert result["mapped"] == 0
+        assert result["ambiguous"] == 1
+        assert client.get(f"/api/items/{item.id}").json()["repo"] is None

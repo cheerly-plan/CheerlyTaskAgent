@@ -216,6 +216,7 @@ class WorkItem:
     kind: ItemKind
     source: SourceType
     source_ref: str = ""            # email message id / TAPD story id / ""
+    tapd_workspace_id: str = ""     # TAPD 项目 ID（用于按绑定自动映射仓库）
     git_url: str = ""               # git URL hint extracted from the source
     repo: LocalRepo | None = None   # resolved local checkout
     status: ItemStatus = ItemStatus.DISCOVERED
@@ -293,6 +294,7 @@ class WorkItem:
             "kind": self.kind.value,
             "source": self.source.value,
             "source_ref": self.source_ref,
+            "tapd_workspace_id": self.tapd_workspace_id,
             "git_url": self.git_url,
             "repo": self.repo.name if self.repo else None,
             "status": self.status.value,
@@ -315,6 +317,7 @@ class WorkItem:
             "kind": self.kind.value,
             "source": self.source.value,
             "source_ref": self.source_ref,
+            "tapd_workspace_id": self.tapd_workspace_id,
             "git_url": self.git_url,
             "repo": self.repo.to_dict() if self.repo else None,
             "status": self.status.value,

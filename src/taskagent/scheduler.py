@@ -117,6 +117,7 @@ class Scheduler:
             if existing:
                 return existing, False
         item = probe
+        item.tapd_workspace_id = raw.tapd_workspace_id
         if stage_hint:
             item.stage = stage_hint
         if repo_name:

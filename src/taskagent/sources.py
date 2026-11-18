@@ -35,6 +35,7 @@ class RawItem:
     title: str
     body: str
     source_ref: str = ""
+    tapd_workspace_id: str = ""
     attachments: list[dict[str, Any]] = field(default_factory=list)
     git_url_hint: str = ""
 
@@ -71,6 +72,7 @@ class RawItem:
             body = "\n".join(meta_lines) + "\n\n" + body
         return cls(
             source=SourceType.TAPD,
+            tapd_workspace_id=str(getattr(item, "workspace_id", "") or ""),
             title=f"{prefix} {getattr(item, 'title', '')}".strip(),
             body=body,
             source_ref=item.ref,

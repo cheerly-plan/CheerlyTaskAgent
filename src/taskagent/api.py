@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -619,6 +620,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result.get("error"):
             raise HTTPException(400, result["error"])
         return {"created": result["created"], "skipped": result["skipped"]}
+
+    @app.post("/api/items/auto-map")
+    def api_auto_map() -> dict[str, Any]:
+        """按 TAPD 项目绑定，把未映射的历史工单补上仓库。
+
+        新的导入已经会按绑定直接映射；这个端点解决「先建单、后补绑定」的存量
+        数据。同一 TAPD 项目绑定多个仓库时无法自动选择，留给人工确认。
+        """
+        from .models import ItemStatus, SourceType
+
+        def workspace_of(item: Any) -> str:
+            if item.tapd_workspace_id:
+                return item.tapd_workspace_id
+            # 历史数据没有记录 workspace：TAPD story ID 形如 "11" + workspace + 序号，
+            # 用已知绑定做前缀匹配，避免猜 ID 长度。
+            match = re.match(r"^tapd:[a-z]+:(\d+)$", item.source_ref or "")
+            if not match:
+                return ""
+            digits = match.group(1)
+            for mapping in projects.list():
+                for wid in mapping.tapd_workspace_ids:
+                    if wid and digits.startswith("11" + str(wid)):
+                        return str(wid)
+            return ""
+
+        mapped = ambiguous = unmatched = 0
+        for item in store.list(limit=2000):
+            if item.repo is not None or item.source is not SourceType.TAPD:
+                continue
+            bound = projects.find_all_by_workspace(workspace_of(item))
+            if len(bound) == 1:
+                item.repo = bound[0].to_local_repo()
+                item.status = ItemStatus.READY
+                item.stage = f"已按 TAPD 项目绑定映射：{bound[0].name}"
+                item.error = None
+                store.save(item)
+                mapped += 1
+            elif len(bound) > 1:
+                ambiguous += 1
+            else:
+                unmatched += 1
+        return {"mapped": mapped, "ambiguous": ambiguous, "unmatched": unmatched}
 
     @app.get("/api/items/{item_id}")
     def api_get_item(item_id: str) -> dict[str, Any]:

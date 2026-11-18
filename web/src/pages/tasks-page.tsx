@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {ArrowDown, ArrowUp, LayoutGrid, List, RefreshCw, Search, X} from 'lucide-react';
+import {ArrowDown, ArrowUp, LayoutGrid, List, RefreshCw, Search, Wand2, X} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {KpiCards} from '@/components/kpi-cards';
@@ -60,6 +60,7 @@ export function TasksPage() {
     openReport,
     openNewTask,
     reloadItems,
+    autoMapItems,
     ensureBackendProbe,
   } = useApp();
 
@@ -262,6 +263,15 @@ export function TasksPage() {
                 </button>
               ))}
             </div>
+            <Button
+              size="icon-sm"
+              variant="outline"
+              onClick={() => void autoMapItems()}
+              title="按 TAPD 项目绑定，自动映射未分配仓库的工单"
+              aria-label="自动映射"
+            >
+              <Wand2 />
+            </Button>
             <Button size="icon-sm" variant="outline" onClick={() => void refresh()} title="刷新">
               <RefreshCw className={cn(refreshing && 'animate-spin')} />
             </Button>
