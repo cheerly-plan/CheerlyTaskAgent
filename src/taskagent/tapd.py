@@ -65,12 +65,24 @@ class TapdConfig:
         ):
             setattr(self, attr, (getattr(self, attr) or "").strip())
 
+    @property
+    def workspace_ids(self) -> list[str]:
+        """多选项目：workspace_id 以逗号分隔；返回去重后的非空 ID 列表。"""
+        parts = str(self.workspace_id or "").replace("，", ",").split(",")
+        return list(dict.fromkeys(part.strip() for part in parts if part.strip()))
+
+    @property
+    def primary_workspace_id(self) -> str:
+        """回退用的主项目 ID（多选时取第一个）。"""
+        ids = self.workspace_ids
+        return ids[0] if ids else ""
+
     def is_configured(self) -> bool:
-        return bool(self.workspace_id and self.api_user and self.api_password)
+        return bool(self.workspace_ids and self.api_user and self.api_password)
 
     def missing(self) -> list[str]:
         missing = []
-        if not self.workspace_id:
+        if not self.workspace_ids:
             missing.append("workspace_id")
         if not self.api_user:
             missing.append("api_user")
@@ -175,29 +187,39 @@ class TapdClient:
     ) -> list[TapdItem]:
         if entity_type not in _ENTITIES:
             raise TapdError(f"不支持的实体类型：{entity_type}")
+        if not self.config.workspace_ids:
+            raise TapdError("TAPD 未配置，缺少：" + ", ".join(self.config.missing()))
         plural, singular = _ENTITIES[entity_type]
         items: list[TapdItem] = []
-        for page in range(1, max_pages + 1):
-            params: dict[str, Any] = {
-                "workspace_id": self.config.workspace_id,
-                "limit": min(200, max(1, limit)),
-                "page": page,
-                "order": "modified desc",
-            }
-            if self.config.pull_statuses:
-                params["status"] = ",".join(self.config.pull_statuses)
-            if modified_since:
-                params["modified"] = f">{modified_since}"
-            payload = self._request("GET", plural, params=params)
-            rows = payload.get("data") or []
-            if not rows:
-                break
-            for row in rows:
-                obj = row.get(singular) if isinstance(row, dict) else None
-                if isinstance(obj, dict):
-                    items.append(self._normalise(entity_type, obj))
-            if len(rows) < min(200, max(1, limit)):
-                break
+        seen: set[str] = set()
+        # 多选项目：逐个工作区拉取，不能把 "1,2" 整体当成一个 workspace_id 传给 TAPD。
+        for workspace_id in self.config.workspace_ids:
+            for page in range(1, max_pages + 1):
+                params: dict[str, Any] = {
+                    "workspace_id": workspace_id,
+                    "limit": min(200, max(1, limit)),
+                    "page": page,
+                    "order": "modified desc",
+                }
+                if self.config.pull_statuses:
+                    params["status"] = ",".join(self.config.pull_statuses)
+                if modified_since:
+                    params["modified"] = f">{modified_since}"
+                payload = self._request("GET", plural, params=params)
+                rows = payload.get("data") or []
+                if not rows:
+                    break
+                for row in rows:
+                    obj = row.get(singular) if isinstance(row, dict) else None
+                    if isinstance(obj, dict):
+                        item = self._normalise(entity_type, obj)
+                        if not item.workspace_id:
+                            item.workspace_id = workspace_id
+                        if item.ref not in seen:
+                            seen.add(item.ref)
+                            items.append(item)
+                if len(rows) < min(200, max(1, limit)):
+                    break
         return items
 
     def fetch_all(
@@ -219,31 +241,39 @@ class TapdClient:
         if entity_type not in _ENTITIES:
             raise TapdError(f"不支持的实体类型：{entity_type}")
         plural, singular = _ENTITIES[entity_type]
-        payload = self._request(
-            "GET",
-            plural,
-            params={"workspace_id": self.config.workspace_id, "id": object_id},
-        )
-        rows = payload.get("data") or []
-        if not rows or singular not in rows[0]:
-            raise TapdError(f"TAPD 找不到 {entity_type} {object_id}")
-        return self._normalise(entity_type, rows[0][singular])
+        # Webhook 只带对象 ID，不知道属于哪个项目：多选时逐个工作区试。
+        for workspace_id in self.config.workspace_ids:
+            payload = self._request(
+                "GET", plural,
+                params={"workspace_id": workspace_id, "id": object_id},
+            )
+            rows = payload.get("data") or []
+            if rows and singular in rows[0]:
+                item = self._normalise(entity_type, rows[0][singular])
+                if not item.workspace_id:
+                    item.workspace_id = workspace_id
+                return item
+        raise TapdError(f"TAPD 找不到 {entity_type} {object_id}")
 
-    def list_projects(self, nick: str, company_id: str = "") -> list[dict[str, str]]:
-        """列出该用户参与的 TAPD 项目，供 UI 下拉选择 workspace_id。
+    def list_projects(self, company_id: str) -> list[dict[str, str]]:
+        """列出企业的 TAPD 项目，供 UI 选择 workspace_id。
 
-        TAPD 的 /workspaces/user_participant_projects 要真人 nick（不是应用 ID），
-        company_id 部分站点必填。返回 [{id, name, pretty_name}]，失败抛 TapdError。
+        走 TAPD 的 /workspaces/projects：只需 company_id（企业 ID），不需要真人 nick。
+        该接口会把企业自身也以 category=organization 返回，这里过滤掉，避免把「企业」
+        当成可选项目。返回 [{id, name, pretty_name, company_id}]，失败抛 TapdError。
         """
-        if not nick.strip():
-            raise TapdError("请先填写 TAPD 英文昵称（nick）")
-        params: dict[str, Any] = {"nick": nick.strip()}
-        if company_id.strip():
-            params["company_id"] = company_id.strip()
-        payload = self._request("GET", "workspaces/user_participant_projects", params=params)
+        if not company_id.strip():
+            raise TapdError("请先填写企业 ID（company_id）")
+        cid = company_id.strip()
+        payload = self._request(
+            "GET", "workspaces/projects", params={"company_id": cid}
+        )
         projects: list[dict[str, str]] = []
         for row in payload.get("data") or []:
             ws = (row or {}).get("Workspace") or {}
+            # 企业自身 category=organization，不是可建单的项目；跳过。
+            if str(ws.get("category") or "").strip() == "organization":
+                continue
             pid = str(ws.get("id") or "").strip()
             if not pid:
                 continue
@@ -251,6 +281,8 @@ class TapdClient:
                 "id": pid,
                 "name": str(ws.get("name") or "").strip(),
                 "pretty_name": str(ws.get("pretty_name") or "").strip(),
+                # 缓存里要记企业归属，前端企业 ID 下拉从这里提取。
+                "company_id": str(ws.get("company_id") or cid).strip(),
             })
         return projects
 
@@ -297,7 +329,7 @@ class TapdClient:
             plural,
             data={
                 "id": item.id,
-                "workspace_id": item.workspace_id or self.config.workspace_id,
+                "workspace_id": item.workspace_id or self.config.primary_workspace_id,
                 "status": status,
                 "current_user": self.config.current_user,
             },
@@ -314,7 +346,7 @@ class TapdClient:
             "POST",
             path,
             data={
-                "workspace_id": item.workspace_id or self.config.workspace_id,
+                "workspace_id": item.workspace_id or self.config.primary_workspace_id,
                 "description": content[:2000],
                 "author": self.config.current_user,
             },

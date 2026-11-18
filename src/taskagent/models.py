@@ -81,7 +81,14 @@ class ProjectMapping:
     path: str = ""                  # absolute local folder
     enabled: bool = True
     note: str = ""
-    tapd_workspace_id: str = ""     # 关联的 TAPD 项目 ID（双向映射）
+    tapd_workspace_ids: list[str] = field(default_factory=list)  # 关联的 TAPD 项目（一个项目可关联多个仓库）
+    tapd_workspace_id: str = ""     # 兼容旧字段：取 tapd_workspace_ids 第一个
+
+    def __post_init__(self) -> None:
+        if not self.tapd_workspace_ids and self.tapd_workspace_id:
+            self.tapd_workspace_ids = [self.tapd_workspace_id]
+        if not self.tapd_workspace_id and self.tapd_workspace_ids:
+            self.tapd_workspace_id = self.tapd_workspace_ids[0]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,7 +98,8 @@ class ProjectMapping:
             "path": self.path,
             "enabled": self.enabled,
             "note": self.note,
-            "tapd_workspace_id": self.tapd_workspace_id,
+            "tapd_workspace_ids": list(self.tapd_workspace_ids),
+            "tapd_workspace_id": self.tapd_workspace_ids[0] if self.tapd_workspace_ids else "",
         }
 
     def to_local_repo(self) -> LocalRepo:
@@ -103,6 +111,10 @@ class ProjectMapping:
         aliases = data.get("aliases") or []
         if isinstance(aliases, str):
             aliases = [a for a in (part.strip() for part in aliases.split(",")) if a]
+        raw_ids = data.get("tapd_workspace_ids") or data.get("tapd_workspace_id") or []
+        if isinstance(raw_ids, str):
+            raw_ids = [part for part in raw_ids.replace("，", ",").split(",") if part.strip()]
+        ids = list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip()))
         return cls(
             id=str(data.get("id") or _new_id()),
             name=str(data.get("name", "")).strip(),
@@ -110,7 +122,7 @@ class ProjectMapping:
             path=str(data.get("path", "")).strip(),
             enabled=bool(data.get("enabled", True)),
             note=str(data.get("note", "")),
-            tapd_workspace_id=str(data.get("tapd_workspace_id", "") or "").strip(),
+            tapd_workspace_ids=ids,
         )
 
 

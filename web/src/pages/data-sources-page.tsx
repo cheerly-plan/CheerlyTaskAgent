@@ -1,7 +1,9 @@
 import * as React from 'react';
-import {RefreshCw, Save, Webhook} from 'lucide-react';
+import {Plus, RefreshCw, Save, Webhook} from 'lucide-react';
 
 import {useApp} from '@/app-context';
+import {NewTapdProjectDialog} from '@/components/dialogs/new-tapd-project-dialog';
+import {PullProjectsDialog} from '@/components/dialogs/pull-projects-dialog';
 import {Field, SelectField} from '@/components/select-field';
 import {Alert, AlertDescription} from '@/components/ui/alert';
 import {Badge} from '@/components/ui/badge';
@@ -9,15 +11,15 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {Switch} from '@/components/ui/switch';
-import {endpoints, type ProjectMapping, type TapdWorkspace, type UISettings} from '@/lib/api';
+import {endpoints, type TapdWorkspace, type UISettings} from '@/lib/api';
 import {toast} from 'sonner';
 
 const TAPD_DEFAULT: UISettings['tapd'] = {
   enabled: false,
   base_url: 'https://api.tapd.cn',
   workspace_id: '',
-  nick: '',
   company_id: '',
+  projects: [],
   api_user: '',
   api_password: '',
   webhook_secret: '',
@@ -35,11 +37,27 @@ export function DataSourcesPage() {
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
   const [syncing, setSyncing] = React.useState(false);
   const [workspaces, setWorkspaces] = React.useState<TapdWorkspace[]>([]);
+  const [nameCache, setNameCache] = React.useState<TapdWorkspace[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = React.useState(false);
+  const [pullOpen, setPullOpen] = React.useState(false);
+  const [pullCompanyId, setPullCompanyId] = React.useState('');
+  const [selectedWorkspaces, setSelectedWorkspaces] = React.useState<string[]>([]);
+  const [repoSelection, setRepoSelection] = React.useState<Record<string, string[]>>({});
+  const [newProjectOpen, setNewProjectOpen] = React.useState(false);
+  const hydrated = React.useRef(false);
 
   React.useEffect(() => {
     setDraft(settings);
   }, [settings]);
+
+  // 首次进入时静默拉一次项目名，避免界面只显示项目 ID（不弹提示、不改草稿）。
+  React.useEffect(() => {
+    if (hydrated.current || pullOpen) return;
+    const current = draft?.tapd;
+    if (!current?.company_id || !current.api_user || !(current.api_password || settings?.tapd?.api_password)) return;
+    hydrated.current = true;
+    void fetchWorkspaces(current.company_id, true);
+  }, [draft, pullOpen, settings]);
 
   if (!draft) {
     return (
@@ -66,45 +84,200 @@ export function DataSourcesPage() {
     }
   };
 
-  // 从 TAPD 拉取用户参与的项目列表（需要 nick，部分站点要 company_id）
-  const fetchWorkspaces = async () => {
+  const selectedIds = (tapd.workspace_id || '').split(',').map((id) => id.trim()).filter(Boolean);
+  const selectedIdSet = new Set(selectedIds);
+  const boundMappings = mappings.filter((mapping) => {
+    const ids = mapping.tapd_workspace_ids?.length
+      ? mapping.tapd_workspace_ids
+      : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+    return ids.some((id) => selectedIdSet.has(id));
+  });
+
+  // 规范化项目缓存，并把「已填的项目 ID」补进去——打开弹窗时即使没拉取也能看到已存项目。
+  const normalizeProjects = (items: TapdWorkspace[], fallbackCompany = ''): TapdWorkspace[] => {
+    const map = new Map<string, TapdWorkspace>();
+    for (const item of items ?? []) {
+      const id = (item.id || '').trim();
+      if (!id) continue;
+      map.set(id, {
+        id,
+        name: (item.name || '').trim(),
+        pretty_name: (item.pretty_name || '').trim(),
+        company_id: (item.company_id || fallbackCompany).trim(),
+      });
+    }
+    return [...map.values()];
+  };
+  const allSavedProjects = normalizeProjects(
+    [...(tapd.projects ?? []), ...nameCache],
+    tapd.company_id || '',
+  );
+  for (const id of selectedIds) {
+    if (!allSavedProjects.some((p) => p.id === id)) {
+      allSavedProjects.push({id, name: id, pretty_name: '', company_id: (tapd.company_id || '').trim()});
+    }
+  }
+
+  // 弹窗里展示当前企业下的项目（已缓存的先显示，拉取后合并最新结果）。
+  const visibleWorkspaces = workspaces.filter(
+    (p) => !pullCompanyId || p.company_id === pullCompanyId,
+  );
+
+  // 打开弹窗：企业 ID / 已选项目 / 项目缓存都从当前草稿带入，并立即拉取一次最新数据。
+  const openPull = () => {
+    const cid = (tapd.company_id || '').trim();
+    setPullCompanyId(cid);
+    setSelectedWorkspaces(selectedIds);
+    const initialRepos: Record<string, string[]> = {};
+    for (const mapping of mappings) {
+      const ids = mapping.tapd_workspace_ids?.length
+        ? mapping.tapd_workspace_ids
+        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+      for (const wid of ids) {
+        initialRepos[wid] = [...(initialRepos[wid] ?? []), mapping.id];
+      }
+    }
+    setRepoSelection(initialRepos);
+    setWorkspaces(allSavedProjects);
+    setPullOpen(true);
+    if (cid && tapdCredentialsReady) void fetchWorkspaces(cid);
+  };
+
+  // 从 TAPD 拉取该企业下的项目列表（只需 company_id，服务端已过滤企业自身）。
+  const fetchWorkspaces = async (companyIdOverride?: string, silent = false) => {
+    const cid = (companyIdOverride ?? pullCompanyId ?? '').trim();
+    if (!cid) {
+      if (!silent) toast.warning('请先选择企业 ID');
+      return;
+    }
     setLoadingWorkspaces(true);
     try {
-      const result = await endpoints.tapdWorkspaces({
-        nick: (tapd.nick || '').trim(),
-        company_id: (tapd.company_id || '').trim(),
-      });
-      setWorkspaces(result.projects ?? []);
-      if (result.projects?.length) {
-        toast.success(`拉取到 ${result.projects.length} 个 TAPD 项目`);
-      } else {
-        toast.info('未拉到项目，请检查昵称/公司 ID 是否正确');
+      const result = await endpoints.tapdWorkspaces({company_id: cid});
+      const fresh = normalizeProjects(result.projects ?? [], cid);
+      const mergedMap = new Map(workspaces.map((p) => [p.id, p]));
+      for (const project of fresh) mergedMap.set(project.id, project);
+      const merged = [...mergedMap.values()];
+      setWorkspaces(merged);
+      setNameCache(merged);
+      if (!silent) {
+        if (fresh.length) {
+          toast.success(`拉取到 ${fresh.length} 个 TAPD 项目`);
+        } else {
+          toast.info('未拉到项目，请检查企业 ID 是否正确');
+        }
       }
     } catch (error) {
-      toast.error('拉取项目列表失败：' + (error as Error).message);
+      if (!silent) toast.error('拉取项目列表失败：' + (error as Error).message);
     } finally {
       setLoadingWorkspaces(false);
     }
   };
 
-  // 当前 workspace 绑定的本地项目（tapd_workspace_id 相等的映射）
-  const boundMapping: ProjectMapping | undefined = mappings.find(
-    (m) => (m.tapd_workspace_id || '') === (tapd.workspace_id || ''),
-  );
+  // 切换企业：立即按新企业拉取项目。
+  const changePullCompany = (value: string) => {
+    const cid = value.trim();
+    setPullCompanyId(cid);
+    if (cid && tapdCredentialsReady) void fetchWorkspaces(cid);
+  };
 
-  // 在“数据源”页选择本地项目 -> 写回该映射的 tapd_workspace_id（双向同步）
-  const bindLocalProject = async (mappingId: string) => {
-    const target = mappings.find((m) => m.id === mappingId);
-    if (!target) return;
-    try {
-      await endpoints.updateMapping(mappingId, {
-        tapd_workspace_id: (tapd.workspace_id || '').trim(),
-      });
-      await reloadMappings();
-      toast.success(`已把「${target.name}」关联到当前 TAPD 项目`);
-    } catch (error) {
-      toast.error('关联失败：' + (error as Error).message);
+  const toggleWorkspace = (id: string) => {
+    setSelectedWorkspaces((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  };
+
+  const toggleRepo = (workspaceId: string, mappingId: string) => {
+    setRepoSelection((prev) => {
+      const current = prev[workspaceId] ?? [];
+      return {
+        ...prev,
+        [workspaceId]: current.includes(mappingId)
+          ? current.filter((id) => id !== mappingId)
+          : [...current, mappingId],
+      };
+    });
+  };
+
+  // 应用弹窗结果：多个项目 ID 逗号分隔写入 workspace_id，并持久化项目缓存与企业 ID。
+  const applyPull = async () => {
+    const cid = (pullCompanyId || '').trim();
+    if (!cid) {
+      toast.warning('请先选择企业 ID');
+      return;
     }
+    if (!selectedWorkspaces.length) {
+      toast.warning('请先选择项目');
+      return;
+    }
+    patchTapd('company_id', cid);
+    patchTapd('workspace_id', selectedWorkspaces.join(','));
+    patchTapd('projects', workspaces);
+    // 按「每个项目各自管理的仓库」写回关联：取消勾选的项目会从对应仓库移除。
+    try {
+      const selectedSet = new Set(selectedWorkspaces);
+      const desiredByMapping = new Map<string, string[]>();
+      for (const wid of selectedWorkspaces) {
+        for (const mid of repoSelection[wid] ?? []) {
+          desiredByMapping.set(mid, [...(desiredByMapping.get(mid) ?? []), wid]);
+        }
+      }
+      let changed = false;
+      for (const mapping of mappings) {
+        const oldIds = mapping.tapd_workspace_ids?.length
+          ? mapping.tapd_workspace_ids
+          : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+        const nextIds = [...new Set([
+          ...oldIds.filter((id) => !selectedSet.has(id)),
+          ...(desiredByMapping.get(mapping.id) ?? []),
+        ])];
+        if (nextIds.join(',') !== oldIds.join(',')) {
+          await endpoints.updateMapping(mapping.id, {
+            tapd_workspace_ids: nextIds,
+            tapd_workspace_id: nextIds[0] ?? '',
+          });
+          changed = true;
+        }
+      }
+      if (changed) await reloadMappings();
+    } catch (error) {
+      toast.error('关联本地仓库失败：' + (error as Error).message);
+    }
+    setPullOpen(false);
+    toast.success(`已填入 ${selectedWorkspaces.length} 个项目，记得点「保存」写入设置`);
+  };
+
+  const addNewProject = async (project: {id: string; name: string}, repoIds: string[]) => {
+    patchTapd('workspace_id', [...new Set([...selectedIds, project.id])].join(','));
+    patchTapd('projects', [
+      ...allSavedProjects.filter((item) => item.id !== project.id),
+      {
+        id: project.id,
+        name: project.name,
+        pretty_name: '',
+        company_id: (tapd.company_id || '').trim(),
+      },
+    ]);
+    // 勾选的本地仓库写入关联（并集，不移除已有项目）。
+    if (repoIds.length) {
+      try {
+        for (const mid of repoIds) {
+          const mapping = mappings.find((m) => m.id === mid);
+          if (!mapping) continue;
+          const ids = mapping.tapd_workspace_ids?.length
+            ? [...mapping.tapd_workspace_ids]
+            : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+          const union = [...new Set([...ids, project.id])];
+          await endpoints.updateMapping(mid, {
+            tapd_workspace_ids: union,
+            tapd_workspace_id: union[0] ?? '',
+          });
+        }
+        await reloadMappings();
+      } catch (error) {
+        toast.error('关联本地仓库失败：' + (error as Error).message);
+      }
+    }
+    toast.success(`已新增项目：${project.name}，记得点「保存」`);
   };
 
   const copyWebhookUrl = async () => {
@@ -115,6 +288,10 @@ export function DataSourcesPage() {
       toast.error('复制失败，请手动复制');
     }
   };
+
+  const selectedNames = selectedIds.map(
+    (id) => allSavedProjects.find((p) => p.id === id)?.name || id,
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -145,7 +322,7 @@ export function DataSourcesPage() {
             <Input
               className="font-mono"
               value={tapd.base_url}
-              placeholder="https://api.tapd.cn"
+              placeholder="请输入 TAPD API 地址"
               onChange={(event) => patchTapd('base_url', event.target.value)}
             />
           </Field>
@@ -156,112 +333,53 @@ export function DataSourcesPage() {
               onClick={() => patchTapd('base_url', 'https://apiv2.tapd.woa.com')}>内网</button>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="项目 ID (workspace_id)" hint="可手填，或从下方拉取的项目列表选择">
-              {workspaces.length > 0 ? (
-                <SelectField
-                  value={tapd.workspace_id}
-                  options={[
-                    ...(tapd.workspace_id && !workspaces.some((w) => w.id === tapd.workspace_id)
-                      ? [{value: tapd.workspace_id, label: `自定义：${tapd.workspace_id}`}]
-                      : []),
-                    ...workspaces.map((w) => ({
-                      value: w.id,
-                      label: `${w.name || w.pretty_name || w.id}（${w.id}）`,
-                    })),
-                  ]}
-                  onChange={(value) => patchTapd('workspace_id', value)}
-                />
-              ) : (
-                <Input
-                  className="font-mono"
-                  value={tapd.workspace_id}
-                  placeholder="10104801"
-                  onChange={(event) => patchTapd('workspace_id', event.target.value)}
-                />
-              )}
-            </Field>
-            <Field label="变更人 (current_user)">
+          <Field
+            label="项目"
+            hint={
+              selectedNames.length
+                ? `已选 ${selectedNames.length} 个项目 · 选完记得点「保存」`
+                : '点右侧「拉取项目」按企业 ID 多选项目，或点「新增」登记项目'
+            }
+          >
+            <div className="flex gap-2">
               <Input
-                className="font-mono"
-                value={tapd.current_user}
-                placeholder="taskagent"
-                onChange={(event) => patchTapd('current_user', event.target.value)}
+                className="min-w-0 flex-1"
+                value={selectedNames.join('、')}
+                placeholder="请选择项目"
+                readOnly
+                title={tapd.workspace_id || '尚未选择项目'}
               />
-            </Field>
-          </div>
-
-          {/* 拉取项目列表所需的身份信息 + 本地项目绑定 */}
-          <div className="mt-4 rounded-lg border border-border bg-[#fbfbfd] px-3.5 py-3">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <h4 className="text-xs font-semibold text-foreground/80">项目列表与本地映射</h4>
-                <p className="text-[11px] text-faint">
-                  填英文 nick 后拉取你参与的项目，选中即填 workspace_id；并可绑定到本地项目映射。
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                onClick={() => void fetchWorkspaces()}
-                disabled={loadingWorkspaces || !tapdCredentialsReady || !(tapd.nick || '').trim()}
-                title="先填 API 凭证和 nick 才能拉取"
-              >
-                <RefreshCw className={loadingWorkspaces ? 'animate-spin' : ''} />
-                {loadingWorkspaces ? '拉取中…' : '拉取项目'}
+              <Button variant="outline" onClick={() => setNewProjectOpen(true)} title="输入项目名称和项目 ID，并勾选管理的本地仓库">
+                <Plus />
+                新增
+              </Button>
+              <Button variant="outline" onClick={openPull} title="选企业、多选项目并指定各自管理的本地仓库">
+                <RefreshCw />
+                拉取项目
               </Button>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="TAPD 英文昵称 (nick)" hint="非应用 ID，是你的登录昵称">
-                <Input
-                  className="font-mono"
-                  value={tapd.nick ?? ''}
-                  placeholder="如 anyechen"
-                  onChange={(event) => patchTapd('nick', event.target.value)}
-                />
-              </Field>
-              <Field label="公司 ID (company_id)" hint="部分站点必填，可留空">
-                <Input
-                  className="font-mono"
-                  value={tapd.company_id ?? ''}
-                  placeholder="可留空"
-                  onChange={(event) => patchTapd('company_id', event.target.value)}
-                />
-              </Field>
-            </div>
-            <div className="mt-4">
-              <Field
-                label="关联本地项目"
-                hint="选一个本地项目映射，该项目同步来的需求直接归到此仓库"
-              >
-                <SelectField
-                  value={boundMapping?.id ?? ''}
-                  options={[
-                    {value: '', label: '未绑定（按需求文本自动匹配）'},
-                    ...mappings.filter((m) => m.enabled).map((m) => ({
-                      value: m.id,
-                      label: `${m.name}${m.path ? ` · ${m.path}` : ''}`,
-                    })),
-                  ]}
-                  onChange={(value) => void bindLocalProject(value)}
-                />
-              </Field>
-              {boundMapping && (
-                <p className="mt-1 text-[11px] text-faint">
-                  当前已绑定：{boundMapping.name}（tapd_workspace_id = {tapd.workspace_id}）
-                </p>
-              )}
-            </div>
-            <p className="mt-2 text-[11px] text-faint">
-              API 凭证需先保存；nick / company_id 填好即可直接「拉取项目」，选中项目后记得再点「保存」。
+          </Field>
+          {boundMappings.length > 0 && (
+            <p className="-mt-2 mb-3 text-[11px] text-faint">
+              已关联本地仓库：{boundMappings.map((m) => m.name).join('、')}
             </p>
-          </div>
+          )}
+
+          <Field label="变更人 (current_user)">
+            <Input
+              className="font-mono"
+              value={tapd.current_user}
+              placeholder="请输入变更人"
+              onChange={(event) => patchTapd('current_user', event.target.value)}
+            />
+          </Field>
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="API 账号 (应用 ID)">
               <Input
                 className="font-mono"
                 value={tapd.api_user}
-                placeholder="api_user"
+                placeholder="请输入 API 账号"
                 onChange={(event) => patchTapd('api_user', event.target.value)}
               />
             </Field>
@@ -299,11 +417,11 @@ export function DataSourcesPage() {
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <Field label="成功后回填状态" hint="英文状态码，如 resolved">
+            <Field label="成功后回填状态" hint="请输入英文状态码">
               <Input
                 className="font-mono"
                 value={tapd.status_on_success}
-                placeholder="resolved"
+                placeholder="请输入成功状态码"
                 onChange={(event) => patchTapd('status_on_success', event.target.value)}
               />
             </Field>
@@ -343,7 +461,7 @@ export function DataSourcesPage() {
               <Input
                 className="font-mono"
                 value={tapd.webhook_secret}
-                placeholder="与 TAPD 后台配置一致"
+                placeholder="请输入与 TAPD 后台一致的 secret"
                 onChange={(event) => patchTapd('webhook_secret', event.target.value)}
               />
             </Field>
@@ -384,6 +502,33 @@ export function DataSourcesPage() {
           </p>
         </div>
       </Card>
+
+      <PullProjectsDialog
+        open={pullOpen}
+        onOpenChange={setPullOpen}
+        companyId={pullCompanyId}
+        onCompanyIdChange={changePullCompany}
+        credentialsReady={tapdCredentialsReady}
+        availableCompanies={[...new Set(workspaces.map((p) => p.company_id).filter(Boolean))]}
+        workspaces={visibleWorkspaces}
+        loading={loadingWorkspaces}
+        onFetch={(cid) => void fetchWorkspaces(cid)}
+        selectedWorkspaces={selectedWorkspaces}
+        onToggleWorkspace={toggleWorkspace}
+        onSelectAll={() => setSelectedWorkspaces(visibleWorkspaces.map((ws) => ws.id))}
+        onClearSelection={() => setSelectedWorkspaces([])}
+        mappings={mappings}
+        associations={repoSelection}
+        onToggleRepo={toggleRepo}
+        onApply={() => void applyPull()}
+      />
+
+      <NewTapdProjectDialog
+        open={newProjectOpen}
+        onOpenChange={setNewProjectOpen}
+        mappings={mappings}
+        onAdd={(project, repoIds) => void addNewProject(project, repoIds)}
+      />
     </div>
   );
 }

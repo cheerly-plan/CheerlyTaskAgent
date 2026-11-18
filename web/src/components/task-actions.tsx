@@ -78,7 +78,7 @@ export function TaskActions({
             size="sm"
             className="w-[124px]"
             value={selection.map ?? ''}
-            placeholder="选仓库…"
+            placeholder="请选择仓库"
             options={repoOptions}
             onChange={(value) => onSelect('map', value)}
           />

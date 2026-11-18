@@ -99,6 +99,7 @@ class Scheduler:
         self, raw: RawItem, *, exec_mode: str = "dry-run",
         auto_map: bool = True, model: str | None = None,
         executor: str | None = None, repo_name: str = "",
+        stage_hint: str = "",
     ) -> tuple[WorkItem, bool]:
         """Create a WorkItem from a RawItem. Returns (item, created).
 
@@ -116,6 +117,8 @@ class Scheduler:
             if existing:
                 return existing, False
         item = probe
+        if stage_hint:
+            item.stage = stage_hint
         if repo_name:
             # 显式指定（来自 TAPD workspace 绑定的本地项目），优先于文本匹配
             repo = self.projects.resolve_name(repo_name) if self.projects else None

@@ -96,9 +96,9 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
-        "workspace_id": "",
-        "nick": "",          # 英文昵称，用于拉取用户参与的项目列表（非应用 ID）
-        "company_id": "",    # 公司 ID，部分 TAPD 站点必填
+        "workspace_id": "",  # 可逗号分隔多选项目 ID
+        "company_id": "",    # 企业 ID，拉取该企业下项目列表必填
+        "projects": [],      # 已拉取/已选项目缓存 [{id,name,pretty_name,company_id}]，供企业下拉复用
         "api_user": "",
         "api_password": "",
         "webhook_secret": "",
@@ -292,6 +292,7 @@ class Settings:
                                 data["backends"] = merged
                         elif key == "tapd" and isinstance(value, dict):
                             data[key].update(value)
+                            data[key].pop("nick", None)  # 已移除：拉项目改走 company_id
                         elif key in data:
                             data[key] = value
             except (OSError, ValueError):
@@ -358,6 +359,30 @@ class Settings:
         data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
         # Normalise tapd values.
         tapd = data["tapd"]
+        tapd.pop("nick", None)  # 旧配置兼容：拉项目已改为只需 company_id
+        # 项目缓存：用于企业 ID 下拉与「已填项目」列表；去重、清洗字段。
+        projects: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for row in tapd.get("projects") or []:
+            if not isinstance(row, dict):
+                continue
+            pid = str(row.get("id") or "").strip()
+            if not pid or pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            projects.append({
+                "id": pid,
+                "name": str(row.get("name") or "").strip(),
+                "pretty_name": str(row.get("pretty_name") or "").strip(),
+                "company_id": str(row.get("company_id") or "").strip(),
+            })
+        tapd["projects"] = projects
+        # workspace_id 允许逗号分隔的多选项目 ID，统一格式避免脏数据。
+        tapd["workspace_id"] = ",".join(
+            part.strip()
+            for part in str(tapd.get("workspace_id") or "").replace("，", ",").split(",")
+            if part.strip()
+        )
         tapd["enabled"] = bool(tapd.get("enabled", False))
         tapd["interval_minutes"] = max(1, int(tapd.get("interval_minutes", 5) or 5))
         tapd["exec_mode"] = "apply" if tapd.get("exec_mode") == "apply" else "dry-run"

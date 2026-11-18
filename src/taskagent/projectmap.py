@@ -67,15 +67,20 @@ class ProjectRegistry:
     def get(self, mapping_id: str) -> ProjectMapping | None:
         return next((m for m in self._items if m.id == mapping_id), None)
 
-    def find_by_workspace(self, workspace_id: str) -> ProjectMapping | None:
-        """找到绑定到该 TAPD workspace_id 的本地项目映射（双向关联）。"""
+    def find_all_by_workspace(self, workspace_id: str) -> list[ProjectMapping]:
+        """一个 TAPD 项目可关联多个本地仓库，返回全部启用的映射。"""
         wid = str(workspace_id or "").strip()
         if not wid:
-            return None
-        return next(
-            (m for m in self._items if m.enabled and str(m.tapd_workspace_id).strip() == wid),
-            None,
-        )
+            return []
+        return [
+            m for m in self._items
+            if m.enabled and wid in {str(item).strip() for item in m.tapd_workspace_ids}
+        ]
+
+    def find_by_workspace(self, workspace_id: str) -> ProjectMapping | None:
+        """兼容旧调用：返回绑定到该 TAPD workspace_id 的第一个本地映射。"""
+        matches = self.find_all_by_workspace(workspace_id)
+        return matches[0] if matches else None
 
     def add(self, data: dict) -> ProjectMapping:
         mapping = ProjectMapping.from_dict(data)

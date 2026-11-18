@@ -9,7 +9,7 @@ from taskagent.tapd import TapdClient, TapdConfig, TapdError, TapdItem
 
 
 def test_list_projects_parses_workspace_rows(monkeypatch):
-    """list_projects 把 TAPD 的 Workspace 行解析为 {id,name,pretty_name}。"""
+    """list_projects 用 company_id 调 /workspaces/projects，解析行并过滤企业自身。"""
     cfg = TapdConfig(api_user="u", api_password="p", workspace_id="1")
     client = TapdClient(cfg)
     seen = {}
@@ -18,53 +18,54 @@ def test_list_projects_parses_workspace_rows(monkeypatch):
         seen["path"] = path
         seen["params"] = params
         return {"status": 1, "data": [
-            {"Workspace": {"id": "755", "name": "TAPD平台", "pretty_name": "tapd"}},
-            {"Workspace": {"id": "32312011", "name": "Cheerly", "pretty_name": ""}},
+            {"Workspace": {"id": "20003261", "name": "我的企业", "category": "organization"}},
+            {"Workspace": {"id": "755", "name": "TAPD平台", "pretty_name": "tapd", "category": "project"}},
+            {"Workspace": {"id": "32312011", "name": "Cheerly", "pretty_name": "", "category": "project"}},
             {"Workspace": {}},  # 缺 id 的行应被跳过
         ]}
 
     monkeypatch.setattr(client, "_request", fake_request)
-    projects = client.list_projects("  anyechen  ", " 42 ")
-    assert seen["path"] == "workspaces/user_participant_projects"
-    assert seen["params"] == {"nick": "anyechen", "company_id": "42"}
+    projects = client.list_projects(" 62957685 ")
+    assert seen["path"] == "workspaces/projects"
+    assert seen["params"] == {"company_id": "62957685"}
+    # 企业行（category=organization）不进候选，避免把企业当成项目。
     assert projects == [
-        {"id": "755", "name": "TAPD平台", "pretty_name": "tapd"},
-        {"id": "32312011", "name": "Cheerly", "pretty_name": ""},
+        {"id": "755", "name": "TAPD平台", "pretty_name": "tapd", "company_id": "62957685"},
+        {"id": "32312011", "name": "Cheerly", "pretty_name": "", "company_id": "62957685"},
     ]
 
 
-def test_list_projects_requires_nick():
+def test_list_projects_requires_company_id():
     client = TapdClient(TapdConfig(api_user="u", api_password="p"))
     try:
         client.list_projects("  ")
         assert False, "should raise"
     except TapdError as exc:
-        assert "nick" in str(exc)
+        assert "company_id" in str(exc)
 
 
 def test_workspaces_endpoint_uses_request_body(tmp_path, monkeypatch):
-    """新端点从请求体取 nick/company_id，回退到已保存配置。"""
+    """端点从请求体取 company_id，回退到已保存配置。"""
     s = Settings(data_dir=tmp_path)
-    s.save_ui_settings({"tapd": {"api_user": "u", "api_password": "p", "nick": "savednick"}})
+    s.save_ui_settings({"tapd": {"api_user": "u", "api_password": "p", "company_id": "saved42"}})
     app = create_app(Settings(data_dir=tmp_path, project_roots=()))
     calls = {}
 
-    def fake_list(self, nick, company_id=""):
-        calls["nick"] = nick
+    def fake_list(self, company_id):
         calls["company_id"] = company_id
         return [{"id": "1", "name": "P", "pretty_name": "p"}]
 
     monkeypatch.setattr(TapdClient, "list_projects", fake_list)
     with TestClient(app) as client:
-        # 请求体未给 nick -> 回退到配置里的 savednick
+        # 请求体未给 company_id -> 回退到配置里的 saved42
         r = client.post("/api/tapd/workspaces", json={})
         assert r.status_code == 200
         assert r.json()["projects"][0]["id"] == "1"
-        assert calls["nick"] == "savednick"
-        # 请求体给了 nick -> 优先用请求体
-        r = client.post("/api/tapd/workspaces", json={"nick": "bodynick", "company_id": "9"})
+        assert calls["company_id"] == "saved42"
+        # 请求体给了 company_id -> 优先用请求体（不再需要 nick）
+        r = client.post("/api/tapd/workspaces", json={"company_id": "9"})
         assert r.status_code == 200
-        assert calls["nick"] == "bodynick" and calls["company_id"] == "9"
+        assert calls["company_id"] == "9"
 
 
 def test_tapd_config_strips_whitespace_from_credentials():
@@ -130,6 +131,55 @@ def test_tapd_normalises_bad_values(tmp_path):
     assert cfg["interval_minutes"] == 5
     assert cfg["entity_types"] == ["story"]  # bogus dropped
     assert cfg["exec_mode"] == "dry-run"
+
+
+def test_project_cache_normalisation(tmp_path):
+    """项目缓存保留 company_id、去重、过滤无效行，供企业下拉复用。"""
+    s = Settings(data_dir=tmp_path)
+    s.save_ui_settings({"tapd": {
+        "workspace_id": " 32312011，755 ",
+        "projects": [
+            {"id": "755", "name": " TAPD平台 ", "pretty_name": "tapd", "company_id": " 42 "},
+            {"id": " 755 ", "name": "重复项", "company_id": "42"},
+            {"id": "32312011", "name": "Cheerly"},
+            {"id": "", "name": "无 ID"},
+            "bad row",
+        ],
+    }})
+    cfg = s.load_ui_settings()["tapd"]
+    assert cfg["workspace_id"] == "32312011,755"
+    assert cfg["projects"] == [
+        {"id": "755", "name": "TAPD平台", "pretty_name": "tapd", "company_id": "42"},
+        {"id": "32312011", "name": "Cheerly", "pretty_name": "", "company_id": ""},
+    ]
+
+
+def test_multi_workspace_fetch_uses_each_workspace_and_dedupes(monkeypatch):
+    """多选项目时逐个 workspace_id 拉取，并过滤跨项目重复 ID。"""
+    cfg = TapdConfig(
+        api_user="u", api_password="p", workspace_id=" 1，2 ",
+        entity_types=["story"],
+    )
+    client = TapdClient(cfg)
+    seen = []
+
+    def fake_request(method, path, *, params=None, data=None):
+        seen.append(params["workspace_id"])
+        if params["workspace_id"] == "1":
+            return {"status": 1, "data": [
+                {"Story": {"id": "10", "name": "A"}},  # 缺 workspace_id，应补当前工作区
+            ]}
+        return {"status": 1, "data": [
+            {"Story": {"id": "10", "name": "A dup", "workspace_id": "2"}},
+            {"Story": {"id": "20", "name": "B", "workspace_id": "2"}},
+        ]}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    items = client.fetch("story")
+    assert seen == ["1", "2"]
+    assert cfg.primary_workspace_id == "1"
+    assert [item.id for item in items] == ["10", "20"]
+    assert items[0].workspace_id == "1"
 
 
 def test_client_not_configured_reports_missing():

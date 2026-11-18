@@ -57,7 +57,7 @@ flowchart LR
 | 组件 | 职责 |
 |---|---|
 | `sources.py` | `RawItem`（TAPD/manual）→ `WorkItem`。规则：标题前缀判 bug/需求、关键词兜底、正则提取 git URL、去签名/引用。`TapdSource` 把 `TapdItem` 映射为 RawItem，source_ref=`tapd:<type>:<id>` 作幂等键。`RawItem.from_email` 仅作 demo/测试的轻量构造器保留。 |
-| `tapd.py` | TAPD 开放 API 客户端（权威源）：Basic Auth（应用ID:秘钥），公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`。`GET /stories`、`GET /bugs`（workspace_id + limit≤200 + page + modified>游标 + 可选 status）分页拉取并归一化为 `TapdItem`；`fetch_one()` 供 Webhook 回源拉单条；`list_projects(nick, company_id)` 调 `/workspaces/user_participant_projects` 拉用户参与的项目列表（需真人 nick，非应用 ID）供 UI 选 workspace_id；`POST /stories|/bugs` 回填 status + current_user，`POST /comments` 写报告评论。`TapdConfig.__post_init__` 统一 strip 所有字符串字段，防止复制凭证带入首尾空白导致 401。同步阻塞 IO，调用方用 `asyncio.to_thread`；未配置/网络错误进 `TapdResult.error` 不抛崩服务。 |
+| `tapd.py` | TAPD 开放 API 客户端（权威源）：Basic Auth（应用ID:秘钥），公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`。`GET /stories`、`GET /bugs`（workspace_id + limit≤200 + page + modified>游标 + 可选 status）分页拉取并归一化为 `TapdItem`；`fetch_one()` 供 Webhook 回源拉单条；`list_projects(company_id)` 调 `/workspaces/projects`（只需企业 ID，不需要真人 nick）拉企业下项目列表，返回项带 `company_id` 并过滤掉企业自身 `category=organization`（避免把企业当成项目）供 UI 多选；`workspace_id` 支持逗号分隔多项目，`fetch()` 逐个工作区拉取并去重，`fetch_one()`（Webhook）逐个试；本地映射 `ProjectMapping.tapd_workspace_ids` 支持一个 TAPD 项目关联多个仓库（`find_all_by_workspace()`），单仓库直接指定 repo，多仓库只记录候选不做文本猜仓库，待后续按需求/代码决策；`POST /stories|/bugs` 回填 status + current_user，`POST /comments` 写报告评论。`TapdConfig.__post_init__` 统一 strip 所有字符串字段，防止复制凭证带入首尾空白导致 401。同步阻塞 IO，调用方用 `asyncio.to_thread`；未配置/网络错误进 `TapdResult.error` 不抛崩服务。 |
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `projectmap.py` | 用户维护的「项目名/别名 → 本地文件夹」映射（`data/projects.json`），中文子串/英文词边界匹配、多命中取最长、可停用。`ProjectMapping` 带 `tapd_workspace_id`，`find_by_workspace()` 供 TAPD 建单时反查绑定的本地仓库——实现 TAPD 项目 ↔ 本地映射双向关联（数据源页与映射页改的是同一份数据）。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）；`ProjectMapping.tapd_workspace_id` 记录绑定的 TAPD 项目。 |
@@ -66,7 +66,7 @@ flowchart LR
 | `backends.py` | 依据持久化的 UI `backends` 配置构建 `ExecutorRegistry`（每类后端一套独立 profile：命令/模型/超时/自动同步/启用），并向 `/api/config` 输出后端清单。 |
 | `report.py` | 每单生成精简 Markdown：概览、执行结果、改动文件、自动同步明细与备份位置、错误；codebuddy 原始 stdout 只提取最终结论、提示词/命令/输出放折叠附录（`<details>`），避免动辄 10 万字符。`render_report` 也供 `/api/items/{id}/report` 实时渲染，老报告一并精简呈现（磁盘 .md 存档不动）。前端轻量 Markdown 渲染器把表格/标题/折叠块结构化展示。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
-| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；「数据源」Tab 仅 TAPD 卡——配置 API 凭证、项目 ID（手填或填 nick 后「拉取项目」下拉选择）、关联本地项目映射、Webhook 地址+secret/拉取类型/回填状态/定时开关 + 「立即同步」；映射表也显示并可编辑「关联 TAPD 项目」，两处双向同步；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
+| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；「数据源」Tab 仅 TAPD 卡——配置 API 凭证、项目（手填多个 ID 或点输入框右侧「拉取项目」：弹窗企业 ID 下拉（选项来自已记录项目，可手输新企业）→ 打开/切换企业自动拉取、也可手动刷新 → 多选项目、每个项目单独勾选其管理的本地仓库；页面「项目」输入框只读显示名称，「新增」弹窗登记项目名+ID 并勾选管理的本地仓库（不填企业 ID）；企业 ID 与项目列表缓存到 `tapd.projects`，下次打开先显示已存项目，企业自身已过滤）、关联本地项目映射、Webhook 地址+secret/拉取类型/回填状态/定时开关 + 「立即同步」；映射表也显示并可编辑「关联 TAPD 项目」，两处双向同步；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
 
 ## 3. 关键流程
 

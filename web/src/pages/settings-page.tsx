@@ -167,7 +167,7 @@ export function SettingsPage() {
                           <Input
                             className="h-8"
                             value={current.label}
-                            placeholder="给后端起个名字"
+                            placeholder="请输入后端名称"
                             onChange={(event) => patchBackend(id, 'label', event.target.value)}
                           />
                         </td>
@@ -175,7 +175,7 @@ export function SettingsPage() {
                           <Input
                             className="h-8 font-mono"
                             value={current.command}
-                            placeholder="例如 /usr/local/bin/my-agent"
+                            placeholder="请输入 CLI 路径"
                             onChange={(event) => patchBackend(id, 'command', event.target.value)}
                           />
                         </td>

@@ -131,7 +131,7 @@ export function NewTaskDialog({
               <Field label="目标项目（来自项目映射）">
                 <SelectField
                   value={manual.repo}
-                  placeholder="选择项目…"
+                  placeholder="请选择项目"
                   options={repoOptions}
                   onChange={(value) => setManual((prev) => ({...prev, repo: value}))}
                 />
@@ -195,7 +195,7 @@ export function NewTaskDialog({
                 <Textarea
                   rows={2}
                   value={manual.title}
-                  placeholder="例如：调整 ai_task 调度台，新增顶部 Tab"
+                  placeholder="请输入任务标题"
                   onChange={(event) => setManual((prev) => ({...prev, title: event.target.value}))}
                 />
               </Field>
@@ -203,7 +203,7 @@ export function NewTaskDialog({
                 <Textarea
                   rows={4}
                   value={manual.body}
-                  placeholder="写清要改什么、验收标准、注意事项…"
+                  placeholder="请输入需求 / Bug 描述"
                   onChange={(event) => setManual((prev) => ({...prev, body: event.target.value}))}
                 />
               </Field>

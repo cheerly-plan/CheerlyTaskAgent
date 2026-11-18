@@ -18,6 +18,7 @@ import {
   type MappingDraft,
   type ModelChoice,
   type ProjectMapping,
+  type TapdWorkspace,
   type UISettings,
   type WorkItem,
 } from '@/lib/api';
@@ -102,6 +103,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     editing: null,
   });
   const [report, setReport] = React.useState<ReportState>(EMPTY_REPORT);
+  const [tapdProjects, setTapdProjects] = React.useState<TapdWorkspace[]>([]);
   const [confirmState, setConfirmState] = React.useState({open: false, message: ''});
   const confirmResolver = React.useRef<((value: boolean) => void) | null>(null);
 
@@ -172,6 +174,15 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       await Promise.all([reloadMappings(), reloadItems(), reloadSettings()]);
     })().finally(() => setLoading(false));
   }, [reloadConfig, reloadItems, reloadMappings, reloadSettings]);
+
+  // 项目名缓存：设置里没存过时静默拉一次，供映射弹窗显示名称而不是裸 ID。
+  React.useEffect(() => {
+    const cid = (settings?.tapd?.company_id || '').trim();
+    if (!cid || !settings?.tapd?.api_user || tapdProjects.length) return;
+    void endpoints.tapdWorkspaces({company_id: cid})
+      .then((result) => setTapdProjects(result.projects ?? []))
+      .catch(() => undefined);
+  }, [settings?.tapd?.company_id, settings?.tapd?.api_user, tapdProjects.length]);
 
   // SSE：后端有任何变更就只刷新任务列表（与原实现一致）
   React.useEffect(() => {
@@ -470,8 +481,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           enabled: tapd.enabled === true,
           base_url: (tapd.base_url || 'https://api.tapd.cn').trim(),
           workspace_id: (tapd.workspace_id || '').trim(),
-          nick: (tapd.nick || '').trim(),
           company_id: (tapd.company_id || '').trim(),
+          projects: tapd.projects ?? [],
           api_user: (tapd.api_user || '').trim(),
           api_password: (tapd.api_password || '').trim(),
           webhook_secret: (tapd.webhook_secret || '').trim(),
@@ -584,6 +595,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       <MappingDialog
         open={mappingDialog.open}
         editing={mappingDialog.editing}
+        tapdProjects={[...(settings?.tapd?.projects ?? []), ...tapdProjects].filter(
+          (project, index, list) => list.findIndex((item) => item.id === project.id) === index,
+        )}
         onOpenChange={(open) =>
           setMappingDialog((prev) => ({open, editing: open ? prev.editing : null}))
         }

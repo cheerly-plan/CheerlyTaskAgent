@@ -164,7 +164,7 @@ export function TasksPage() {
             <Input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索标题 / 项目 / 模型…"
+              placeholder="请输入关键词搜索"
               className="h-8 pl-8 text-xs"
             />
           </div>

@@ -53,7 +53,6 @@ class ManualTaskBody(BaseModel):
 
 
 class TapdWorkspacesBody(BaseModel):
-    nick: str = ""
     company_id: str = ""
 
 
@@ -83,6 +82,9 @@ class MappingBody(BaseModel):
     path: str = ""
     enabled: bool = True
     note: str = ""
+    # TAPD 项目绑定：缺了这两个字段，前端提交的绑定会被模型静默丢弃。
+    tapd_workspace_ids: list[str] = []
+    tapd_workspace_id: str = ""
 
 
 class BrowseQuery(BaseModel):
@@ -213,7 +215,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         target = TapdItem(
             entity_type=entity_type,
             id=object_id,
-            workspace_id=client.config.workspace_id,
+            workspace_id=client.config.primary_workspace_id,
             title="", description="", status="", owner="", priority="",
             iteration_id="", created="", modified="",
         )
@@ -260,12 +262,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for item in result.items:
             raw = RawItem.from_tapd(item)
             # TAPD workspace 绑定的本地项目优先（两处配置统一维护）
-            bound = scheduler.projects.find_by_workspace(
-                item.workspace_id or client.config.workspace_id
-            ) if scheduler.projects else None
+            wid = item.workspace_id or client.config.primary_workspace_id
+            bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []
+            # 关联一个仓库：直接指定；多个：留待后续按需求/代码决策，不做文本映射猜测。
+            repo_name = bound[0].name if len(bound) == 1 else ""
+            stage_hint = (
+                f"TAPD 项目关联 {len(bound)} 个本地仓库，待确定执行仓库："
+                + "、".join(m.name for m in bound)
+                if len(bound) > 1 else ""
+            )
             try:
                 _, was_created = scheduler.import_raw(
-                    raw, exec_mode=exec_mode, repo_name=bound.name if bound else ""
+                    raw, exec_mode=exec_mode, repo_name=repo_name,
+                    auto_map=len(bound) != 1, stage_hint=stage_hint,
                 )
                 if was_created:
                     created += 1
@@ -294,13 +303,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TapdError as error:
             return {"created": 0, "skipped": 0, "error": str(error)}
         raw = RawItem.from_tapd(item)
-        bound = scheduler.projects.find_by_workspace(
-            item.workspace_id or client.config.workspace_id
-        ) if scheduler.projects else None
+        wid = item.workspace_id or client.config.primary_workspace_id
+        bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []
+        repo_name = bound[0].name if len(bound) == 1 else ""
+        stage_hint = (
+            f"TAPD 项目关联 {len(bound)} 个本地仓库，待确定执行仓库："
+            + "、".join(m.name for m in bound)
+            if len(bound) > 1 else ""
+        )
         try:
             _, was_created = scheduler.import_raw(
                 raw, exec_mode=cfg.get("exec_mode", "dry-run"),
-                repo_name=bound.name if bound else "",
+                repo_name=repo_name, auto_map=len(bound) != 1, stage_hint=stage_hint,
             )
         except ValueError as error:
             return {"created": 0, "skipped": 0, "error": str(error)}
@@ -546,16 +560,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/tapd/workspaces")
     async def api_tapd_workspaces(body: TapdWorkspacesBody) -> dict[str, Any]:
-        """列出 TAPD 用户参与的项目，供数据源页下拉选择 workspace_id。
+        """列出企业下的 TAPD 项目，供数据源页选择 workspace_id。
 
-        nick/company_id 从请求体取（也回退到已保存配置），凭证用当前保存的应用凭证。
+        company_id 从请求体取（也回退到已保存配置），凭证用当前保存的应用凭证。
         """
         cfg = settings.load_ui_settings().get("tapd", {})
-        nick = (body.nick or "").strip() or str(cfg.get("nick", "") or "").strip()
         company_id = (body.company_id or "").strip() or str(cfg.get("company_id", "") or "").strip()
         client, _ = make_tapd_client()
         try:
-            projects = await asyncio.to_thread(client.list_projects, nick, company_id)
+            projects = await asyncio.to_thread(client.list_projects, company_id)
         except TapdError as error:
             raise HTTPException(400, str(error)) from error
         return {"projects": projects}

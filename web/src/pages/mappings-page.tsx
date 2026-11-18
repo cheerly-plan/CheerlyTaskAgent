@@ -1,3 +1,4 @@
+import * as React from 'react';
 import {FolderGit2, Pencil, Plus, Search, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
@@ -7,10 +8,27 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Switch} from '@/components/ui/switch';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
+import {endpoints, type TapdWorkspace} from '@/lib/api';
 import {cn} from '@/lib/utils';
 
 export function MappingsPage() {
-  const {mappings, pickFolder, openScan, openMappingModal, toggleMapping, deleteMapping} = useApp();
+  const {settings, mappings, pickFolder, openScan, openMappingModal, toggleMapping, deleteMapping} = useApp();
+  const [fetchedProjects, setFetchedProjects] = React.useState<TapdWorkspace[]>([]);
+
+  // 缓存还没写进设置时，静默拉一次项目名，避免这页只显示裸项目 ID。
+  React.useEffect(() => {
+    const cid = (settings?.tapd?.company_id || '').trim();
+    if (!cid || !settings?.tapd?.api_user || fetchedProjects.length) return;
+    void endpoints.tapdWorkspaces({company_id: cid})
+      .then((result) => setFetchedProjects(result.projects ?? []))
+      .catch(() => undefined);
+  }, [settings?.tapd?.company_id, settings?.tapd?.api_user, fetchedProjects.length]);
+
+  const tapdProjects = [...(settings?.tapd?.projects ?? []), ...fetchedProjects].filter(
+    (project, index, list) => list.findIndex((item) => item.id === project.id) === index,
+  );
+  const projectLabel = (id: string) =>
+    tapdProjects.find((project) => project.id === id)?.name || id;
 
   const pickThenMap = () =>
     pickFolder((path) => {
@@ -21,6 +39,7 @@ export function MappingsPage() {
         path,
         note: '',
         enabled: true,
+        tapd_workspace_ids: [],
         tapd_workspace_id: '',
       });
     });
@@ -81,11 +100,22 @@ export function MappingsPage() {
                   </span>
                 </TableCell>
                 <TableCell>
-                  {mapping.tapd_workspace_id ? (
-                    <Badge variant="info">{mapping.tapd_workspace_id}</Badge>
-                  ) : (
-                    <span className="text-xs text-faint">—</span>
-                  )}
+                  {(() => {
+                    const ids = mapping.tapd_workspace_ids?.length
+                      ? mapping.tapd_workspace_ids
+                      : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+                    return ids.length ? (
+                      <div className="flex flex-wrap gap-1">
+                        {ids.map((id) => (
+                          <Badge key={id} variant="info" title={`项目 ID：${id}`}>
+                            {projectLabel(id)}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-faint">—</span>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">

@@ -38,13 +38,16 @@ export interface ProjectMapping {
   path: string;
   enabled: boolean;
   note: string;
-  tapd_workspace_id: string;
+  tapd_workspace_ids: string[];  // 一个 TAPD 项目可关联多个本地仓库
+  tapd_workspace_id: string;     // 兼容旧字段（第一个）
 }
 
 export interface TapdWorkspace {
   id: string;
   name: string;
   pretty_name: string;
+  /** 所属企业 ID；下拉的企业选项从已缓存项目的这个字段提取。 */
+  company_id: string;
 }
 
 export interface ModelChoice {
@@ -96,9 +99,9 @@ export interface AppConfig {
 export interface TapdSettings {
   enabled: boolean;
   base_url: string;
-  workspace_id: string;
-  nick: string;
+  workspace_id: string;  // 多选项目 ID，逗号分隔
   company_id: string;
+  projects: TapdWorkspace[];
   api_user: string;
   api_password: string;
   webhook_secret: string;
@@ -162,6 +165,7 @@ export interface MappingDraft {
   path: string;
   note: string;
   enabled?: boolean;
+  tapd_workspace_ids?: string[];
   tapd_workspace_id?: string;
 }
 
@@ -241,7 +245,7 @@ export const endpoints = {
   syncTapd: (body?: {modified_since?: string; exec_mode?: string}) =>
     api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
 
-  tapdWorkspaces: (body?: {nick?: string; company_id?: string}) =>
+  tapdWorkspaces: (body?: {company_id?: string}) =>
     api<{projects: TapdWorkspace[]}>('/api/tapd/workspaces', jsonInit('POST', body ?? {})),
 
   tapdWebhookUrl: () => `${location.origin}/api/tapd/webhook`,

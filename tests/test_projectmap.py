@@ -92,6 +92,26 @@ def test_seed_initialization(tmp_path: Path, folders):
     assert reg.resolve_text("修 seedproj") is not None
 
 
+def test_one_workspace_maps_to_multiple_local_repos(tmp_path: Path, folders):
+    """一个 TAPD 项目可关联多个本地仓库，旧的单字段仍能反查。"""
+    reg = ProjectRegistry(ProjectMappingStore(tmp_path / "projects.json"))
+    a = reg.add({
+        "name": "RepoA", "aliases": [], "path": str(folders[0]),
+        "tapd_workspace_ids": ["32312011", "755"],
+    })
+    b = reg.add({
+        "name": "RepoB", "aliases": [], "path": str(folders[1]),
+        "tapd_workspace_id": "32312011",  # 旧字段写入
+    })
+    found = reg.find_all_by_workspace("32312011")
+    assert {m.id for m in found} == {a.id, b.id}
+    assert [m.id for m in reg.find_all_by_workspace("755")] == [a.id]
+    assert reg.find_by_workspace("32312011").id == a.id
+    assert a.tapd_workspace_id == "32312011"
+    reloaded = ProjectRegistry(ProjectMappingStore(tmp_path / "projects.json"))
+    assert reloaded.get(b.id).tapd_workspace_ids == ["32312011"]
+
+
 def test_find_by_workspace_and_roundtrip(tmp_path: Path, folders):
     """tapd_workspace_id 字段能持久化，且能按 workspace 反查本地映射。"""
     store = ProjectMappingStore(tmp_path / "projects.json")
@@ -110,3 +130,24 @@ def test_find_by_workspace_and_roundtrip(tmp_path: Path, folders):
     # 字段往返
     reloaded = ProjectRegistry(ProjectMappingStore(tmp_path / "projects.json"))
     assert reloaded.get(m.id).tapd_workspace_id == "32312011"
+
+
+def test_mapping_api_persists_tapd_bindings(tmp_path):
+    """TAPD 项目绑定必须随映射一起保存（此前被请求模型静默丢弃）。"""
+    from fastapi.testclient import TestClient
+
+    from taskagent.api import create_app
+    from taskagent.config import Settings
+
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/mappings",
+            json={"name": "Demo", "path": str(tmp_path), "tapd_workspace_ids": ["32312011", "1001"]},
+        )
+        assert created.status_code == 201
+        assert created.json()["tapd_workspace_ids"] == ["32312011", "1001"]
+
+        listed = client.get("/api/mappings").json()["mappings"]
+        assert listed[0]["tapd_workspace_ids"] == ["32312011", "1001"]
+        assert listed[0]["tapd_workspace_id"] == "32312011"
