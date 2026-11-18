@@ -98,3 +98,16 @@ export function cliDefaultLabel(
   const current = models.find((model) => model.current);
   return current ? `跟随 CLI 当前（${current.label}）` : '由 CLI 决定';
 }
+
+/** 模型分类标题：账号/CLI 自带 vs 用户自己配置。 */
+export function modelCategory(model: {custom?: boolean}): string {
+  return model.custom ? '自定义模型' : '内置模型';
+}
+
+/**
+ * 分组展示时按「内置 → 自定义」排序（组内保持原顺序）。
+ * Array#sort 是稳定排序，因此不会打乱后端给的优先级（current/default 在前）。
+ */
+export function sortModelsByCategory<T extends {custom?: boolean}>(models: T[]): T[] {
+  return [...models].sort((a, b) => Number(Boolean(a.custom)) - Number(Boolean(b.custom)));
+}

@@ -14,7 +14,14 @@ import {
 import {Textarea} from '@/components/ui/textarea';
 import {Field, SelectField} from '@/components/select-field';
 import type {BackendInfo, Kind, ModelChoice, ProjectMapping} from '@/lib/api';
-import {canonicalModelId, effectiveDefaultModelId, modelHint, modelMatches} from '@/lib/utils';
+import {
+  canonicalModelId,
+  effectiveDefaultModelId,
+  modelCategory,
+  modelHint,
+  modelMatches,
+  sortModelsByCategory,
+} from '@/lib/utils';
 
 export interface ManualTaskDraft {
   title: string;
@@ -92,10 +99,11 @@ export function NewTaskDialog({
   // 模型选项必须来自「当前选中的后端」：codebuddy 与 DSH 的模型集合完全不同，
   // 混用会出现「选了 DSH 却列出 codebuddy 模型」的错配。
   const backendModels = backendInfo?.models?.length ? backendInfo.models : models;
-  const modelOptions = backendModels.map((model) => ({
+  const modelOptions = sortModelsByCategory(backendModels).map((model) => ({
     value: model.id,
-    label: model.custom ? `${model.label}（自定义）` : model.label,
+    label: model.label,
     hint: modelHint(model, modelMatches(model, defaultModel) ? '全局默认' : undefined),
+    group: modelCategory(model),
   }));
 
   const repoOptions = mappings.map((mapping) => ({

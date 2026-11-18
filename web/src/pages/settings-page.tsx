@@ -9,7 +9,14 @@ import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {Switch} from '@/components/ui/switch';
 import type {BackendConfig, ModelChoice, UISettings} from '@/lib/api';
-import {canonicalModelId, cliDefaultLabel, modelHint, modelMatches} from '@/lib/utils';
+import {
+  canonicalModelId,
+  cliDefaultLabel,
+  modelCategory,
+  modelHint,
+  modelMatches,
+  sortModelsByCategory,
+} from '@/lib/utils';
 
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
@@ -181,10 +188,11 @@ export function SettingsPage() {
                               placeholder={cliDefault}
                               options={[
                                 {value: '', label: cliDefault},
-                                ...backendModels.map((model) => ({
+                                ...sortModelsByCategory(backendModels).map((model) => ({
                                   value: model.id,
-                                  label: model.custom ? `${model.label ?? model.id}（自定义）` : (model.label ?? model.id),
+                                  label: model.label ?? model.id,
                                   hint: modelHint(model),
+                                  group: modelCategory(model),
                                 })),
                                 // 当前已保存的模型若不在动态列表里（含别名），仍保留以免丢失
                                 ...(current.model && !backendModels.some((model) => modelMatches(model, current.model))

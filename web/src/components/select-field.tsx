@@ -3,7 +3,9 @@ import * as React from 'react';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
@@ -20,6 +22,8 @@ export interface SelectFieldOption {
   label: string;
   hint?: string;
   disabled?: boolean;
+  /** 分组标题；仅当选项里出现多个分组时才渲染标题，避免单项分组成为噪音。 */
+  group?: string;
 }
 
 interface SelectFieldProps {
@@ -49,6 +53,14 @@ export function SelectField({
   onOpenChange,
 }: SelectFieldProps) {
   const current = options.find((option) => option.value === value);
+  const groups = new Set(options.map((option) => option.group).filter(Boolean));
+  const showGroups = groups.size > 1;
+  const blocks: {group?: string; items: SelectFieldOption[]}[] = [];
+  for (const option of options) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.group === option.group) last.items.push(option);
+    else blocks.push({group: option.group, items: [option]});
+  }
   return (
     <Select
       value={value === '' ? EMPTY_VALUE : value}
@@ -66,19 +78,32 @@ export function SelectField({
         </SelectValue>
       </SelectTrigger>
       <SelectContent className="max-h-[min(320px,var(--radix-select-content-available-height))]">
-        {options.map((option) => (
-          <SelectItem
-            key={option.value === '' ? EMPTY_VALUE : option.value}
-            value={option.value === '' ? EMPTY_VALUE : option.value}
-            disabled={option.disabled}
-            className="text-[13px]"
-          >
-            <span className="flex min-w-0 flex-col">
-              <span className="truncate">{option.label}</span>
-              {option.hint ? <span className="truncate text-[11px] text-faint">{option.hint}</span> : null}
-            </span>
-          </SelectItem>
-        ))}
+        {blocks.map((block) => {
+          const items = block.items.map((option) => (
+            <SelectItem
+              key={option.value === '' ? EMPTY_VALUE : option.value}
+              value={option.value === '' ? EMPTY_VALUE : option.value}
+              disabled={option.disabled}
+              className="text-[13px]"
+            >
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate">{option.label}</span>
+                {option.hint ? (
+                  <span className="truncate text-[11px] text-faint">{option.hint}</span>
+                ) : null}
+              </span>
+            </SelectItem>
+          ));
+          if (!showGroups || !block.group) return <React.Fragment key={`g-${block.group ?? 'none'}-${block.items[0].value}`}>{items}</React.Fragment>;
+          return (
+            <SelectGroup key={`group-${block.group}`}>
+              <SelectLabel className="px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-wide text-faint">
+                {block.group}
+              </SelectLabel>
+              {items}
+            </SelectGroup>
+          );
+        })}
       </SelectContent>
     </Select>
   );

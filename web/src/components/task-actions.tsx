@@ -4,7 +4,7 @@ import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {ACTIVE_STATUSES, TERMINAL_STATUSES} from '@/lib/labels';
-import {effectiveDefaultModelId, modelHint} from '@/lib/utils';
+import {effectiveDefaultModelId, modelCategory, modelHint, sortModelsByCategory} from '@/lib/utils';
 
 export interface ActionSelection {
   map?: string;
@@ -59,11 +59,12 @@ export function TaskActions({
   // 任务一定带具体模型：已选 > 工单已有 > 后端默认/current/第一个。无空选项。
   const fallbackModel = effectiveDefaultModelId(modelList, backend?.default_model);
   const selectedModel = selection.model || item.model || fallbackModel;
-  // 自定义模型（models.json / 手写网关）加后缀区分，不与 CLI 内置模型混为一谈。
-  const modelOptions = modelList.map((model) => ({
+  // 按「内置 / 自定义」分组展示，组内保持后端给的优先级。
+  const modelOptions = sortModelsByCategory(modelList).map((model) => ({
     value: model.id,
-    label: model.custom ? `${model.label ?? model.id}（自定义）` : (model.label ?? model.id),
+    label: model.label ?? model.id,
     hint: modelHint(model),
+    group: modelCategory(model),
   }));
 
   return (
