@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from . import dsh_profile
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
 
 ProgressFn = Callable[[float, str], None]
@@ -49,10 +50,11 @@ class Executor(ABC):
     label: str = ""
     model: str | None = None
 
-    # Whether this CLI accepts a per-run model override (``--model <id>``).
-    # Backends that pin their model inside a config profile (DSH) set this to
-    # False: the flag does not exist, so passing it would be rejected or
-    # silently ignored — the UI must not offer a choice it cannot honour.
+    # Whether this CLI accepts a per-run model override. Most backends use
+    # ``--model <id>``; DSH has no such flag and expresses the choice through a
+    # generated ``--patch`` overlay instead (see ``DshExecutor``). Backends that
+    # genuinely cannot override their model set this to False and the UI shows
+    # the fixed model read-only.
     supports_model_selection: bool = True
 
     @abstractmethod
@@ -67,8 +69,13 @@ class Executor(ABC):
     @abstractmethod
     def build_command(self, item: WorkItem) -> list[str]: ...
 
-    def list_models(self) -> list[str]:
-        """Discover the model IDs this backend supports (empty = unknown)."""
+    def list_models(self) -> list[dict[str, Any]]:
+        """Discover models this backend supports: ``[{id, label, ...}, ...]``.
+
+        ``label`` is the human-facing name (falls back to ``id``); optional
+        ``vendor`` / ``context`` may be present for backends that expose them.
+        Empty list = unknown; the UI then offers free-text entry.
+        """
         return []
 
     def changed_files(self, worktree: Path) -> list[str]:
@@ -261,25 +268,34 @@ class CodeBuddyExecutor(Executor):
         """
         return _no_execution_detected(stdout)
 
-    def list_models(self) -> list[str]:
-        """Discover the model IDs this backend's CLI currently supports.
+    def list_models(self) -> list[dict[str, Any]]:
+        """Discover the models this backend's CLI supports, as ``[{id, label, ...}]``.
 
-        Two CLI conventions are probed, in order:
+        Sources are probed in priority order, richest first:
 
-        1. **codebuddy-style**: ``--help`` advertises a ``--model <model>``
-           option whose parenthesised list enumerates the supported IDs.
-        2. **dsh-style** (DeepSeek Harness): the model is fixed in the profile,
-           exposed via ``--profile headless --dump-config`` as an
-           ``agent-default-model`` plugin entry (``model: <id>``). It is a
-           single fixed model, not a selectable list.
+        1. **codebuddy local model cache** — ``~/.codebuddy/models.json``'s
+           ``availableModels``, or the ``data.models`` array cached under
+           ``~/.codebuddy/local_storage/*.info``. This is structured JSON with
+           ``id / name / vendor / maxInputTokens``, so the UI can show human
+           names and context windows, and it needs no CLI round-trip.
+        2. **codebuddy-style ``--help``** — the ``--model <model>`` option
+           advertises the supported IDs in parentheses.
+        3. **dsh-style** (DeepSeek Harness) — the model is fixed in the profile
+           (``--profile headless --dump-config`` → ``agent-default-model``).
 
-        Returns an empty list when the CLI is missing or neither convention
-        matches — the UI then shows "由 CLI 决定" instead of a stale,
-        hand-written set of IDs.
+        Each entry carries ``id`` and ``label`` (the model's human ``name``,
+        falling back to ``id``), plus optional ``vendor`` and ``context``
+        (max input tokens). Returns an empty list when nothing is found — the
+        UI then falls back to a free-text input.
         """
+        # 1) codebuddy local model cache (structured, no CLI call).
+        cached = self._models_from_local_cache()
+        if cached:
+            return self._dedupe_models(self._mark_current(cached))
+
         import subprocess
 
-        # 1) codebuddy-style: --model list in --help.
+        # 2) codebuddy-style: --model list in --help.
         try:
             proc = subprocess.run(
                 [self.command, "--help"],
@@ -301,9 +317,11 @@ class CodeBuddyExecutor(Executor):
             ]
             models = [mid for mid in ids if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", mid)]
             if models:
-                return models
+                return self._dedupe_models(
+                    self._mark_current([{"id": mid, "label": mid} for mid in models])
+                )
 
-        # 2) dsh-style: fixed model in --profile headless --dump-config.
+        # 3) dsh-style: fixed model in --profile headless --dump-config.
         try:
             proc = subprocess.run(
                 [self.command, "--profile", "headless", "--dump-config"],
@@ -316,15 +334,258 @@ class CodeBuddyExecutor(Executor):
         except (OSError, subprocess.SubprocessError):
             return []
         dump_text = proc.stdout or ""
-        # Match the ``model: <id>`` line under the agent-default-model entry.
         fixed = re.search(
             r"agent-default-model.*?\n(?:\s+.*?\n)*?\s+model:\s*([A-Za-z0-9][A-Za-z0-9._-]*)",
             dump_text,
             re.DOTALL,
         )
         if fixed and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", fixed.group(1)):
-            return [fixed.group(1)]
+            return [{"id": fixed.group(1), "label": fixed.group(1)}]
         return []
+
+    def _models_from_local_cache(self) -> list[dict[str, Any]]:
+        """Read codebuddy's local model cache, if present, as structured models.
+
+        Two locations are checked, in order:
+
+        1. ``~/.codebuddy/models.json`` → ``availableModels`` array.
+        2. ``~/.codebuddy/local_storage/*.info`` → JSON files, scanned newest
+           first (hash names are unstable). Each file is either plain JSON
+           (dict, per-user list, or a bare string) or a JSON *string* holding
+           a base64-encoded gzip payload — the product-config cache. That
+           payload has a top-level ``models`` array (id/name/vendor/
+           maxInputTokens) plus ``agents[].models`` id lists.
+
+        When the cli agent declares an allowlist (``agents[].models``), only
+        those ids are returned — this matches exactly what the interactive
+        ``/model list`` shows, excluding IDE-only aliases and image/video
+        models. Only entries with a usable ``id`` are returned; ``label``
+        prefers the model's ``name``, ``context`` is ``maxInputTokens``.
+        """
+        home = Path.home()
+        candidates: list[Path] = []
+
+        # 1) models.json (stable path, newer/older conventions).
+        mj = home / ".codebuddy" / "models.json"
+        if mj.is_file():
+            candidates.append(mj)
+
+        # 2) local_storage/*.info (current codebuddy-cache location), newest
+        #    first so a fresh product config wins over stale snapshots.
+        storage = home / ".codebuddy" / "local_storage"
+        if storage.is_dir():
+            try:
+                candidates.extend(
+                    sorted(
+                        storage.glob("*.info"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            except OSError:
+                pass
+
+        for path in candidates:
+            try:
+                raw = path.read_text(encoding="utf-8")
+                data = json.loads(raw)
+            except (OSError, ValueError):
+                continue
+
+            # Unwrap per-user shape: [{"userId": ..., "data": {"models": [...]}}].
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and isinstance(item.get("data"), dict):
+                        found = self._models_from_cache_payload(item["data"])
+                        if found:
+                            return found
+                continue
+
+            # Gzip+base64 payload stored as a JSON string ("H4sI…" = gzip magic).
+            if isinstance(data, str):
+                decoded = self._decode_gzip_json(data)
+                if isinstance(decoded, dict):
+                    found = self._models_from_cache_payload(decoded)
+                    if found:
+                        return found
+                continue  # e.g. a bare marker string like "internal"
+
+            if not isinstance(data, dict):
+                continue
+            found = self._models_from_cache_payload(data)
+            if found:
+                return found
+        return []
+
+    @staticmethod
+    def _decode_gzip_json(text: str) -> Any:
+        """Decode a base64 gzip JSON string; None when it isn't one."""
+        if not text.startswith("H4sI"):
+            return None
+        import base64
+        import gzip
+
+        try:
+            return json.loads(gzip.decompress(base64.b64decode(text)))
+        except (ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _cli_model_allowlist(data: dict[str, Any]) -> list[str]:
+        """Ids the cli agent declares usable, in display order — the
+        ``/model list`` view.
+
+        ``agents`` is a list of agent configs; the cli agent carries
+        ``name == "cli"`` (or a ``cli`` tag) and a ``models`` id array.
+        Returns an empty list when no such declaration exists, meaning
+        "no filtering" rather than "nothing allowed".
+        """
+        agents = data.get("agents")
+        if not isinstance(agents, list):
+            return []
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            tags = agent.get("tags")
+            is_cli = agent.get("name") == "cli" or (
+                isinstance(tags, list) and "cli" in tags
+            )
+            models = agent.get("models")
+            if is_cli and isinstance(models, list):
+                return list(dict.fromkeys(
+                    m.strip() for m in models if isinstance(m, str) and m.strip()
+                ))
+        return []
+
+    @classmethod
+    def _models_from_cache_payload(cls, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract structured models from a cache payload dict.
+
+        Supports both ``availableModels`` (models.json) and ``models``
+        (local_storage / product config) keys. Each model is a dict with at
+        least an ``id``. When a cli-agent allowlist exists, results are
+        filtered to it and kept in the allowlist's order so the UI mirrors
+        the interactive ``/model list`` exactly.
+        """
+        models = data.get("availableModels") or data.get("models")
+        if not isinstance(models, list):
+            return []
+        by_id: dict[str, dict[str, Any]] = {}
+        for m in models:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("id")
+            if not isinstance(mid, str) or not mid.strip():
+                continue
+            mid = mid.strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", mid):
+                continue
+            label = str(m.get("name") or "").strip() or mid
+            entry: dict[str, Any] = {"id": mid, "label": label}
+            vendor = m.get("vendor")
+            if isinstance(vendor, str) and vendor.strip():
+                entry["vendor"] = vendor.strip()
+            context = m.get("maxInputTokens")
+            if isinstance(context, int):
+                entry["context"] = context
+            by_id.setdefault(mid, entry)
+
+        allowed = cls._cli_model_allowlist(data)
+        if allowed:
+            # Keep the allowlist's order; ids missing from the models array
+            # still count — the CLI accepts them, we just lack metadata.
+            return [by_id.get(mid, {"id": mid, "label": mid}) for mid in allowed]
+        return list(by_id.values())
+
+    @staticmethod
+    def _dedupe_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Collapse entries that share the same display label and context.
+
+        codebuddy advertises aliases like ``hy4flash-free`` / ``hy4flash``
+        that both display as "Hy4 flash" with the same context window — the
+        UI should show one option, not two identical rows. The first id in
+        the source order wins (allowlist order = /model list order); the
+        dropped aliases are kept in ``aliases`` so a saved default pointing
+        at an alias can still be matched to its canonical entry.
+        """
+        seen: dict[tuple[str, Any], dict[str, Any]] = {}
+        result: list[dict[str, Any]] = []
+        for m in models:
+            key = (str(m.get("label", "")).strip().lower(), m.get("context"))
+            kept = seen.get(key)
+            if kept is None:
+                entry = dict(m)
+                seen[key] = entry
+                result.append(entry)
+            else:
+                kept.setdefault("aliases", []).append(m["id"])
+                if m.get("current"):
+                    kept["current"] = True
+        return result
+
+    def _mark_current(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Flag the model codebuddy used most recently with ``current: True``.
+
+        codebuddy writes every assistant turn into
+        ``~/.codebuddy/projects/<project>/<session>.jsonl``; the record's
+        ``providerData`` carries ``requestModelId`` / ``requestModelName``.
+        The newest session file's last such record is the model the user is
+        actually on (their interactive terminal included). Best-effort: any
+        read/parse failure just leaves the list unmarked.
+        """
+        current_id = self._current_model_from_sessions()
+        if not current_id:
+            return models
+        norm = current_id.replace("-", "").lower()
+        for m in models:
+            mid_norm = str(m["id"]).replace("-", "").lower()
+            label_norm = str(m.get("label", "")).replace("-", "").replace(" ", "").lower()
+            if mid_norm == norm or label_norm == norm:
+                m["current"] = True
+                break
+        return models
+
+    @staticmethod
+    def _current_model_from_sessions() -> str | None:
+        """Read ``requestModelId`` from the newest codebuddy session record."""
+        projects = Path.home() / ".codebuddy" / "projects"
+        if not projects.is_dir():
+            return None
+        try:
+            files = sorted(
+                projects.glob("*/*.jsonl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return None
+        for path in files[:3]:
+            try:
+                # Session files can be large; read the tail only — the last
+                # assistant turn is what we want.
+                with path.open("rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    size = fh.tell()
+                    fh.seek(max(0, size - 256 * 1024))
+                    tail = fh.read().decode("utf-8", errors="ignore")
+            except OSError:
+                continue
+            found: str | None = None
+            for line in tail.splitlines():
+                if "requestModelId" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue  # first tail line may be truncated
+                pd = rec.get("providerData")
+                if isinstance(pd, dict):
+                    mid = pd.get("requestModelId") or pd.get("requestModelName")
+                    if isinstance(mid, str) and mid.strip():
+                        found = mid.strip()
+            if found:
+                return found
+        return None
 
     def build_command(self, item: WorkItem) -> list[str]:
         argv = [
@@ -1071,15 +1332,20 @@ class CodeBuddyExecutor(Executor):
 
 
 class DshExecutor(CodeBuddyExecutor):
+    """DSH (DeepSeek Harness) backend.
+
+    ``dsh --profile headless`` has no ``--model`` flag: the model is pinned in
+    the profile's ``agent-default-model`` entry. It does accept ``--patch``, an
+    extra overlay applied after the profile layer, so a per-task model is
+    expressed as a small generated patch file (see ``dsh_profile``) rather than
+    a CLI flag. That keeps runs isolated — the user's own profile is untouched
+    and concurrent tasks do not fight over one global setting.
+    """
+
     backend_id = BACKEND_DSH
     label = "DSH"
     install_hint = "Configure the DSH binary path in 系统设置 → 执行后端。"
-
-    # ``dsh --profile headless`` exposes no ``--model`` flag: the model lives in
-    # the profile's ``agent-default-model`` entry. Offering a per-task choice
-    # would send a flag the CLI does not know, so selection is disabled and the
-    # UI shows the profile's pinned model instead.
-    supports_model_selection = False
+    supports_model_selection = True  # via --patch, not --model
 
     def __init__(
         self,
@@ -1092,6 +1358,11 @@ class DshExecutor(CodeBuddyExecutor):
         auto_sync: bool = True,
         backups_dir: Path | None = None,
         sync_ignore_patterns: tuple[str, ...] = (),
+        backend_id: str | None = None,
+        label: str | None = None,
+        supports_model_selection: bool | None = None,
+        patch_dir: Path | None = None,
+        profile_home: Path | None = None,
     ) -> None:
         super().__init__(
             command=command,
@@ -1102,13 +1373,147 @@ class DshExecutor(CodeBuddyExecutor):
             auto_sync=auto_sync,
             backups_dir=backups_dir,
             sync_ignore_patterns=sync_ignore_patterns,
+            backend_id=backend_id,
+            label=label,
+            supports_model_selection=supports_model_selection,
         )
+        self.patch_dir = Path(patch_dir or (self.worktrees_dir.parent / "dsh-patches"))
+        self.profile_home = Path(profile_home or dsh_profile.dsh_home())
+        self._catalog_cache: list[dsh_profile.ModelEntry] | None = None
+        self._pinned_cache: tuple[str, str] | None | bool = False  # False = not probed
+
+    # ── catalog / pinned model ────────────────────────────────────────────────
+    @property
+    def catalog(self) -> list[dsh_profile.ModelEntry]:
+        if self._catalog_cache is None:
+            self._catalog_cache = dsh_profile.load_catalog(self.profile_home)
+        return self._catalog_cache
+
+    def _pinned_target(self) -> tuple[str, str] | None:
+        """``(provider, model)`` currently pinned by the headless profile."""
+        if self._pinned_cache is not False:
+            return self._pinned_cache  # type: ignore[return-value]
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                [self.command, "--profile", "headless", "--dump-config"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=self._clean_env(),
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        text = (proc.stdout or "") if proc is not None else ""
+        found = re.search(
+            r"id:\s*agent-default-model.*?\n((?:\s+.*\n)*?)(?=- id:|\Z)", text
+        )
+        provider = model = ""
+        if found:
+            block = found.group(1)
+            provider_match = re.search(r"^\s+provider:\s*([A-Za-z0-9._-]+)", block, re.MULTILINE)
+            model_match = re.search(r"^\s+model:\s*([A-Za-z0-9._-]+)", block, re.MULTILINE)
+            provider = provider_match.group(1) if provider_match else ""
+            model = model_match.group(1) if model_match else ""
+        self._pinned_cache = (provider, model) if provider and model else None
+        return self._pinned_cache  # type: ignore[return-value]
+
+    def list_models(self) -> list[dict[str, Any]]:
+        """Pinned model first, then everything the profile layers declare."""
+        entries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        target = self._pinned_target()
+        if target:
+            entries.append({"id": target[1], "label": target[1]})
+            seen.add(target[1])
+        for entry in self.catalog:
+            if entry.model_id in seen:
+                continue
+            seen.add(entry.model_id)
+            item: dict[str, Any] = {"id": entry.model_id, "label": entry.label or entry.model_id}
+            if entry.provider:
+                item["vendor"] = entry.provider
+            entries.append(item)
+        return entries
+
+    # ── per-run model override ────────────────────────────────────────────────
+    def _patch_path(self, item: WorkItem) -> Path:
+        return self.patch_dir / f"{dsh_profile.safe_patch_name(item.id)}.yml"
+
+    def _write_patch(self, item: WorkItem, model: str) -> Path:
+        entry = dsh_profile.resolve_entry(self.catalog, model)
+        pinned = self._pinned_target()
+        provider = entry.provider if entry else (pinned[0] if pinned else "")
+        if not provider:
+            provider = "deepseek-official"
+        model_id = entry.model_id if entry else model
+        text = dsh_profile.build_patch_yaml(
+            provider=provider,
+            model_id=model_id,
+            entry=entry,
+            # Unknown pinned provider => assume "not declared yet" and include the
+            # provider block (safer: headless may not know this gateway).
+            default_provider=pinned[0] if pinned else "",
+        )
+        path = self._patch_path(item)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def cleanup_patch(self, item_id: str) -> None:
+        try:
+            (self.patch_dir / f"{dsh_profile.safe_patch_name(item_id)}.yml").unlink()
+        except OSError:
+            pass
+
+    def build_command(self, item: WorkItem) -> list[str]:
+        argv = [
+            self.command,
+            "-p",
+            "--output-format", "json",
+            "--permission-mode", self.permission_mode,
+        ]
+        model = item.model or self.model
+        if model and self.supports_model_selection:
+            argv += ["--patch", str(self._write_patch(item, model))]
+        argv.append(build_prompt(item))
+        return argv
+
+    async def run(
+        self,
+        item: WorkItem,
+        *,
+        progress: ProgressFn,
+        should_cancel: ShouldCancelFn,
+    ) -> RunResult:
+        try:
+            return await super().run(item, progress=progress, should_cancel=should_cancel)
+        finally:
+            # The overlay only matters while the CLI is starting up.
+            self.cleanup_patch(item.id)
+
+    def _clean_env(self) -> dict[str, str]:
+        """Expose DSH_HOME and the provider credentials its config refers to."""
+        env = super()._clean_env()
+        for name in ("DSH_HOME", "QWEN_TOKEN_PLAN_API_KEY", *(
+            entry.api_key_env for entry in self.catalog
+        )):
+            if name and name in os.environ:
+                env[name] = os.environ[name]
+        return env
 
 
 _EXECUTOR_CLASSES: dict[str, type[CodeBuddyExecutor]] = {
     BACKEND_CODEBUDDY: CodeBuddyExecutor,
     BACKEND_DSH: DshExecutor,
 }
+
+
+def executor_class(backend_id: str) -> type[CodeBuddyExecutor]:
+    """Concrete executor class for an id (unknown ids use the generic one)."""
+    return _EXECUTOR_CLASSES.get(backend_id, CodeBuddyExecutor)
 
 
 def backend_supports_model_selection(backend_id: str) -> bool:

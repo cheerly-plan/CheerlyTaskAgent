@@ -8,7 +8,8 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {Switch} from '@/components/ui/switch';
-import type {BackendConfig, UISettings} from '@/lib/api';
+import type {BackendConfig, ModelChoice, UISettings} from '@/lib/api';
+import {canonicalModelId, modelHint, modelMatches} from '@/lib/utils';
 
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
@@ -30,7 +31,7 @@ export function SettingsPage() {
   // 每个后端各自的模型列表（来自各自 CLI 探测），缺失时为空。
   // 必须在提前 return 之前声明，避免 Hooks 调用顺序不一致。
   const modelsByBackend = React.useMemo(() => {
-    const map: Record<string, string[]> = {};
+    const map: Record<string, ModelChoice[]> = {};
     for (const info of backendInfos) {
       map[info.id] = info.models ?? [];
     }
@@ -147,7 +148,7 @@ export function SettingsPage() {
                     const info = backendInfos.find((entry) => entry.id === id);
                     // 有些 CLI（DSH）没有 --model：模型钉在它自己的 profile 里，只读展示。
                     const canPickModel = info?.model_selection !== false;
-                    const pinnedName = (info?.models ?? [])[0] ?? '';
+                    const pinnedName = (info?.models ?? [])[0]?.id ?? '';
                     return (
                       <tr key={id} className="border-b border-border/70 align-middle last:border-0">
                         <td className="px-4 py-3">
@@ -171,13 +172,18 @@ export function SettingsPage() {
                             <SelectField
                               size="sm"
                               className="w-full"
-                              value={current.model}
+                              value={canonicalModelId(modelsByBackend[id] ?? [], current.model)}
                               placeholder="由 CLI 决定"
                               options={[
                                 {value: '', label: '由 CLI 决定'},
-                                ...(modelsByBackend[id] ?? []).map((mid) => ({value: mid, label: mid})),
-                                // 当前已保存的模型若不在动态列表里，仍保留以免丢失
-                                ...(current.model && !(modelsByBackend[id] ?? []).includes(current.model)
+                                ...(modelsByBackend[id] ?? []).map((model) => ({
+                                  value: model.id,
+                                  label: model.label ?? model.id,
+                                  hint: modelHint(model),
+                                })),
+                                // 当前已保存的模型若不在动态列表里（含别名），仍保留以免丢失
+                                ...(current.model &&
+                                !(modelsByBackend[id] ?? []).some((model) => modelMatches(model, current.model))
                                   ? [{value: current.model, label: current.model}]
                                   : []),
                               ]}

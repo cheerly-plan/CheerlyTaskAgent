@@ -4,6 +4,7 @@ import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {ACTIVE_STATUSES, TERMINAL_STATUSES} from '@/lib/labels';
+import {defaultModelLabel, modelHint} from '@/lib/utils';
 
 export interface ActionSelection {
   map?: string;
@@ -49,10 +50,15 @@ export function TaskActions({
   const backend = backends.find((entry) => entry.id === item.executor);
   const canPickModel = backend?.model_selection !== false;
   const backendModels = backend?.models?.length ? backend.models : null;
-  const pinnedModel = !canPickModel ? backendModels?.[0] ?? '' : '';
+  const pinnedModel = !canPickModel ? backendModels?.[0]?.id ?? '' : '';
+  const modelList = backendModels ?? models;
   const modelOptions = [
-    {value: '', label: '默认（跟随全局）'},
-    ...(backendModels ?? models.map((model) => model.id)).map((id) => ({value: id, label: id})),
+    {value: '', label: defaultModelLabel(modelList, backend?.default_model)},
+    ...modelList.map((model) => ({
+      value: model.id,
+      label: model.label ?? model.id,
+      hint: modelHint(model),
+    })),
   ];
 
   return (

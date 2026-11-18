@@ -44,6 +44,14 @@ export interface ProjectMapping {
 export interface ModelChoice {
   id: string;
   label: string;
+  /** 厂商标识（可选，来自本地模型缓存）。 */
+  vendor?: string;
+  /** 上下文窗口上限（max input tokens，可选）。 */
+  context?: number;
+  /** 去重时折叠掉的等价别名 id（如 hy4flash-free / hy4flash 同为 Hy4 flash）。 */
+  aliases?: string[];
+  /** codebuddy 最近一次会话实际使用的模型。 */
+  current?: boolean;
 }
 
 export interface BackendInfo {
@@ -51,13 +59,18 @@ export interface BackendInfo {
   label: string;
   command: string;
   enabled: boolean;
-  models?: string[];
+  /** 该后端可选的模型（结构化：id + 人类可读 label）。 */
+  models?: ModelChoice[];
   /**
-   * 该 CLI 是否接受按任务指定模型（`--model`）。
-   * false 表示模型钉死在自己的 profile 里（如 DSH 的 agent-default-model），
-   * 此时 UI 不应提供选择，只能展示它实际会用的模型。
+   * 该后端是否接受按任务指定模型。
+   * false 表示模型钉死在自己的 profile 里且无法覆盖，此时 UI 只读展示默认模型。
    */
   model_selection?: boolean;
+  /**
+   * 任务未指定模型时该后端回落的模型 id（profile 里配置的默认）。
+   * 空串表示无显式默认，落到 CLI 自己的默认（models 中 current 为 true 的那项）。
+   */
+  default_model?: string | null;
 }
 
 export interface AppConfig {

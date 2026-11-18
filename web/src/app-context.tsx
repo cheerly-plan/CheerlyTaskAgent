@@ -10,6 +10,7 @@ import {ScanDialog} from '@/components/dialogs/scan-dialog';
 import type {ConnState} from '@/components/app-header';
 import type {ActionSelection} from '@/components/task-actions';
 import {esc, renderMarkdown} from '@/lib/markdown';
+import {defaultModelLabel} from '@/lib/utils';
 import {
   endpoints,
   type BackendInfo,
@@ -215,19 +216,28 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       }
 
       const summary = item
-        ? [
-            '标题：' + item.title,
-            '状态：' + item.status,
-            '类型：' + item.kind + '　来源：' + item.source,
-            '项目：' + (item.repo || '未映射') + '　模式：' + item.exec_mode,
-            item.model ? '模型：' + item.model : '模型：跟随全局',
-            item.stage ? '阶段：' + item.stage : '',
-            item.error ? '错误：' + item.error : '',
-            '',
-            '该工单还没有生成报告。执行 dry-run 或 apply 后即可查看完整报告。',
-          ]
-            .filter((line) => line !== '')
-            .join('\n')
+        ? (() => {
+            const backend = item.executor
+              ? backends.find((entry) => entry.id === item.executor)
+              : undefined;
+            const backendModels = backend?.models?.length ? backend.models : models;
+            const modelLine = item.model
+              ? '模型：' + item.model
+              : '模型：' + defaultModelLabel(backendModels, backend?.default_model);
+            return [
+              '标题：' + item.title,
+              '状态：' + item.status,
+              '类型：' + item.kind + '　来源：' + item.source,
+              '项目：' + (item.repo || '未映射') + '　模式：' + item.exec_mode,
+              modelLine,
+              item.stage ? '阶段：' + item.stage : '',
+              item.error ? '错误：' + item.error : '',
+              '',
+              '该工单还没有生成报告。执行 dry-run 或 apply 后即可查看完整报告。',
+            ]
+              .filter((line) => line !== '')
+              .join('\n');
+          })()
         : '工单不存在或已被删除。';
       setReport({
         open: true,
@@ -237,7 +247,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         downloadName: '',
       });
     },
-    [items],
+    [items, backends, models],
   );
 
   const runItemAction = React.useCallback(

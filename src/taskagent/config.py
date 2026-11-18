@@ -174,24 +174,36 @@ class Settings:
             else self.data_dir / "commit-ignore.txt"
         )
 
-    def model_choices(self, discovered: list[str] | tuple[str, ...] | None = None) -> list[dict[str, str]]:
-        """Model options for the UI: ``[{id, label}, ...]``.
+    def model_choices(
+        self,
+        discovered: list[dict[str, Any]] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Model options for the UI: ``[{id, label, ...}, ...]``.
 
-        The concrete list comes from the caller (the default backend's CLI
-        discovery); ``TASKAGENT_MODELS`` narrows it further. ``discovered``
-        defaults to ``available_models`` so older callers still work, but the
-        API passes the live list from ``Executor.list_models``.
+        ``discovered`` is the live list from ``Executor.list_models`` — either
+        structured ``[{id, label, vendor, context}]`` entries (local cache) or
+        bare id strings (``--help`` fallback). ``TASKAGENT_MODELS`` narrows it
+        further when set. Falls back to ``available_models`` when ``discovered``
+        is None (older callers).
         """
-        base: tuple[str, ...]
-        if discovered is not None:
-            base = tuple(discovered)
-        else:
-            base = self.available_models
+        if discovered is None:
+            return [{"id": mid, "label": mid} for mid in self.available_models]
+
+        # Normalise both structured dicts and bare id strings to dict entries.
+        entries: list[dict[str, Any]] = []
+        for item in discovered:
+            if isinstance(item, str):
+                entries.append({"id": item, "label": item})
+            elif isinstance(item, dict) and item.get("id"):
+                entries.append(item)
+
         if self.available_models:
             # TASKAGENT_MODELS is an allow-list: keep only ids the operator listed.
             allowed = set(self.available_models)
-            base = tuple(mid for mid in base if mid in allowed) or self.available_models
-        return [{"id": mid, "label": mid} for mid in base]
+            entries = [e for e in entries if e["id"] in allowed]
+            if not entries:
+                entries = [{"id": mid, "label": mid} for mid in self.available_models]
+        return entries
 
     @property
     def default_model(self) -> str | None:

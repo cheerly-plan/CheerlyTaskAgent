@@ -5,6 +5,7 @@ import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {sourceLabel} from '@/lib/labels';
+import {defaultModelLabel} from '@/lib/utils';
 
 interface TaskCardProps {
   item: WorkItem;
@@ -30,7 +31,7 @@ export function TaskCard({
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
   const backend = backends.find((entry) => entry.id === item.executor);
   const modelLocked = backend?.model_selection === false;
-  const pinnedModel = modelLocked ? backend?.models?.[0] : undefined;
+  const pinnedModel = modelLocked ? backend?.models?.[0]?.id : undefined;
   return (
     <div
       role="button"
@@ -80,7 +81,9 @@ export function TaskCard({
             profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
           </Badge>
         ) : (
-          <Badge variant="muted">全局模型</Badge>
+          <Badge variant="muted">
+            {defaultModelLabel(backend?.models?.length ? backend.models : models, backend?.default_model)}
+          </Badge>
         )}
         {dryDone ? <Badge variant="warning">待 apply</Badge> : null}
       </div>

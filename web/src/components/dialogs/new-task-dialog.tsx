@@ -14,6 +14,7 @@ import {
 import {Textarea} from '@/components/ui/textarea';
 import {Field, SelectField} from '@/components/select-field';
 import type {BackendInfo, Kind, ModelChoice, ProjectMapping} from '@/lib/api';
+import {canonicalModelId, defaultModelLabel, modelHint, modelMatches} from '@/lib/utils';
 
 export interface ManualTaskDraft {
   title: string;
@@ -56,21 +57,23 @@ export function NewTaskDialog({
   const firstExecutor = backendOptions[0]?.value ?? 'codebuddy';
 
   // 每次打开都重置草稿；模型/后端预填系统设置里真正保存的值，避免歧义。
+  // 已保存值若是被去重折叠的别名（如 hy4flash），归一到规范 id 才能选中。
   React.useEffect(() => {
-    if (open) setManual({...EMPTY_MANUAL, executor: firstExecutor, model: defaultModel});
-  }, [open, defaultModel, firstExecutor]);
+    if (open)
+      setManual({...EMPTY_MANUAL, executor: firstExecutor, model: canonicalModelId(models, defaultModel)});
+  }, [open, defaultModel, firstExecutor, models]);
 
   // 该后端把模型钉在自己的 profile 里（model_selection === false）时，不给假的选项。
   const backendInfo = backends.find((backend) => backend.id === manual.executor);
   const canPickModel = backendInfo?.model_selection !== false;
-  const pinnedModel = !canPickModel ? backendInfo?.models?.[0] : undefined;
+  const pinnedModel = !canPickModel ? backendInfo?.models?.[0]?.id : undefined;
 
   const modelOptions = [
-    {value: '', label: '跟随后端默认'},
+    {value: '', label: defaultModelLabel(models, backendInfo?.default_model ?? defaultModel)},
     ...models.map((model) => ({
       value: model.id,
       label: model.label,
-      hint: model.id === defaultModel ? '全局默认' : undefined,
+      hint: modelHint(model, modelMatches(model, defaultModel) ? '全局默认' : undefined),
     })),
   ];
 

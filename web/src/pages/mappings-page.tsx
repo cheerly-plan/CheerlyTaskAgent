@@ -30,9 +30,6 @@ export function MappingsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div>
           <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">项目映射</h3>
-          <p className="mt-0.5 text-xs leading-relaxed text-foreground/70">
-            统一维护「项目名 / 别名 → 本地路径」与仓库信息；邮件或手动输入出现别名即命中，增删改实时生效。
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={pickThenMap}>

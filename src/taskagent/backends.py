@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from .commitfilter import load_extra_patterns
 from .config import Settings
-from .executor import CodeBuddyExecutor, ExecutorRegistry, backend_supports_model_selection
+from .executor import (
+    CodeBuddyExecutor,
+    ExecutorRegistry,
+    backend_supports_model_selection,
+    executor_class,
+)
 
 
 def build_registry(
@@ -49,7 +54,12 @@ def build_registry(
         if not isinstance(profile, dict):
             continue
         command = profile.get("command") or ""
-        executors[backend_id] = CodeBuddyExecutor(
+        klass = executor_class(backend_id)
+        extra: dict[str, object] = {}
+        if klass is not CodeBuddyExecutor:
+            # Backends with a CLI-specific model protocol (DSH: --patch overlay).
+            extra["patch_dir"] = settings.data_dir / "dsh-patches"
+        executors[backend_id] = klass(
             backend_id=backend_id,
             label=str(profile.get("label") or "") or backend_id,
             command=command,
@@ -57,6 +67,7 @@ def build_registry(
             model=(profile.get("model") or None),
             supports_model_selection=backend_supports_model_selection(backend_id),
             auto_sync=bool(profile.get("auto_sync", settings.auto_sync)),
+            **extra,
             **common,
         )
     return ExecutorRegistry(executors, default_backend_id=default_backend)  # type: ignore[arg-type]
@@ -77,15 +88,26 @@ def describe_backends(settings: Settings, registry: ExecutorRegistry | None = No
         profile = profiles.get(info["id"]) or {}
         executor = registry.get(info["id"])
         try:
-            models = executor.list_models() if executor is not None else []
+            raw_models = executor.list_models() if executor is not None else []
         except (OSError, ValueError, RuntimeError):
-            models = []
+            raw_models = []
+        # One contract for every backend: [{id, label, ...}]. Executors may still
+        # return bare id strings (older CLIs discovered via --help).
+        models = [
+            entry if isinstance(entry, dict) and entry.get("id")
+            else {"id": str(entry), "label": str(entry)}
+            for entry in raw_models
+        ]
         result.append({
             **info,
             "enabled": bool(profile.get("enabled", False)),
             "models": models,
-            # False => the CLI has no --model flag; the only model it can run is
-            # the one pinned in its own profile (``models[0]`` when discovered).
+            # False => the CLI cannot override its model at all; the UI then
+            # only shows the one pinned in its own profile (``models[0]``).
             "model_selection": bool(getattr(executor, "supports_model_selection", True)),
+            # The model this backend falls back to when a task doesn't pick one.
+            # Empty string => no explicit default; the CLI's own default (the
+            # one flagged ``current`` in ``models``) applies instead.
+            "default_model": str(profile.get("model") or ""),
         })
     return result

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from taskagent import dsh_profile
 from taskagent.api import create_app
 from taskagent.backends import build_registry, describe_backends
 from taskagent.config import Settings
@@ -35,20 +38,71 @@ def test_two_backends_implement_uniform_interface(tmp_path):
     assert registry.resolve("does-not-exist").backend_id == BACKEND_CODEBUDDY
 
 
-def test_dsh_never_passes_model_flag(tmp_path):
-    """dsh --profile headless has no --model: never leak the flag to it.
+def test_dsh_uses_patch_overlay_instead_of_model_flag(tmp_path):
+    """dsh --profile headless has no --model: the choice goes through --patch.
 
-    The model is pinned in the profile's agent-default-model entry, so a
-    per-task choice cannot be honoured even though the UI used to offer one.
+    The overlay is a per-run file, so concurrent tasks cannot fight over one
+    profile setting, and the user's own profile is never modified.
     """
-    dsh = DshExecutor(command="dsh", worktrees_dir=tmp_path / "wt", model="deepseek-flash")
-    item = WorkItem.create(title="t", description="d", kind="task", model="deepseek-v4-pro")
-    assert "--model" not in dsh.build_command(item)
-    assert dsh.supports_model_selection is False
+    profiles = tmp_path / "profiles" / "desktop"
+    profiles.mkdir(parents=True)
+    (profiles / "cordis.patch.yml").write_text(
+        "- id: llm-pi-ai\n"
+        '  name: "@deepseek-ai/dsh-llm-pi-ai"\n'
+        "  config:\n"
+        "    providers:\n"
+        "      qwen-token-plan:\n"
+        "        baseURL: https://example.invalid/v1\n"
+        "        apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY\n"
+        "        models:\n"
+        "          - id: deepseek-v4-pro\n"
+        "            name: DeepSeek V4 Pro\n",
+        encoding="utf-8",
+    )
 
-    cb = CodeBuddyExecutor(command="codebuddy", worktrees_dir=tmp_path / "wt")
-    assert "--model" in cb.build_command(item)
-    assert cb.supports_model_selection is True
+    dsh = DshExecutor(
+        command="/bin/true",
+        worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches",
+        profile_home=tmp_path,
+    )
+    item = WorkItem.create(title="t", description="d", kind="task", model="deepseek-v4-pro")
+    argv = dsh.build_command(item)
+
+    assert "--model" not in argv
+    assert "--patch" in argv
+    patch_file = Path(argv[argv.index("--patch") + 1])
+    assert patch_file.is_file()
+    text = patch_file.read_text(encoding="utf-8")
+    assert "model: deepseek-v4-pro" in text
+    assert "provider: qwen-token-plan" in text
+
+    models = {entry["id"] for entry in dsh.list_models()}
+    assert "deepseek-v4-pro" in models
+
+    dsh.cleanup_patch(item.id)
+    assert not patch_file.exists()
+
+
+def test_dsh_patch_includes_provider_when_not_default(tmp_path):
+    """A gateway the headless profile doesn't know must be re-declared."""
+    entry = dsh_profile.ModelEntry(
+        provider="qwen-token-plan",
+        model_id="kimi-k2.7-code",
+        label="Kimi K2.7 Code",
+        base_url="https://example.invalid/v1",
+        api_key_env="QWEN_TOKEN_PLAN_API_KEY",
+    )
+    text = dsh_profile.build_patch_yaml(
+        provider=entry.provider,
+        model_id=entry.model_id,
+        entry=entry,
+        default_provider="deepseek-official",
+    )
+    assert "llm-pi-ai" in text
+    assert "baseURL: https://example.invalid/v1" in text
+    assert "apiKeyEnv: QWEN_TOKEN_PLAN_API_KEY" in text
+    assert "model: kimi-k2.7-code" in text
 
 
 def test_describe_backends_flags_model_selection(tmp_path):
@@ -63,7 +117,8 @@ def test_describe_backends_flags_model_selection(tmp_path):
     })
     described = {d["id"]: d for d in describe_backends(s, build_registry(s))}
     assert described["codebuddy"]["model_selection"] is True
-    assert described["dsh"]["model_selection"] is False
+    # DSH can select a model, but through a --patch overlay rather than --model.
+    assert described["dsh"]["model_selection"] is True
 
 
 def test_build_registry_reads_per_type_profiles(tmp_path):
@@ -205,3 +260,182 @@ def test_codebuddy_can_be_removed(tmp_path):
     assert loaded["executor"] == "dsh"
     registry = build_registry(s)
     assert "codebuddy" not in registry.ids()
+
+
+def test_list_models_reads_local_cache_structured():
+    """list_models parses codebuddy's cached model list into {id, label, context}."""
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+
+    # availableModels shape (models.json).
+    payload = {
+        "availableModels": [
+            {"id": "deepseek-v4-pro", "name": "DeepSeek-V4-Pro", "vendor": "f", "maxInputTokens": 1000000},
+            {"id": "glm-5.3", "name": "GLM-5.3", "vendor": "e", "maxInputTokens": 1000000},
+        ]
+    }
+    found = ex._models_from_cache_payload(payload)
+    assert [m["id"] for m in found] == ["deepseek-v4-pro", "glm-5.3"]
+    assert found[0]["label"] == "DeepSeek-V4-Pro"
+    assert found[0]["context"] == 1000000
+    assert found[0]["vendor"] == "f"
+
+    # models shape (local_storage). Label falls back to id when name missing.
+    payload2 = {"models": [{"id": "kimi-k3-1", "maxInputTokens": 1000000}]}
+    found2 = ex._models_from_cache_payload(payload2)
+    assert found2 == [{"id": "kimi-k3-1", "label": "kimi-k3-1", "context": 1000000}]
+
+    # entries without a usable id are skipped.
+    payload3 = {"models": [{"name": "no-id"}, "bare-string", {"id": ""}]}
+    assert ex._models_from_cache_payload(payload3) == []
+
+
+def test_list_models_reads_local_storage_file(monkeypatch, tmp_path):
+    """_models_from_local_cache scans ~/.codebuddy/local_storage/*.info."""
+    home = tmp_path / "home"
+    storage = home / ".codebuddy" / "local_storage"
+    storage.mkdir(parents=True)
+    (storage / "entry_aaa.info").write_text(
+        json.dumps([{"userId": "u1", "data": {"models": [
+            {"id": "deepseek-v4.1-flash", "name": "DeepSeek-V4.1-Flash", "maxInputTokens": 1000000},
+        ]}}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    found = ex._models_from_local_cache()
+    assert [m["id"] for m in found] == ["deepseek-v4.1-flash"]
+    assert found[0]["label"] == "DeepSeek-V4.1-Flash"
+
+
+def test_list_models_reads_gzip_product_config(monkeypatch, tmp_path):
+    """The real cache shape: a JSON string holding base64 gzip product config.
+
+    The config's top-level ``models`` carries rich metadata while the cli
+    agent's ``models`` array is the /model list allowlist — results must be
+    filtered to it and follow its order.
+    """
+    import base64
+    import gzip
+
+    home = tmp_path / "home"
+    storage = home / ".codebuddy" / "local_storage"
+    storage.mkdir(parents=True)
+
+    config = {
+        "models": [
+            {"id": "default", "name": "Default", "maxInputTokens": 200000},
+            {"id": "glm-5.3", "name": "GLM-5.3", "vendor": "e", "maxInputTokens": 1000000},
+            {"id": "hy4flash", "name": "Hy4 flash", "vendor": "v", "maxInputTokens": 960000},
+            {"id": "kling-video-v3", "name": "Kling-Video-V3"},
+        ],
+        "agents": [
+            {"name": "cli", "tags": ["cli", "default"], "models": ["hy4flash", "glm-5.3"]},
+            {"name": "lite-agent", "models": ["lite"]},
+        ],
+    }
+    packed = base64.b64encode(gzip.compress(json.dumps(config).encode())).decode()
+    # A bare marker string sorts before the payload alphabetically; the
+    # scanner must skip it instead of crashing or stopping early.
+    (storage / "entry_aaa.info").write_text(json.dumps("internal"), encoding="utf-8")
+    (storage / "entry_zzz.info").write_text(json.dumps(packed), encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    found = ex._models_from_local_cache()
+    assert [m["id"] for m in found] == ["hy4flash", "glm-5.3"]
+    assert found[0] == {"id": "hy4flash", "label": "Hy4 flash", "vendor": "v", "context": 960000}
+    assert found[1]["label"] == "GLM-5.3"
+    assert found[1]["context"] == 1000000
+
+
+def test_dedupe_models_collapses_same_label_and_context():
+    """hy4flash-free / hy4flash both display "Hy4 flash" — one row, alias kept."""
+    models = [
+        {"id": "hy4flash-free", "label": "Hy4 flash", "context": 960000},
+        {"id": "hy4flash", "label": "Hy4 flash", "context": 960000},
+        {"id": "glm-5.3", "label": "GLM-5.3", "context": 1000000},
+        # Same label but different context must NOT collapse.
+        {"id": "x-lite", "label": "GLM-5.3", "context": 200000},
+    ]
+    out = CodeBuddyExecutor._dedupe_models(models)
+    assert [m["id"] for m in out] == ["hy4flash-free", "glm-5.3", "x-lite"]
+    assert out[0]["aliases"] == ["hy4flash"]
+    assert "aliases" not in out[1]
+
+
+def test_dedupe_keeps_current_flag_from_dropped_alias():
+    """When the dropped alias is the current model, the kept entry is flagged."""
+    models = [
+        {"id": "hy4flash-free", "label": "Hy4 flash", "context": 960000},
+        {"id": "hy4flash", "label": "Hy4 flash", "context": 960000, "current": True},
+    ]
+    out = CodeBuddyExecutor._dedupe_models(models)
+    assert len(out) == 1
+    assert out[0]["id"] == "hy4flash-free"
+    assert out[0]["current"] is True
+
+
+def test_current_model_from_sessions(monkeypatch, tmp_path):
+    """Newest session's last providerData.requestModelId marks the entry."""
+    home = tmp_path / "home"
+    proj = home / ".codebuddy" / "projects" / "some-repo"
+    proj.mkdir(parents=True)
+    older = proj / "old.jsonl"
+    older.write_text(
+        json.dumps({"type": "message", "providerData": {"requestModelId": "glm-5.2"}}) + "\n",
+        encoding="utf-8",
+    )
+    newer = proj / "new.jsonl"
+    newer.write_text(
+        json.dumps({"type": "message", "providerData": {"requestModelId": "hy4flash-free"}}) + "\n"
+        + json.dumps({"type": "message", "providerData": {"requestModelId": "hy4flash"}}) + "\n",
+        encoding="utf-8",
+    )
+    os.utime(older, (1, 1))
+    os.utime(newer, (2, 2))
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    assert ex._current_model_from_sessions() == "hy4flash"
+
+    models = [
+        {"id": "hy4flash-free", "label": "Hy4 flash", "context": 960000},
+        {"id": "hy4flash", "label": "Hy4 flash", "context": 960000},
+        {"id": "glm-5.2", "label": "GLM-5.2", "context": 1000000},
+    ]
+    out = ex._dedupe_models(ex._mark_current(models))
+    assert len(out) == 2
+    assert out[0]["current"] is True
+    assert "current" not in out[1]
+
+
+def test_current_model_missing_sessions_is_noop(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    models = [{"id": "glm-5.3", "label": "GLM-5.3"}]
+    assert ex._mark_current(models) == [{"id": "glm-5.3", "label": "GLM-5.3"}]
+
+
+def test_cache_allowlist_id_without_metadata_still_listed():
+    """An allowlisted id absent from the models array still shows (id=label)."""
+    payload = {
+        "models": [{"id": "glm-5.3", "name": "GLM-5.3", "maxInputTokens": 1000000}],
+        "agents": [{"name": "cli", "models": ["glm-5.3", "brand-new-model"]}],
+    }
+    found = CodeBuddyExecutor._models_from_cache_payload(payload)
+    assert [m["id"] for m in found] == ["glm-5.3", "brand-new-model"]
+    assert found[1] == {"id": "brand-new-model", "label": "brand-new-model"}
+
+
+def test_list_models_falls_back_to_help_without_cache(monkeypatch, tmp_path):
+    """When no local cache exists, list_models falls back to --help parsing."""
+    home = tmp_path / "empty-home"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    # No cache + nonexistent CLI => empty, not a crash.
+    assert ex.list_models() == []

@@ -6,7 +6,7 @@ import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {shortTime, sourceLabel} from '@/lib/labels';
-import {cn} from '@/lib/utils';
+import {cn, defaultModelLabel} from '@/lib/utils';
 
 export type SortField = 'created' | 'title' | 'status' | 'source' | 'repo' | 'kind';
 
@@ -81,7 +81,7 @@ function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) 
   if (item.model) return <Mono>{item.model}</Mono>;
   const backend = backends.find((entry) => entry.id === item.executor);
   if (backend?.model_selection === false) {
-    const pinned = backend.models?.[0];
+    const pinned = backend.models?.[0]?.id;
     return (
       <span
         className="text-xs text-faint"
@@ -91,7 +91,11 @@ function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) 
       </span>
     );
   }
-  return <span className="text-xs text-faint">全局</span>;
+  return (
+    <span className="text-xs text-faint">
+      {defaultModelLabel(backend?.models ?? [], backend?.default_model)}
+    </span>
+  );
 }
 
 export function TaskTable({
