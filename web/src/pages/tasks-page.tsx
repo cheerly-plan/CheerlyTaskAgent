@@ -147,7 +147,7 @@ export function TasksPage() {
   };
 
   return (
-    <div>
+    <div className="flex h-full min-h-0 flex-col">
       <KpiCards
         total={items.length}
         running={counts.running}
@@ -156,9 +156,9 @@ export function TasksPage() {
         mappings={mappings.length}
       />
 
-      <Card className="overflow-hidden">
+      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* 工具栏：搜索 / 筛选 / 视图切换 */}
-        <div className="flex flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">
           <div className="relative min-w-0 flex-1 lg:max-w-[260px]">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
             <Input
@@ -293,7 +293,7 @@ export function TasksPage() {
         ) : view === 'table' ? (
           <TaskTable
             items={pageItems}
-            containerClassName="max-h-[56vh]"
+            containerClassName="min-h-0 flex-1"
             sort={sort}
             onSort={toggleSort}
             selections={selections}
@@ -306,7 +306,7 @@ export function TasksPage() {
             onProbe={(id) => ensureBackendProbe(id)}
           />
         ) : (
-          <div className="grid max-h-[56vh] gap-3 overflow-auto bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid min-h-0 flex-1 gap-3 overflow-auto bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
             {pageItems.map((item) => (
               <TaskCard
                 key={item.id}
@@ -324,7 +324,7 @@ export function TasksPage() {
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
           <span className="text-[11.5px] tabular-nums text-faint">
             共 {itemsTotal} 条
             {visible.length !== items.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
@@ -362,7 +362,7 @@ export function TasksPage() {
         </div>
       </Card>
 
-      <p className="mt-3 text-[11.5px] text-faint">
+      <p className="mt-3 shrink-0 text-[11.5px] text-faint">
         提示：点击任意行查看工单详情与执行报告；apply 会在隔离 worktree 中真实改代码，执行前需二次确认。
       </p>
     </div>

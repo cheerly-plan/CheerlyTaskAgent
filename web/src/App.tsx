@@ -24,12 +24,16 @@ function Shell() {
   const [page, setPage] = React.useState<PageKey>('tasks');
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
       <AppHeader conn={conn} connText={connText} onNewTask={openNewTask} />
 
-      <main className="mx-auto max-w-[1520px] px-5 pb-16 pt-6 lg:px-8">
-        <Tabs value={page} onValueChange={(value) => setPage(value as PageKey)}>
-          <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-transparent p-0">
+      <main className="mx-auto flex w-full max-w-[1520px] min-h-0 flex-1 flex-col px-5 pb-4 pt-6 lg:px-8">
+        <Tabs
+          value={page}
+          onValueChange={(value) => setPage(value as PageKey)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <TabsList className="h-auto w-full shrink-0 justify-start gap-6 rounded-none border-b border-border bg-transparent p-0">
             {TABS.map((tab) => (
               <TabsTrigger
                 key={tab.key}
@@ -42,16 +46,16 @@ function Shell() {
             ))}
           </TabsList>
 
-          <TabsContent value="tasks" className="mt-6">
+          <TabsContent value="tasks" className="mt-6 min-h-0 flex-1 overflow-y-auto">
             <TasksPage />
           </TabsContent>
-          <TabsContent value="mapping" className="mt-6">
+          <TabsContent value="mapping" className="mt-6 min-h-0 flex-1 overflow-y-auto">
             <MappingsPage />
           </TabsContent>
-          <TabsContent value="sources" className="mt-6">
+          <TabsContent value="sources" className="mt-6 min-h-0 flex-1 overflow-y-auto">
             <DataSourcesPage />
           </TabsContent>
-          <TabsContent value="settings" className="mt-6">
+          <TabsContent value="settings" className="mt-6 min-h-0 flex-1 overflow-y-auto">
             <SettingsPage />
           </TabsContent>
         </Tabs>
