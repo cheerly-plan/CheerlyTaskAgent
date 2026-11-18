@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,30 @@ def _default_backends() -> dict[str, dict[str, Any]]:
         ),
         "dsh": _backend_profile(label="DSH", command="dsh"),
     }
+
+
+# Desktop-app bundles ship the CLI at a stable path but rarely put it on PATH.
+# Used only when the configured command is a bare name that PATH cannot resolve,
+# so an explicit user setting is never overridden.
+KNOWN_CLI_PATHS: dict[str, tuple[str, ...]] = {
+    "dsh": (
+        "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
+        "~/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
+    ),
+}
+
+
+def discover_command(command: str) -> str:
+    """Return a usable path for ``command`` when the bare name is not on PATH."""
+    if not command or "/" in command or (os.altsep and os.altsep in command):
+        return command  # explicit path: trust the user
+    if shutil.which(command):
+        return command  # PATH resolves it; keep the portable bare name
+    for candidate in KNOWN_CLI_PATHS.get(command, ()):
+        path = Path(candidate).expanduser()
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return command
 
 
 UI_SETTINGS_DEFAULTS: dict[str, Any] = {
@@ -279,6 +304,14 @@ class Settings:
             data["backends"]["dsh"]["command"] = data.get("dsh_path") or "dsh"
             data["backends"]["codebuddy"]["model"] = data.get("default_model") or ""
             data["backends"]["codebuddy"]["auto_sync"] = bool(data.get("auto_sync", True))
+        # Desktop-app CLIs are usually not on PATH: resolve the bundle path so a
+        # fresh install works without the user pasting an absolute path.
+        for backend in data.get("backends", {}).values():
+            if isinstance(backend, dict) and backend.get("command"):
+                backend["command"] = discover_command(str(backend["command"]))
+        for flat_key in ("codebuddy_command", "dsh_path"):
+            if data.get(flat_key):
+                data[flat_key] = discover_command(str(data[flat_key]))
         return data
 
     def save_ui_settings(self, payload: dict[str, Any]) -> dict[str, Any]:

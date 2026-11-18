@@ -115,3 +115,44 @@ def test_backend_probe_reports_capability_on_demand(tmp_path):
 
         missing = client.post("/api/backends/nope/probe")
         assert missing.status_code == 404
+
+
+def test_discover_command_keeps_bare_name_when_on_path(monkeypatch):
+    """PATH resolution wins: the bare name stays portable across machines."""
+    from taskagent import config
+
+    monkeypatch.setattr(config.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert config.discover_command("dsh") == "dsh"
+
+
+def test_discover_command_falls_back_to_bundle(monkeypatch, tmp_path):
+    """Desktop-app CLIs ship outside PATH; resolve the bundle launcher."""
+    from taskagent import config
+
+    fake = tmp_path / "dsh"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(config.shutil, "which", lambda name: None)
+    monkeypatch.setitem(config.KNOWN_CLI_PATHS, "dsh", (str(fake),))
+    assert config.discover_command("dsh") == str(fake)
+
+
+def test_discover_command_trusts_explicit_path(monkeypatch):
+    from taskagent import config
+
+    monkeypatch.setattr(config.shutil, "which", lambda name: None)
+    assert config.discover_command("/opt/custom/dsh") == "/opt/custom/dsh"
+
+
+def test_load_ui_settings_resolves_bundled_cli(monkeypatch, tmp_path):
+    """A fresh install shows a usable path instead of a bare name."""
+    from taskagent import config
+
+    fake = tmp_path / "dsh"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(config.shutil, "which", lambda name: None)
+    monkeypatch.setitem(config.KNOWN_CLI_PATHS, "dsh", (str(fake),))
+
+    s = Settings(data_dir=tmp_path / "data")
+    assert s.load_ui_settings()["backends"]["dsh"]["command"] == str(fake)
