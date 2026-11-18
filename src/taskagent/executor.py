@@ -409,7 +409,11 @@ class CodeBuddyExecutor(Executor):
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict) and isinstance(data.get("models"), list):
+            if isinstance(data, list):
+                # codebuddy/workbuddy write the file as a top-level array of
+                # model objects (seen in ~/.workbuddy/models.json).
+                entries = data
+            elif isinstance(data, dict) and isinstance(data.get("models"), list):
                 entries = data["models"]
             elif isinstance(data, dict):
                 entries = list(data.values())
@@ -448,6 +452,9 @@ class CodeBuddyExecutor(Executor):
         vendor = nested.get("vendor") or entry.get("vendor")
         if isinstance(vendor, str) and vendor.strip():
             model["vendor"] = vendor.strip()
+        context = entry.get("maxInputTokens") or nested.get("maxInputTokens")
+        if isinstance(context, int) and context > 0:
+            model["context"] = context
         return model
 
     def _models_from_local_cache(self) -> list[dict[str, Any]]:

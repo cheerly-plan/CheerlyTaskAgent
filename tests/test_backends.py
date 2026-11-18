@@ -904,3 +904,23 @@ def test_known_route_patch_keeps_route_api(tmp_path):
         default_provider="deepseek-official",
     )
     assert "api:" not in text
+
+
+def test_codebuddy_reads_top_level_array_models_file(tmp_path, monkeypatch):
+    """`~/.workbuddy/models.json` is a top-level array (real-world shape)."""
+    home = tmp_path / "home"
+    (home / ".workbuddy").mkdir(parents=True)
+    (home / ".workbuddy" / "models.json").write_text(
+        '[{"id": "qwen4-max-preview", "name": "qwen4-max-preview",'
+        ' "vendor": "Custom", "maxInputTokens": 131072}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEBUDDY_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WORKBUDDY_CONFIG_DIR", raising=False)
+
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    models = {m["id"]: m for m in ex.list_models()}
+    assert models["qwen4-max-preview"]["custom"] is True
+    assert models["qwen4-max-preview"]["vendor"] == "Custom"
+    assert models["qwen4-max-preview"]["context"] == 131072
