@@ -300,6 +300,13 @@ export function TapdSourceCard({
     toast.success(`已新增项目：${project.name}，记得点「保存」`);
   };
 
+  const toggleSelectedProject = (projectId: string) => {
+    const next = selectedIds.includes(projectId)
+      ? selectedIds.filter((id) => id !== projectId)
+      : [...selectedIds, projectId];
+    patchTapd('workspace_id', next.join(','));
+  };
+
   const removeProject = async (projectId: string) => {
     // 一次性从项目缓存和选中 workspace_id 中移除（避免连续 patchTapd 相互覆盖）。
     const nextIds = selectedIds.filter((id) => id !== projectId);
@@ -403,26 +410,45 @@ export function TapdSourceCard({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <Field label="项目" hint="项目在「拉取」弹窗里管理，这里只展示及关联的本地仓库">
+        <Field
+          label="项目"
+          hint="勾选要拉取的 TAPD 项目；改动点「保存」生效。仓库关联在「拉取」里配置。"
+        >
           <div className="flex gap-2">
             <FloatingRepoSelect
-              readOnly
               options={allSavedProjects.map((p) => ({
                 id: p.id,
                 name: p.name || p.pretty_name || p.id,
-                trailing: repoNameByProject[p.id]?.join('、') || '',
+                trailing: repoNameByProject[p.id]?.length
+                  ? repoNameByProject[p.id].join('、')
+                  : '未关联仓库',
               }))}
               selected={selectedIds}
-              onToggle={() => {}}
+              onToggle={toggleSelectedProject}
               onRemove={(id) => void removeProject(id)}
-              placeholder="未选择项目"
+              searchable
+              onSelectAll={() =>
+                patchTapd('workspace_id', allSavedProjects.map((p) => p.id).join(','))
+              }
+              onClear={() => patchTapd('workspace_id', '')}
+              placeholder="请选择要拉取的项目"
               emptyText="暂无项目，点右侧「新增」或「拉取」登记。"
             />
-            <Button variant="outline" onClick={() => setNewProjectOpen(true)} title="输入项目名称和项目 ID，并勾选管理的本地仓库">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setNewProjectOpen(true)}
+              title="输入项目名称和项目 ID，并勾选管理的本地仓库"
+            >
               <Plus />
               新增
             </Button>
-            <Button variant="outline" onClick={openPull} title="选企业、多选项目并指定各自管理的本地仓库">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openPull}
+              title="按企业拉取项目列表，多选并配置各自管理的本地仓库"
+            >
               <RefreshCw />
               拉取
             </Button>
