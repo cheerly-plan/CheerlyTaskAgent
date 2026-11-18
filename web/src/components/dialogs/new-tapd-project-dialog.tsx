@@ -1,7 +1,8 @@
 import * as React from 'react';
-import {Check, Plus} from 'lucide-react';
+import {Check, ChevronDown, Plus} from 'lucide-react';
 
 import {Button} from '@/components/ui/button';
+import {Badge} from '@/components/ui/badge';
 import {
   Dialog,
   DialogBody,
@@ -34,12 +35,14 @@ export function NewTapdProjectDialog({
   const [name, setName] = React.useState('');
   const [id, setId] = React.useState('');
   const [repoIds, setRepoIds] = React.useState<string[]>([]);
+  const [repoOpen, setRepoOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
       setName('');
       setId('');
       setRepoIds([]);
+      setRepoOpen(false);
     }
   }, [open]);
 
@@ -56,6 +59,15 @@ export function NewTapdProjectDialog({
   };
 
   const enabledMappings = mappings.filter((m) => m.enabled);
+  const selectedNames = enabledMappings
+    .filter((m) => repoIds.includes(m.id))
+    .map((m) => m.name);
+
+  const repoSummary = selectedNames.length === 0
+    ? '未关联（可留空）'
+    : selectedNames.length <= 2
+      ? selectedNames.join('、')
+      : `${selectedNames.slice(0, 2).join('、')} 等 ${selectedNames.length} 个`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -83,42 +95,57 @@ export function NewTapdProjectDialog({
           </Field>
           <Field
             label="管理的本地仓库（可选）"
-            hint={`已选 ${repoIds.length} 个；同步来的需求/缺陷会归到这些仓库。`}
+            hint="点开勾选；同步来的需求/缺陷会归到这些仓库。"
           >
-            {enabledMappings.length === 0 ? (
-              <p className="text-[11px] text-faint">暂无本地仓库映射，可先在「项目映射」页添加。</p>
-            ) : (
-              <div className="scrollbar-thin max-h-[min(40vh,280px)] space-y-1 overflow-y-auto rounded-lg border border-border p-1.5">
-                {enabledMappings.map((mapping) => {
-                  const checked = repoIds.includes(mapping.id);
-                  return (
-                    <button
-                      key={mapping.id}
-                      type="button"
-                      onClick={() => toggleRepo(mapping.id)}
-                      title={mapping.path}
-                      className={cn(
-                        'flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] transition-colors',
-                        checked ? 'bg-primary/10 text-foreground' : 'hover:bg-secondary/60',
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'flex size-4 shrink-0 items-center justify-center rounded border',
-                          checked ? 'border-primary bg-primary text-white' : 'border-border',
-                        )}
-                      >
-                        {checked ? <Check className="size-3" /> : null}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{mapping.name}</span>
-                      {mapping.path && (
-                        <span className="max-w-[45%] truncate text-[11px] text-faint">{mapping.path}</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            <div className="overflow-hidden rounded-lg border border-border">
+              <button
+                type="button"
+                onClick={() => setRepoOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12px] transition-colors hover:bg-secondary/40"
+              >
+                <span className={cn('min-w-0 flex-1 truncate', repoIds.length ? 'text-foreground' : 'text-faint')}>
+                  {repoSummary}
+                </span>
+                <Badge variant={repoIds.length ? 'success' : 'info'}>{repoIds.length}</Badge>
+                <ChevronDown className={cn('size-4 shrink-0 text-faint transition-transform', repoOpen && 'rotate-180')} />
+              </button>
+              {repoOpen && (
+                <div className="scrollbar-thin max-h-[200px] space-y-0.5 overflow-y-auto border-t border-border px-1.5 py-1.5">
+                  {enabledMappings.length === 0 ? (
+                    <p className="px-1.5 py-1 text-[11px] text-faint">暂无本地仓库映射，可先在「项目映射」页添加。</p>
+                  ) : (
+                    enabledMappings.map((mapping) => {
+                      const checked = repoIds.includes(mapping.id);
+                      return (
+                        <button
+                          key={mapping.id}
+                          type="button"
+                          onClick={() => toggleRepo(mapping.id)}
+                          title={mapping.path}
+                          className={cn(
+                            'flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] transition-colors',
+                            checked ? 'bg-primary/10 text-foreground' : 'hover:bg-secondary/60',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'flex size-4 shrink-0 items-center justify-center rounded border',
+                              checked ? 'border-primary bg-primary text-white' : 'border-border',
+                            )}
+                          >
+                            {checked ? <Check className="size-3" /> : null}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate">{mapping.name}</span>
+                          {mapping.path && (
+                            <span className="max-w-[45%] truncate text-[11px] text-faint">{mapping.path}</span>
+                          )}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
           </Field>
         </DialogBody>
         <DialogFooter>
