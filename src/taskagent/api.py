@@ -52,6 +52,11 @@ class ManualTaskBody(BaseModel):
     approved: bool = False
 
 
+class TapdWorkspacesBody(BaseModel):
+    nick: str = ""
+    company_id: str = ""
+
+
 class RunBody(BaseModel):
     exec_mode: str | None = None
     approved: bool = False
@@ -254,8 +259,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         created = skipped = 0
         for item in result.items:
             raw = RawItem.from_tapd(item)
+            # TAPD workspace 绑定的本地项目优先（两处配置统一维护）
+            bound = scheduler.projects.find_by_workspace(
+                item.workspace_id or client.config.workspace_id
+            ) if scheduler.projects else None
             try:
-                _, was_created = scheduler.import_raw(raw, exec_mode=exec_mode)
+                _, was_created = scheduler.import_raw(
+                    raw, exec_mode=exec_mode, repo_name=bound.name if bound else ""
+                )
                 if was_created:
                     created += 1
                 else:
@@ -283,8 +294,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TapdError as error:
             return {"created": 0, "skipped": 0, "error": str(error)}
         raw = RawItem.from_tapd(item)
+        bound = scheduler.projects.find_by_workspace(
+            item.workspace_id or client.config.workspace_id
+        ) if scheduler.projects else None
         try:
-            _, was_created = scheduler.import_raw(raw, exec_mode=cfg.get("exec_mode", "dry-run"))
+            _, was_created = scheduler.import_raw(
+                raw, exec_mode=cfg.get("exec_mode", "dry-run"),
+                repo_name=bound.name if bound else "",
+            )
         except ValueError as error:
             return {"created": 0, "skipped": 0, "error": str(error)}
         return {"created": 1 if was_created else 0, "skipped": 0 if was_created else 1, "error": None}
@@ -526,6 +543,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return item.to_dict()
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/tapd/workspaces")
+    async def api_tapd_workspaces(body: TapdWorkspacesBody) -> dict[str, Any]:
+        """列出 TAPD 用户参与的项目，供数据源页下拉选择 workspace_id。
+
+        nick/company_id 从请求体取（也回退到已保存配置），凭证用当前保存的应用凭证。
+        """
+        cfg = settings.load_ui_settings().get("tapd", {})
+        nick = (body.nick or "").strip() or str(cfg.get("nick", "") or "").strip()
+        company_id = (body.company_id or "").strip() or str(cfg.get("company_id", "") or "").strip()
+        client, _ = make_tapd_client()
+        try:
+            projects = await asyncio.to_thread(client.list_projects, nick, company_id)
+        except TapdError as error:
+            raise HTTPException(400, str(error)) from error
+        return {"projects": projects}
 
     @app.post("/api/tapd/sync")
     async def api_tapd_sync(body: TapdSyncBody | None = None) -> dict[str, Any]:

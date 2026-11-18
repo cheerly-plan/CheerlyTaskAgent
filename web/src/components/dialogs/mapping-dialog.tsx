@@ -29,6 +29,7 @@ interface FormState {
   aliases: string;
   path: string;
   note: string;
+  tapd_workspace_id: string;
 }
 
 const toForm = (mapping: ProjectMapping | null): FormState => ({
@@ -36,6 +37,7 @@ const toForm = (mapping: ProjectMapping | null): FormState => ({
   aliases: (mapping?.aliases ?? []).join(', '),
   path: mapping?.path ?? '',
   note: mapping?.note ?? '',
+  tapd_workspace_id: mapping?.tapd_workspace_id ?? '',
 });
 
 export function MappingDialog({open, onOpenChange, editing, onSave, onPickFolder}: MappingDialogProps) {
@@ -57,6 +59,7 @@ export function MappingDialog({open, onOpenChange, editing, onSave, onPickFolder
         .filter(Boolean),
       path: form.path.trim(),
       note: form.note.trim(),
+      tapd_workspace_id: form.tapd_workspace_id.trim(),
     });
   };
 
@@ -105,6 +108,14 @@ export function MappingDialog({open, onOpenChange, editing, onSave, onPickFolder
               value={form.note}
               placeholder="git origin 地址或说明（可选）"
               onChange={(event) => patch('note', event.target.value)}
+            />
+          </Field>
+          <Field label="关联 TAPD 项目 ID" hint="填 workspace_id 后，该项目同步来的需求直接归到此仓库">
+            <Input
+              className="font-mono"
+              value={form.tapd_workspace_id}
+              placeholder="如 32312011，可留空"
+              onChange={(event) => patch('tapd_workspace_id', event.target.value)}
             />
           </Field>
         </DialogBody>

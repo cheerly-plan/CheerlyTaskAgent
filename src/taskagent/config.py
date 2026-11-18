@@ -97,6 +97,8 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
         "workspace_id": "",
+        "nick": "",          # 英文昵称，用于拉取用户参与的项目列表（非应用 ID）
+        "company_id": "",    # 公司 ID，部分 TAPD 站点必填
         "api_user": "",
         "api_password": "",
         "webhook_secret": "",

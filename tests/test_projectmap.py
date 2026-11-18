@@ -90,3 +90,23 @@ def test_seed_initialization(tmp_path: Path, folders):
     reg = ProjectRegistry(ProjectMappingStore(tmp_path / "data" / "projects.json", seed=seed))
     assert len(reg.list()) == 1
     assert reg.resolve_text("修 seedproj") is not None
+
+
+def test_find_by_workspace_and_roundtrip(tmp_path: Path, folders):
+    """tapd_workspace_id 字段能持久化，且能按 workspace 反查本地映射。"""
+    store = ProjectMappingStore(tmp_path / "projects.json")
+    reg = ProjectRegistry(store)
+    m = reg.add({
+        "name": "BoundProj", "aliases": ["bound"],
+        "path": str(folders[0]), "tapd_workspace_id": "32312011",
+    })
+    # 反查命中
+    found = reg.find_by_workspace("32312011")
+    assert found is not None and found.id == m.id
+    assert reg.find_by_workspace("999") is None
+    # 停用后不再命中
+    reg.update(m.id, {"enabled": False})
+    assert reg.find_by_workspace("32312011") is None
+    # 字段往返
+    reloaded = ProjectRegistry(ProjectMappingStore(tmp_path / "projects.json"))
+    assert reloaded.get(m.id).tapd_workspace_id == "32312011"

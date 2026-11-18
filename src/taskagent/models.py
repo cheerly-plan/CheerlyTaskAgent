@@ -81,6 +81,7 @@ class ProjectMapping:
     path: str = ""                  # absolute local folder
     enabled: bool = True
     note: str = ""
+    tapd_workspace_id: str = ""     # 关联的 TAPD 项目 ID（双向映射）
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +91,7 @@ class ProjectMapping:
             "path": self.path,
             "enabled": self.enabled,
             "note": self.note,
+            "tapd_workspace_id": self.tapd_workspace_id,
         }
 
     def to_local_repo(self) -> LocalRepo:
@@ -108,6 +110,7 @@ class ProjectMapping:
             path=str(data.get("path", "")).strip(),
             enabled=bool(data.get("enabled", True)),
             note=str(data.get("note", "")),
+            tapd_workspace_id=str(data.get("tapd_workspace_id", "") or "").strip(),
         )
 
 

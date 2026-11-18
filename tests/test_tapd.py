@@ -8,6 +8,65 @@ from taskagent.sources import RawItem
 from taskagent.tapd import TapdClient, TapdConfig, TapdError, TapdItem
 
 
+def test_list_projects_parses_workspace_rows(monkeypatch):
+    """list_projects 把 TAPD 的 Workspace 行解析为 {id,name,pretty_name}。"""
+    cfg = TapdConfig(api_user="u", api_password="p", workspace_id="1")
+    client = TapdClient(cfg)
+    seen = {}
+
+    def fake_request(method, path, *, params=None, data=None):
+        seen["path"] = path
+        seen["params"] = params
+        return {"status": 1, "data": [
+            {"Workspace": {"id": "755", "name": "TAPD平台", "pretty_name": "tapd"}},
+            {"Workspace": {"id": "32312011", "name": "Cheerly", "pretty_name": ""}},
+            {"Workspace": {}},  # 缺 id 的行应被跳过
+        ]}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    projects = client.list_projects("  anyechen  ", " 42 ")
+    assert seen["path"] == "workspaces/user_participant_projects"
+    assert seen["params"] == {"nick": "anyechen", "company_id": "42"}
+    assert projects == [
+        {"id": "755", "name": "TAPD平台", "pretty_name": "tapd"},
+        {"id": "32312011", "name": "Cheerly", "pretty_name": ""},
+    ]
+
+
+def test_list_projects_requires_nick():
+    client = TapdClient(TapdConfig(api_user="u", api_password="p"))
+    try:
+        client.list_projects("  ")
+        assert False, "should raise"
+    except TapdError as exc:
+        assert "nick" in str(exc)
+
+
+def test_workspaces_endpoint_uses_request_body(tmp_path, monkeypatch):
+    """新端点从请求体取 nick/company_id，回退到已保存配置。"""
+    s = Settings(data_dir=tmp_path)
+    s.save_ui_settings({"tapd": {"api_user": "u", "api_password": "p", "nick": "savednick"}})
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    calls = {}
+
+    def fake_list(self, nick, company_id=""):
+        calls["nick"] = nick
+        calls["company_id"] = company_id
+        return [{"id": "1", "name": "P", "pretty_name": "p"}]
+
+    monkeypatch.setattr(TapdClient, "list_projects", fake_list)
+    with TestClient(app) as client:
+        # 请求体未给 nick -> 回退到配置里的 savednick
+        r = client.post("/api/tapd/workspaces", json={})
+        assert r.status_code == 200
+        assert r.json()["projects"][0]["id"] == "1"
+        assert calls["nick"] == "savednick"
+        # 请求体给了 nick -> 优先用请求体
+        r = client.post("/api/tapd/workspaces", json={"nick": "bodynick", "company_id": "9"})
+        assert r.status_code == 200
+        assert calls["nick"] == "bodynick" and calls["company_id"] == "9"
+
+
 def test_tapd_config_strips_whitespace_from_credentials():
     """粘贴凭证时带入的制表符/换行会被清理，否则 Basic Auth 返回 401。"""
     cfg = TapdConfig(

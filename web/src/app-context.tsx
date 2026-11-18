@@ -470,6 +470,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           enabled: tapd.enabled === true,
           base_url: (tapd.base_url || 'https://api.tapd.cn').trim(),
           workspace_id: (tapd.workspace_id || '').trim(),
+          nick: (tapd.nick || '').trim(),
+          company_id: (tapd.company_id || '').trim(),
           api_user: (tapd.api_user || '').trim(),
           api_password: (tapd.api_password || '').trim(),
           webhook_secret: (tapd.webhook_secret || '').trim(),

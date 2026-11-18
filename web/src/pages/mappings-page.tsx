@@ -22,6 +22,7 @@ export function MappingsPage() {
         path,
         note: '',
         enabled: true,
+        tapd_workspace_id: '',
       });
     });
 
@@ -61,6 +62,7 @@ export function MappingsPage() {
               <TableHead>别名</TableHead>
               <TableHead>本地路径</TableHead>
               <TableHead>仓库信息 / 备注</TableHead>
+              <TableHead>TAPD 项目</TableHead>
               <TableHead>状态</TableHead>
               <TableHead className="pr-5 text-right">操作</TableHead>
             </TableRow>
@@ -92,6 +94,13 @@ export function MappingsPage() {
                   >
                     {mapping.note || '—'}
                   </span>
+                </TableCell>
+                <TableCell>
+                  {mapping.tapd_workspace_id ? (
+                    <Badge variant="info">{mapping.tapd_workspace_id}</Badge>
+                  ) : (
+                    <span className="text-xs text-faint">—</span>
+                  )}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">

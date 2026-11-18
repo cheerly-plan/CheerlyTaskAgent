@@ -39,6 +39,13 @@ export interface ProjectMapping {
   path: string;
   enabled: boolean;
   note: string;
+  tapd_workspace_id: string;
+}
+
+export interface TapdWorkspace {
+  id: string;
+  name: string;
+  pretty_name: string;
 }
 
 export interface ModelChoice {
@@ -91,6 +98,8 @@ export interface TapdSettings {
   enabled: boolean;
   base_url: string;
   workspace_id: string;
+  nick: string;
+  company_id: string;
   api_user: string;
   api_password: string;
   webhook_secret: string;
@@ -155,6 +164,7 @@ export interface MappingDraft {
   path: string;
   note: string;
   enabled?: boolean;
+  tapd_workspace_id?: string;
 }
 
 export type ItemAction = 'map' | 'dry' | 'apply' | 'cancel' | 'delete' | 'report';
@@ -232,6 +242,9 @@ export const endpoints = {
 
   syncTapd: (body?: {modified_since?: string; exec_mode?: string}) =>
     api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
+
+  tapdWorkspaces: (body?: {nick?: string; company_id?: string}) =>
+    api<{projects: TapdWorkspace[]}>('/api/tapd/workspaces', jsonInit('POST', body ?? {})),
 
   tapdWebhookUrl: () => `${location.origin}/api/tapd/webhook`,
 

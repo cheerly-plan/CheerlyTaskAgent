@@ -57,19 +57,20 @@ flowchart LR
 | 组件 | 职责 |
 |---|---|
 | `sources.py` | `RawItem`（TAPD/manual）→ `WorkItem`。规则：标题前缀判 bug/需求、关键词兜底、正则提取 git URL、去签名/引用。`TapdSource` 把 `TapdItem` 映射为 RawItem，source_ref=`tapd:<type>:<id>` 作幂等键。`RawItem.from_email` 仅作 demo/测试的轻量构造器保留。 |
-| `tapd.py` | TAPD 开放 API 客户端（权威源）：Basic Auth（应用ID:秘钥），公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`。`GET /stories`、`GET /bugs`（workspace_id + limit≤200 + page + modified>游标 + 可选 status）分页拉取并归一化为 `TapdItem`；`fetch_one()` 供 Webhook 回源拉单条；`POST /stories|/bugs` 回填 status + current_user，`POST /comments` 写报告评论。同步阻塞 IO，调用方用 `asyncio.to_thread`；未配置/网络错误进 `TapdResult.error` 不抛崩服务。 |
+| `tapd.py` | TAPD 开放 API 客户端（权威源）：Basic Auth（应用ID:秘钥），公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`。`GET /stories`、`GET /bugs`（workspace_id + limit≤200 + page + modified>游标 + 可选 status）分页拉取并归一化为 `TapdItem`；`fetch_one()` 供 Webhook 回源拉单条；`list_projects(nick, company_id)` 调 `/workspaces/user_participant_projects` 拉用户参与的项目列表（需真人 nick，非应用 ID）供 UI 选 workspace_id；`POST /stories|/bugs` 回填 status + current_user，`POST /comments` 写报告评论。`TapdConfig.__post_init__` 统一 strip 所有字符串字段，防止复制凭证带入首尾空白导致 401。同步阻塞 IO，调用方用 `asyncio.to_thread`；未配置/网络错误进 `TapdResult.error` 不抛崩服务。 |
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
-| `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）。 |
-| `scheduler.py` | 导入去重（`source_ref`）、`create_manual`（手动指定项目直接 ready）、映射、按 `item.executor` 从 `ExecutorRegistry` 取后端派发、幂等、并发上限、退避重试、取消、事件发射。确定性代码，无 LLM。 |
+| `projectmap.py` | 用户维护的「项目名/别名 → 本地文件夹」映射（`data/projects.json`），中文子串/英文词边界匹配、多命中取最长、可停用。`ProjectMapping` 带 `tapd_workspace_id`，`find_by_workspace()` 供 TAPD 建单时反查绑定的本地仓库——实现 TAPD 项目 ↔ 本地映射双向关联（数据源页与映射页改的是同一份数据）。 |
+| `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）；`ProjectMapping.tapd_workspace_id` 记录绑定的 TAPD 项目。 |
+| `scheduler.py` | 导入去重（`source_ref`）、`create_manual`（手动指定项目直接 ready）、映射、按 `item.executor` 从 `ExecutorRegistry` 取后端派发、幂等、并发上限、退避重试、取消、事件发射。`import_raw(repo_name=...)` 支持显式指定仓库（TAPD workspace 绑定映射时优先于文本匹配）。确定性代码，无 LLM。 |
 | `executor.py` | `Executor` 统一接口（`run`/`build_command`/`changed_files`/`commit_files`/`describe`/`list_models`） + 通用机制（worktree/commit/sync/超时/取消）+ `ExecutorRegistry`（按 id 取，未知 id 回退默认后端）。**方言隔离**：每个 CLI 的四层差异（调用 / 模型发现 / 能力探测 / 成功判定）收敛到 `dialect.py` 的封闭策略库——`FlagInjector`（codebuddy 的 `--model`）、`DshPatchInjector`（DSH 覆盖层，内置逃生）、`LocalCacheCatalog`/`HelpRegexCatalog`/`ProfileYamlCatalog`、`StrictVerdict`/`NdjsonStrictVerdict`；新增 CLI = 组合已有策略，不做配置化小语言。两类都走 `<backend>` 非交互协议：`dry-run` 只生成 argv；`apply` 建 git worktree、受限权限、超时、抓 changed_files；成功后 `sync_to_repo()` 三方比较同步回主仓库。DSH 协议不同：`dsh --profile headless [--patch …] --json`，权限预设有 `read-only/workspace-write/danger-full-access` 三档（`acceptEdits` 自动映射到 `workspace-write`）。 |
 | `backends.py` | 依据持久化的 UI `backends` 配置构建 `ExecutorRegistry`（每类后端一套独立 profile：命令/模型/超时/自动同步/启用），并向 `/api/config` 输出后端清单。 |
 | `report.py` | 每单生成精简 Markdown：概览、执行结果、改动文件、自动同步明细与备份位置、错误；codebuddy 原始 stdout 只提取最终结论、提示词/命令/输出放折叠附录（`<details>`），避免动辄 10 万字符。`render_report` 也供 `/api/items/{id}/report` 实时渲染，老报告一并精简呈现（磁盘 .md 存档不动）。前端轻量 Markdown 渲染器把表格/标题/折叠块结构化展示。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
-| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；「数据源」Tab 仅 TAPD 卡——配置 workspace/API 凭证/Webhook 地址+secret/拉取类型/回填状态/定时开关 + 「立即同步」；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
+| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；「数据源」Tab 仅 TAPD 卡——配置 API 凭证、项目 ID（手填或填 nick 后「拉取项目」下拉选择）、关联本地项目映射、Webhook 地址+secret/拉取类型/回填状态/定时开关 + 「立即同步」；映射表也显示并可编辑「关联 TAPD 项目」，两处双向同步；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
 
 ## 3. 关键流程
 
-**导入**：TAPD 工单（或手动录入）→ `RawItem` → `parse_raw`：前缀【BUG】/【需求】优先分类 → 正则提取 git URL → `dedupe_key = source_ref`（`tapd:<type>:<id>` 或手动随机值）→ 已存在则跳过（幂等）→ `gitmap.resolve()` 映射本地仓库，成功 = `ready`，失败 = `discovered`（可手动映射）。
+**导入**：TAPD 工单（或手动录入）→ `RawItem` → `parse_raw`：前缀【BUG】/【需求】优先分类 → 正则提取 git URL → `dedupe_key = source_ref`（`tapd:<type>:<id>` 或手动随机值）→ 已存在则跳过（幂等）→ 映射本地仓库：若该 TAPD workspace 绑定了本地项目（`ProjectMapping.tapd_workspace_id`），直接归到该仓库（**绑定优先**）；否则 `projectmap.resolve_text()` 按别名匹配 → `gitmap.resolve()` 按 git 回退，成功 = `ready`，失败 = `discovered`（可手动映射）。
 
 **手动新建**：`create_manual(title, description, kind, repo_name)` → 用户显式指定类型与项目 → 项目映射优先解析为 `LocalRepo` → 直接置 `ready`；`dedupe_key` 为随机值，因此同名手动任务不会互相去重。界面三个入口对应：创建草稿（`run_now=false`）、创建并 dry-run、创建并 apply（`approved=true`）。
 

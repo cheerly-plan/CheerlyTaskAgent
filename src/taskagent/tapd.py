@@ -229,6 +229,31 @@ class TapdClient:
             raise TapdError(f"TAPD 找不到 {entity_type} {object_id}")
         return self._normalise(entity_type, rows[0][singular])
 
+    def list_projects(self, nick: str, company_id: str = "") -> list[dict[str, str]]:
+        """列出该用户参与的 TAPD 项目，供 UI 下拉选择 workspace_id。
+
+        TAPD 的 /workspaces/user_participant_projects 要真人 nick（不是应用 ID），
+        company_id 部分站点必填。返回 [{id, name, pretty_name}]，失败抛 TapdError。
+        """
+        if not nick.strip():
+            raise TapdError("请先填写 TAPD 英文昵称（nick）")
+        params: dict[str, Any] = {"nick": nick.strip()}
+        if company_id.strip():
+            params["company_id"] = company_id.strip()
+        payload = self._request("GET", "workspaces/user_participant_projects", params=params)
+        projects: list[dict[str, str]] = []
+        for row in payload.get("data") or []:
+            ws = (row or {}).get("Workspace") or {}
+            pid = str(ws.get("id") or "").strip()
+            if not pid:
+                continue
+            projects.append({
+                "id": pid,
+                "name": str(ws.get("name") or "").strip(),
+                "pretty_name": str(ws.get("pretty_name") or "").strip(),
+            })
+        return projects
+
     @staticmethod
     def _normalise(entity_type: str, obj: dict[str, Any]) -> TapdItem:
         def first(*keys: str) -> str:

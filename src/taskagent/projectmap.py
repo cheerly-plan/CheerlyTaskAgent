@@ -67,6 +67,16 @@ class ProjectRegistry:
     def get(self, mapping_id: str) -> ProjectMapping | None:
         return next((m for m in self._items if m.id == mapping_id), None)
 
+    def find_by_workspace(self, workspace_id: str) -> ProjectMapping | None:
+        """找到绑定到该 TAPD workspace_id 的本地项目映射（双向关联）。"""
+        wid = str(workspace_id or "").strip()
+        if not wid:
+            return None
+        return next(
+            (m for m in self._items if m.enabled and str(m.tapd_workspace_id).strip() == wid),
+            None,
+        )
+
     def add(self, data: dict) -> ProjectMapping:
         mapping = ProjectMapping.from_dict(data)
         if not mapping.name:

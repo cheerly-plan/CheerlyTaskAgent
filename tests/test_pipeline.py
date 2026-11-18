@@ -677,3 +677,31 @@ def test_recover_interrupted_items_on_restart(env):
 
     # A second pass is a no-op.
     assert scheduler.recover_interrupted() == 0
+
+
+def test_import_raw_with_bound_repo_name(env, tmp_path):
+    """TAPD workspace 绑定的本地项目名传入后，直接决定 item.repo。"""
+    scheduler, store, gitmap, events, data = env
+    from taskagent.projectmap import ProjectMappingStore, ProjectRegistry
+    # 造一个本地映射目录
+    from pathlib import Path
+    path = str(tmp_path / "bound_repo")
+    Path(path).mkdir(exist_ok=True)
+    projects = ProjectRegistry(ProjectMappingStore(data / "projects.json"))
+    projects.add({
+        "name": "BoundRepo", "aliases": ["BoundRepo"],
+        "path": path, "tapd_workspace_id": "32312011",
+    })
+    scheduler.projects = projects
+
+    raw = RawItem(
+        source=SourceType.TAPD,
+        source_ref="tapd:story:900",
+        title="完全无关的标题，文本里没有项目名",
+        body="描述也不含任何别名",
+    )
+    item, created = scheduler.import_raw(raw, repo_name="BoundRepo")
+    assert created is True
+    assert item.repo is not None and item.repo.name == "BoundRepo"
+    assert item.status == ItemStatus.READY
+    assert "绑定" in item.stage

@@ -98,12 +98,13 @@ class Scheduler:
     def import_raw(
         self, raw: RawItem, *, exec_mode: str = "dry-run",
         auto_map: bool = True, model: str | None = None,
-        executor: str | None = None,
+        executor: str | None = None, repo_name: str = "",
     ) -> tuple[WorkItem, bool]:
         """Create a WorkItem from a RawItem. Returns (item, created).
 
         Duplicate dedupe_keys are skipped (idempotent import): returns the
-        existing item with created=False.
+        existing item with created=False. When ``repo_name`` is given (e.g. the
+        local project bound to this TAPD workspace), it is resolved first.
         """
         probe = parse_raw(raw, exec_mode=exec_mode)
         probe.model = model or None
@@ -115,7 +116,17 @@ class Scheduler:
             if existing:
                 return existing, False
         item = probe
-        if auto_map:
+        if repo_name:
+            # 显式指定（来自 TAPD workspace 绑定的本地项目），优先于文本匹配
+            repo = self.projects.resolve_name(repo_name) if self.projects else None
+            repo = repo or self.gitmap.resolve(name=repo_name)
+            if repo:
+                item.repo = repo
+                item.status = ItemStatus.READY
+                item.stage = f"已按 TAPD 项目绑定映射：{repo.name}"
+            elif auto_map:
+                self._map(item)
+        elif auto_map:
             self._map(item)
         self.store.save(item)
         self._seen_keys[item.dedupe_key] = item.id
