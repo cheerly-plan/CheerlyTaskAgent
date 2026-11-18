@@ -5,7 +5,7 @@ import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {sourceLabel} from '@/lib/labels';
-import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
+import {effectiveDefaultModelId, modelMatches, resolvedModelLabel} from '@/lib/utils';
 
 interface TaskCardProps {
   item: WorkItem;
@@ -82,9 +82,11 @@ export function TaskCard({
           (() => {
             const list = backend?.models?.length ? backend.models : models;
             const modelId = item.model || effectiveDefaultModelId(list, backend?.default_model);
+            const custom = list.some((model) => modelMatches(model, modelId) && model.custom);
             return (
               <Badge variant="secondary" className="font-mono">
                 {resolvedModelLabel(list, modelId)}
+                {custom ? '（自定义）' : ''}
               </Badge>
             );
           })()

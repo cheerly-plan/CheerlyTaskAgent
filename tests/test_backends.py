@@ -754,3 +754,133 @@ def test_dsh_env_injects_stored_credentials(tmp_path, monkeypatch):
     # an explicit environment variable still wins over the stored value
     monkeypatch.setenv("QWEN_TOKEN_PLAN_API_KEY", "from-env")
     assert dsh._clean_env()["QWEN_TOKEN_PLAN_API_KEY"] == "from-env"
+
+
+# ── custom routes (agent-added) ─────────────────────────────────────────────
+
+
+def _write_custom_route_catalog(root: Path) -> None:
+    """Profile layer with a hand-declared gateway (not shipped by pi-ai)."""
+    path = root / "profiles" / "desktop"
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "cordis.patch.yml").write_text(
+        "- id: llm-pi-ai\n"
+        '  name: "@deepseek-ai/dsh-llm-pi-ai"\n'
+        "  config:\n"
+        "    providers:\n"
+        "      qwen-token-plan:\n"
+        "        models:\n"
+        "          - id: deepseek-v4-pro\n"
+        "            name: DeepSeek V4 Pro\n"
+        "      my-gateway:\n"
+        "        baseURL: https://gw.example/v1\n"
+        "        apiKeyEnv: MY_GATEWAY_KEY\n"
+        "        models:\n"
+        "          - id: my-model-1\n"
+        "            name: My Model 1\n",
+        encoding="utf-8",
+    )
+
+
+def test_dsh_flags_hand_declared_routes_as_custom(tmp_path):
+    """Built-in (shipped) routes vs user-declared gateways must be distinguishable."""
+    _write_custom_route_catalog(tmp_path)
+    ex = DshExecutor(
+        command="/bin/true", worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    models = {m["id"]: m for m in ex.list_models()}
+    assert models["deepseek-v4-pro"].get("custom") is not True
+    assert models["my-model-1"].get("custom") is True
+
+
+def test_custom_route_patch_declares_wire_api(tmp_path):
+    """Without `api:` dsh rejects an unknown route (INVALID_CONFIG), so emit it."""
+    entry = dsh_profile.ModelEntry(
+        provider="my-gateway",
+        model_id="my-model-1",
+        label="My Model 1",
+        base_url="https://gw.example/v1",
+        api_key_env="MY_GATEWAY_KEY",
+        custom=True,
+    )
+    text = dsh_profile.build_patch_yaml(
+        provider=entry.provider, model_id=entry.model_id, entry=entry,
+        default_provider="deepseek-official",
+    )
+    assert "api: openai-completions" in text
+
+
+def test_config_listing_does_not_hit_the_network(tmp_path, monkeypatch):
+    """`/api/config` must stay offline: remote discovery is probe-only."""
+    _write_custom_route_catalog(tmp_path)
+
+    def explode(*args, **kwargs):
+        raise AssertionError("network discovery ran on the config path")
+
+    monkeypatch.setattr(dsh_profile, "fetch_route_models", explode)
+    ex = DshExecutor(
+        command="/bin/true", worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    ids = {m["id"] for m in ex.list_models()}
+    assert "my-model-1" in ids and "deepseek-v4-pro" in ids  # no explosion
+
+
+def test_deep_listing_adds_remote_route_models(tmp_path, monkeypatch):
+    _write_custom_route_catalog(tmp_path)
+    monkeypatch.setattr(
+        dsh_profile,
+        "fetch_route_models",
+        lambda route, env, timeout=8.0: [
+            {"id": "router-7b", "label": "Router 7B"},
+            {"id": "router-70b", "label": "Router 70B"},
+        ],
+    )
+    ex = DshExecutor(
+        command="/bin/true", worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    shallow = {m["id"] for m in ex.list_models()}
+    deep = {m["id"]: m for m in ex.list_models_deep()}
+    assert "router-7b" not in shallow
+    assert deep["my-gateway/router-7b"]["custom"] is True
+    assert deep["my-gateway/router-70b"]["label"] == "Router 70B"
+
+
+def test_remote_discovery_uses_credential_env(tmp_path, monkeypatch):
+    """A key stored by the DSH app must authenticate the /models call too."""
+    _write_custom_route_catalog(tmp_path)
+    (tmp_path / ".credentials.yaml").write_text(
+        "refs:\n  {\n    MY_GATEWAY_KEY: from-store\n  }\n", encoding="utf-8"
+    )
+    seen: dict[str, str] = {}
+
+    def fake_fetch(route, env, timeout=8.0):
+        seen.update(env)
+        return []
+
+    monkeypatch.setattr(dsh_profile, "fetch_route_models", fake_fetch)
+    ex = DshExecutor(
+        command="/bin/true", worktrees_dir=tmp_path / "wt",
+        patch_dir=tmp_path / "patches", profile_home=tmp_path,
+    )
+    ex.list_models_deep()
+    assert seen.get("MY_GATEWAY_KEY") == "from-store"
+
+
+def test_codebuddy_merges_custom_models_file(tmp_path, monkeypatch):
+    """codebuddy's local models.json entries must appear (and be flagged)."""
+    home = tmp_path / "home"
+    (home / ".codebuddy").mkdir(parents=True)
+    (home / ".codebuddy" / "models.json").write_text(
+        '{"models": [{"id": "my-custom-model", "name": "My Custom"}]}', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEBUDDY_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WORKBUDDY_CONFIG_DIR", raising=False)
+
+    ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
+    models = {m["id"]: m for m in ex.list_models()}
+    assert models["my-custom-model"]["custom"] is True
+    assert models["my-custom-model"]["label"] == "My Custom"

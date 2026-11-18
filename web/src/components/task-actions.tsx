@@ -59,9 +59,10 @@ export function TaskActions({
   // 任务一定带具体模型：已选 > 工单已有 > 后端默认/current/第一个。无空选项。
   const fallbackModel = effectiveDefaultModelId(modelList, backend?.default_model);
   const selectedModel = selection.model || item.model || fallbackModel;
+  // 自定义模型（models.json / 手写网关）加后缀区分，不与 CLI 内置模型混为一谈。
   const modelOptions = modelList.map((model) => ({
     value: model.id,
-    label: model.label ?? model.id,
+    label: model.custom ? `${model.label ?? model.id}（自定义）` : (model.label ?? model.id),
     hint: modelHint(model),
   }));
 

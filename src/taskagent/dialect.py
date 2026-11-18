@@ -421,6 +421,7 @@ class ProfileYamlCatalog:
                 "label": entry.label or entry.model_id,
                 "vendor": entry.provider,
                 **({"context": entry.context} if entry.context else {}),
+                **({"custom": True} if entry.custom else {}),
             }
             for entry in entries
         ]
@@ -463,8 +464,33 @@ class DshPatchInjector:
 
     def argv(self, ctx: DialectContext, *, item_id: str, model: str) -> list[str]:
         home = self.profile_home or ctx.profile_home
-        catalog = dsh_profile.load_catalog(home)
+        declared: dict[str, dict[str, Any]] = {}
+        catalog = dsh_profile.load_catalog(home, providers=declared)
         entry = dsh_profile.resolve_entry(catalog, model)
+        if entry is None:
+            # A model of a hand-declared route that its patch layer did not
+            # list: rebuild the route from the declaration so the overlay
+            # re-declares endpoint, credential and protocol. ``provider/<id>``
+            # pins the route id (which may itself contain "/").
+            route, _, bare = model.partition("/")
+            if route in dsh_profile.BUILTIN_PROVIDERS:
+                bare = ""
+            if bare and route in declared:
+                entry = dsh_profile.ModelEntry(
+                    provider=route,
+                    model_id=bare,
+                    custom=True,
+                    **dsh_profile.provider_route(declared, route),
+                )
+            elif not bare and len(declared) == 1:
+                (route,) = declared
+                if route not in dsh_profile.BUILTIN_PROVIDERS:
+                    entry = dsh_profile.ModelEntry(
+                        provider=route,
+                        model_id=model,
+                        custom=True,
+                        **dsh_profile.provider_route(declared, route),
+                    )
         pinned = dsh_profile.parse_pinned_target(
             ctx.run_cli(["--profile", "headless", "--dump-config"])[1]
         )

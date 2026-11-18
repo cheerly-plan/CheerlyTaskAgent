@@ -94,7 +94,7 @@ export function NewTaskDialog({
   const backendModels = backendInfo?.models?.length ? backendInfo.models : models;
   const modelOptions = backendModels.map((model) => ({
     value: model.id,
-    label: model.label,
+    label: model.custom ? `${model.label}（自定义）` : model.label,
     hint: modelHint(model, modelMatches(model, defaultModel) ? '全局默认' : undefined),
   }));
 

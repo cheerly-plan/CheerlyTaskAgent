@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Trash2} from 'lucide-react';
+import {Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Sparkles, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {Field, SelectField} from '@/components/select-field';
@@ -150,6 +150,10 @@ export function SettingsPage() {
                     const canPickModel = info?.model_selection !== false;
                     const pinnedName = (info?.models ?? []).find((model) => model.current)?.id ?? '';
                     const cliDefault = cliDefaultLabel(modelsByBackend[id] ?? []);
+                    // 自定义模型 = 用户在 CLI 里自己配置的（codebuddy 的 models.json、
+                    // DSH 手写网关路由），与 CLI 自带的内置模型分开统计与标注。
+                    const backendModels = modelsByBackend[id] ?? [];
+                    const customModels = backendModels.filter((model) => model.custom);
                     return (
                       <tr key={id} className="border-b border-border/70 align-middle last:border-0">
                         <td className="px-4 py-3">
@@ -173,18 +177,17 @@ export function SettingsPage() {
                             <SelectField
                               size="sm"
                               className="w-full"
-                              value={canonicalModelId(modelsByBackend[id] ?? [], current.model)}
+                              value={canonicalModelId(backendModels, current.model)}
                               placeholder={cliDefault}
                               options={[
                                 {value: '', label: cliDefault},
-                                ...(modelsByBackend[id] ?? []).map((model) => ({
+                                ...backendModels.map((model) => ({
                                   value: model.id,
-                                  label: model.label ?? model.id,
+                                  label: model.custom ? `${model.label ?? model.id}（自定义）` : (model.label ?? model.id),
                                   hint: modelHint(model),
                                 })),
                                 // 当前已保存的模型若不在动态列表里（含别名），仍保留以免丢失
-                                ...(current.model &&
-                                !(modelsByBackend[id] ?? []).some((model) => modelMatches(model, current.model))
+                                ...(current.model && !backendModels.some((model) => modelMatches(model, current.model))
                                   ? [{value: current.model, label: current.model}]
                                   : []),
                               ]}
@@ -205,6 +208,18 @@ export function SettingsPage() {
                               </span>
                             </div>
                           )}
+                          {canPickModel && backendModels.length > 0 ? (
+                            <div
+                              className="mt-1 flex items-center gap-1 text-[11px] text-faint"
+                              title={customModels.length ? `自定义：${customModels.map((model) => model.label).join('、')}` : undefined}
+                            >
+                              <Sparkles className={customModels.length ? 'size-3 text-[#6d3fc0]' : 'size-3'} />
+                              <span>
+                                内置 {backendModels.length - customModels.length} · 自定义{' '}
+                                {customModels.length}
+                              </span>
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-4 py-3">
                           <Input

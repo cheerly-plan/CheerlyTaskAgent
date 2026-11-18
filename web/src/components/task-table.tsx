@@ -6,7 +6,7 @@ import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {shortTime, sourceLabel} from '@/lib/labels';
-import {cn, effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
+import {cn, effectiveDefaultModelId, modelMatches, resolvedModelLabel} from '@/lib/utils';
 
 export type SortField = 'created' | 'title' | 'status' | 'source' | 'repo' | 'kind';
 
@@ -91,8 +91,19 @@ function ModelCell({item, backends}: {item: WorkItem; backends: BackendInfo[]}) 
       </span>
     );
   }
-  const modelId = item.model || effectiveDefaultModelId(backend?.models ?? [], backend?.default_model);
-  return <Mono>{resolvedModelLabel(backend?.models ?? [], modelId)}</Mono>;
+  const list = backend?.models ?? [];
+  const modelId = item.model || effectiveDefaultModelId(list, backend?.default_model);
+  const custom = list.some((model) => modelMatches(model, modelId) && model.custom);
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Mono>{resolvedModelLabel(list, modelId)}</Mono>
+      {custom ? (
+        <Badge variant="purple" title="用户在 CLI 中自行配置的模型">
+          自定义
+        </Badge>
+      ) : null}
+    </span>
+  );
 }
 
 export function TaskTable({

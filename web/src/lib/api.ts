@@ -52,6 +52,11 @@ export interface ModelChoice {
   aliases?: string[];
   /** codebuddy 最近一次会话实际使用的模型。 */
   current?: boolean;
+  /**
+   * 自定义模型：用户自己声明的（codebuddy 的 models.json / DSH 手写网关路由），
+   * 而非 CLI 自带的内置模型。UI 据此在选项里标注「自定义」。
+   */
+  custom?: boolean;
 }
 
 export interface BackendInfo {

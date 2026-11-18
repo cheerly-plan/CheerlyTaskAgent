@@ -296,9 +296,18 @@ class CodeBuddyExecutor(Executor):
 
         Each entry carries ``id`` and ``label`` (the model's human ``name``,
         falling back to ``id``), plus optional ``vendor`` and ``context``
-        (max input tokens). Returns an empty list when nothing is found — the
-        UI then falls back to a free-text input.
+        (max input tokens) and ``custom: True`` for a model the user declared
+        locally (``models.json``) rather than one the CLI's server catalog
+        ships. Returns an empty list when nothing is found — the UI then falls
+        back to a free-text input.
         """
+        # Custom models (``~/.codebuddy/models.json`` etc.) are appended whatever
+        # the server catalog says — they only exist locally — and flagged so the
+        # UI can tell them apart from the CLI's own built-in list.
+        return self._merge_custom_models(self._discover_models())
+
+    def _discover_models(self) -> list[dict[str, Any]]:
+        """The CLI's own model list (cache → --help → dsh dump), untagged."""
         # 1) codebuddy local model cache (structured, no CLI call).
         cached = self._models_from_local_cache()
         if cached:
@@ -353,6 +362,93 @@ class CodeBuddyExecutor(Executor):
         if fixed and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", fixed.group(1)):
             return [{"id": fixed.group(1), "label": fixed.group(1)}]
         return []
+
+    def _merge_custom_models(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Append locally-defined custom models, flagging them ``custom: True``."""
+        merged = [dict(model) for model in models]
+        seen = {str(model.get("id")) for model in merged}
+        for custom in self._models_from_custom_file():
+            existing = next((m for m in merged if m.get("id") == custom["id"]), None)
+            if existing is not None:
+                # A custom entry reusing a built-in model's id overrides it, so
+                # it is the one the CLI actually selects.
+                existing.update(custom)
+                existing["custom"] = True
+                continue
+            seen.add(custom["id"])
+            merged.append({**custom, "custom": True})
+        return merged
+
+    @staticmethod
+    def _models_from_custom_file() -> list[dict[str, Any]]:
+        """Models the user declared in codebuddy's ``models.json``.
+
+        codebuddy reads user-level custom models from ``models.json``
+        (``CODEBUDDY_CONFIG_DIR`` / ``WORKBUDDY_CONFIG_DIR`` override the
+        directory) and project-level ones from ``<cwd>/.codebuddy/models.json``.
+        These never appear in the server product config, which is why they were
+        missing from the picker. The format is either ``{"models": [...]}`` or a
+        bare ``{"buffer_id": {...}}`` map; entries may nest their endpoint under
+        ``options``, ``config`` or ``model``.
+        """
+        home = Path.home()
+        candidates = [home / ".codebuddy" / "models.json"]
+        for var, default in (
+            ("CODEBUDDY_CONFIG_DIR", ".codebuddy"),
+            ("WORKBUDDY_CONFIG_DIR", ".workbuddy"),
+        ):
+            root = os.environ.get(var, "").strip()
+            if root:
+                candidates.insert(0, Path(root).expanduser() / "models.json")
+            elif default != ".codebuddy":
+                candidates.append(home / default / "models.json")
+
+        models: list[dict[str, Any]] = []
+        for path in candidates:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and isinstance(data.get("models"), list):
+                entries = data["models"]
+            elif isinstance(data, dict):
+                entries = list(data.values())
+            else:
+                continue
+            for entry in entries:
+                model = CodeBuddyExecutor._custom_model_entry(entry)
+                if model is not None:
+                    models.append(model)
+        return models
+
+    @staticmethod
+    def _custom_model_entry(entry: Any) -> dict[str, Any] | None:
+        """Normalise one models.json entry to ``{id, label, vendor?, ...}``."""
+        if not isinstance(entry, dict):
+            return None
+        nested = next(
+            (
+                value
+                for value in (entry.get("options"), entry.get("config"), entry.get("model"))
+                if isinstance(value, dict)
+            ),
+            {},
+        )
+        buffer_id = entry.get("buffer_id")
+        model_id = (
+            buffer_id if isinstance(buffer_id, str) and buffer_id.strip() else None
+        ) or nested.get("id") or entry.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            return None
+        model_id = model_id.strip()
+        model: dict[str, Any] = {
+            "id": model_id,
+            "label": str(nested.get("name") or entry.get("name") or "").strip() or model_id,
+        }
+        vendor = nested.get("vendor") or entry.get("vendor")
+        if isinstance(vendor, str) and vendor.strip():
+            model["vendor"] = vendor.strip()
+        return model
 
     def _models_from_local_cache(self) -> list[dict[str, Any]]:
         """Read codebuddy's local model cache, if present, as structured models.
@@ -1393,6 +1489,7 @@ class DshExecutor(CodeBuddyExecutor):
         # CLI silently ignores must all degrade to "read-only model" instead of
         # accepting a choice we cannot honour.
         self._capability: bool | None = None
+        self._remote_models_cache: list[dict[str, Any]] | None = None
         # Builtin escape hatch: no --model flag, so the choice arrives as a
         # generated overlay. The probe re-composes the config to prove the
         # overlay is not silently ignored.
@@ -1420,6 +1517,13 @@ class DshExecutor(CodeBuddyExecutor):
         if self._catalog_cache is None:
             self._catalog_cache = dsh_profile.load_catalog(self.profile_home)
         return self._catalog_cache
+
+    @property
+    def declared_providers(self) -> dict[str, dict[str, Any]]:
+        """Every route declared in the profile layers (with models or not)."""
+        declared: dict[str, dict[str, Any]] = {}
+        dsh_profile.load_catalog(self.profile_home, providers=declared)
+        return declared
 
     def _pinned_target(self) -> tuple[str, str] | None:
         """``(provider, model)`` currently pinned by the headless profile."""
@@ -1454,8 +1558,14 @@ class DshExecutor(CodeBuddyExecutor):
         """Overlay-based selection only counts if composing really changes it."""
         return self.dialect.capability(self._dialect_ctx(), self.list_models())
 
-    def list_models(self) -> list[dict[str, Any]]:
-        """Pinned model first, then everything the profile layers declare."""
+    def list_models(self, *, deep: bool = False) -> list[dict[str, Any]]:
+        """Pinned model first, then everything the profile layers declare.
+
+        Routes the bundled pi-ai catalog does not ship (custom gateways) are
+        also asked for their models over the wire (``GET {baseURL}/models``),
+        so models added only on the gateway side still show up. Such entries
+        carry ``custom: True`` and are addressed as ``<route>/<model id>``.
+        """
         # Deliberately NOT probing capability here: probing runs the CLI twice
         # more, and every /api/config call would pay it. The UI asks for it
         # once, the first time the user opens a model picker (POST …/probe).
@@ -1476,6 +1586,8 @@ class DshExecutor(CodeBuddyExecutor):
                 pinned["vendor"] = provider
             if entry and entry.context:
                 pinned["context"] = entry.context
+            if entry and entry.custom:
+                pinned["custom"] = True
             entries.append(pinned)
             seen.add(pinned_id)
         for entry in self.catalog:
@@ -1487,8 +1599,60 @@ class DshExecutor(CodeBuddyExecutor):
                 item["vendor"] = entry.provider
             if entry.context:
                 item["context"] = entry.context
+            if entry.custom:
+                item["custom"] = True
             entries.append(item)
+        if deep:
+            entries.extend(self._models_from_custom_routes(seen))
         return entries
+
+    def _models_from_custom_routes(self, seen: set[str]) -> list[dict[str, Any]]:
+        """Ask the hand-declared route which models its endpoint serves.
+
+        The profile layers do not list them, so the per-run overlay has to
+        invent the route's ``models`` entry; ``DshPatchInjector`` does that for
+        ``<route>/<id>`` ids. The route is the one ``discovery_route`` names.
+        """
+        found: list[dict[str, Any]] = []
+        for cached in self._remote_route_models():
+            model_id = f"{cached['route']}/{cached['id']}"
+            if cached["id"] in seen or model_id in seen:
+                continue
+            seen.add(cached["id"])
+            seen.add(model_id)
+            found.append(
+                {**{k: v for k, v in cached.items() if k != "route"}, "id": model_id}
+            )
+        return found
+
+    def _remote_route_models(self) -> list[dict[str, Any]]:
+        """Cached ``GET /models`` result for the custom route (best-effort).
+
+        Deliberately lazy: this is network I/O, so it only runs for the deep
+        listing the probe endpoint asks for — never on ``/api/config``.
+        """
+        if self._remote_models_cache is not None:
+            return self._remote_models_cache
+        declared = self.declared_providers
+        route = dsh_profile.discovery_route(declared)
+        if not route:
+            self._remote_models_cache = []
+            return self._remote_models_cache
+        fetched = dsh_profile.fetch_route_models(
+            dsh_profile.provider_route(declared, route), self._clean_env()
+        )
+        self._remote_models_cache = [
+            {**model, "route": route, "vendor": route, "custom": True} for model in fetched
+        ]
+        return self._remote_models_cache
+
+    def list_models_deep(self) -> list[dict[str, Any]]:
+        """Model list including remote-discovered custom-route models.
+
+        Used by the on-demand probe endpoint only, so a slow/unreachable
+        gateway can never delay the config response the UI loads first.
+        """
+        return self.list_models(deep=True)
 
     # ── per-run model override ────────────────────────────────────────────────
     def _patch_path(self, item: WorkItem) -> Path:

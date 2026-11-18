@@ -462,7 +462,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             capable = bool(check()) if callable(check) else bool(
                 getattr(executor, "supports_model_selection", True)
             )
-            models = executor.list_models()
+            deep = getattr(executor, "list_models_deep", None)
+            models = deep() if callable(deep) else executor.list_models()
         except (OSError, ValueError, RuntimeError) as error:  # never 500 the UI
             logger.warning("探测后端 %s 失败：%s", backend_id, error)
             return {"id": backend_id, "model_selection": False, "models": [], "error": str(error)}

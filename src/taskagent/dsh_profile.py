@@ -24,7 +24,12 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ModelEntry:
-    """One selectable model and the provider it must run under."""
+    """One selectable model and the provider it must run under.
+
+    ``custom`` marks a model whose provider route pi-ai does not ship (a
+    hand-declared gateway), i.e. one the user added rather than the bundled
+    catalog; the UI uses it to tell built-in models from custom ones.
+    """
 
     provider: str
     model_id: str
@@ -32,6 +37,23 @@ class ModelEntry:
     base_url: str = ""
     api_key_env: str = ""
     context: int | None = None
+    custom: bool = False
+
+
+# Provider routes shipped by pi-ai's bundled catalog (``PROVIDER_DATA`` in
+# ``@deepseek-ai/dsh-llm-pi-ai``). A route name outside this list cannot reuse
+# a catalog provider and must declare ``api`` itself.
+BUILTIN_PROVIDERS: frozenset[str] = frozenset({
+    "amazon-bedrock", "ant-ling", "anthropic", "azure", "baseten", "cerebras",
+    "cloudflare-ai-gateway", "cloudflare-workers-ai", "deepseek", "fireworks",
+    "github-copilot", "google", "google-vertex", "groq", "huggingface",
+    "kimi-coding", "meta", "minimax", "minimax-cn", "mistral", "moonshotai",
+    "moonshotai-cn", "nvidia", "openai", "openai-codex", "opencode",
+    "opencode-go", "openrouter", "qwen-token-plan", "qwen-token-plan-cn",
+    "qwen-token-plan-individual", "radius", "together", "typesafe",
+    "vercel-ai-gateway", "xai", "xiaomi", "xiaomi-token-plan-ams",
+    "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "zai", "zai-coding-cn",
+})
 
 
 def dsh_home() -> Path:
@@ -149,18 +171,24 @@ def parse_patch(text: str) -> list[dict[str, Any]]:
 
 
 # ── catalog ──────────────────────────────────────────────────────────────────
-def load_catalog(home: Path | None = None) -> list[ModelEntry]:
+def load_catalog(
+    home: Path | None = None, providers: dict[str, dict[str, Any]] | None = None
+) -> list[ModelEntry]:
     """Collect selectable models declared across the profile patch layers.
 
     Later profiles (alphabetical) win on duplicate ``provider/model`` pairs, and
     a provider's ``baseURL`` / ``apiKeyEnv`` is remembered so a per-run patch can
     re-declare it when the headless profile does not have it.
+
+    ``providers`` may receive every declared route (name → ``{base_url,
+    api_key_env}``) so a per-run patch can re-declare a route whose models were
+    not listed in the patch layers.
     """
     root = (home or dsh_home()) / "profiles"
     if not root.is_dir():
         return []
 
-    providers: dict[str, dict[str, Any]] = {}
+    declared_providers: dict[str, dict[str, Any]] = {}
     seen: dict[tuple[str, str], ModelEntry] = {}
 
     for patch_file in sorted(root.glob("*/cordis.patch.yml")):
@@ -178,7 +206,7 @@ def load_catalog(home: Path | None = None) -> list[ModelEntry]:
             for name, provider_config in declared.items():
                 if not isinstance(provider_config, dict):
                     continue
-                slot = providers.setdefault(name, {"base_url": "", "api_key_env": ""})
+                slot = declared_providers.setdefault(name, {"base_url": "", "api_key_env": ""})
                 if provider_config.get("baseURL"):
                     slot["base_url"] = str(provider_config["baseURL"])
                 if provider_config.get("apiKeyEnv"):
@@ -194,7 +222,11 @@ def load_catalog(home: Path | None = None) -> list[ModelEntry]:
                         base_url=slot["base_url"],
                         api_key_env=slot["api_key_env"],
                         context=_as_int(model.get("contextWindow")),
+                        custom=name not in BUILTIN_PROVIDERS,
                     )
+
+    if providers is not None:
+        providers.update({name: dict(slot) for name, slot in declared_providers.items()})
 
     # fill provider connection details that may have been declared without models
     return [
@@ -202,9 +234,12 @@ def load_catalog(home: Path | None = None) -> list[ModelEntry]:
             provider=entry.provider,
             model_id=entry.model_id,
             label=entry.label,
-            base_url=providers.get(entry.provider, {}).get("base_url", entry.base_url),
-            api_key_env=providers.get(entry.provider, {}).get("api_key_env", entry.api_key_env),
+            base_url=declared_providers.get(entry.provider, {}).get("base_url", entry.base_url),
+            api_key_env=declared_providers.get(entry.provider, {}).get(
+                "api_key_env", entry.api_key_env
+            ),
             context=entry.context,
+            custom=entry.custom,
         )
         for entry in seen.values()
     ]
@@ -256,6 +291,83 @@ def resolve_entry(catalog: list[ModelEntry], model_id: str) -> ModelEntry | None
     return None
 
 
+def provider_route(providers: dict[str, dict[str, Any]], provider: str) -> dict[str, str]:
+    """Model metadata for one route (for models discovered from its endpoint)."""
+    slot = providers.get(provider) or {}
+    return {
+        "base_url": str(slot.get("base_url") or ""),
+        "api_key_env": str(slot.get("api_key_env") or ""),
+    }
+
+
+def discovery_route(providers: dict[str, dict[str, Any]]) -> str:
+    """Hand-declared route whose models the profile layers do not describe.
+
+    These are the routes worth asking their endpoint ``GET /models``: pi-ai's
+    bundled catalog does not know their models, so nothing else lists them. An
+    explicit ``TASKAGENT_DSH_DISCOVERY_ROUTE`` wins, otherwise the first
+    hand-declared route in profile order. Returns "" when every route is one
+    the bundled catalog ships.
+    """
+    custom = [name for name in providers if name not in BUILTIN_PROVIDERS]
+    wanted = os.environ.get("TASKAGENT_DSH_DISCOVERY_ROUTE", "").strip()
+    if wanted:
+        return wanted if wanted in custom else ""
+    return custom[0] if custom else ""
+
+
+def fetch_route_models(
+    route: dict[str, str], env: dict[str, str], timeout: float = 8.0
+) -> list[dict[str, Any]]:
+    """``GET {baseURL}/models`` for a hand-declared route (OpenAI-compatible).
+
+    Custom gateways are not described by pi-ai's bundled catalog, so the only
+    place their models are listed is the endpoint itself. Best-effort: any
+    failure (no URL, no credential, network error, odd payload) yields an empty
+    list rather than an error the UI would have to handle.
+    """
+    base_url = (route.get("base_url") or "").rstrip("/")
+    key_name = route.get("api_key_env") or ""
+    if not base_url.startswith(("http://", "https://")):
+        return []
+    api_key = env.get(key_name, "") if key_name else ""
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    import httpx
+
+    try:
+        response = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    models: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        model_id = item["id"].strip()
+        if not model_id:
+            continue
+        label = str(item.get("name") or "").strip() or model_id
+        model: dict[str, Any] = {"id": model_id, "label": label}
+        context = _as_int(item.get("context_window") or item.get("max_input_tokens"))
+        if context:
+            model["context"] = context
+        models.append(model)
+    return models
+
+
+# Wire protocol a hand-declared (custom) pi-ai route speaks. Every route the
+# bundled catalog does not ship must name one; OpenAI-compatible gateways are
+# the norm for user-added endpoints.
+CUSTOM_ROUTE_API = "openai-completions"
+
+
 def build_patch_yaml(
     *,
     provider: str,
@@ -267,7 +379,9 @@ def build_patch_yaml(
 
     The provider block is only emitted when it is not already the headless
     profile's own provider; re-declaring an existing provider is harmless but
-    noisier, and the patch file shows up in reports.
+    noisier, and the patch file shows up in reports. A custom route (one pi-ai
+    does not ship) additionally needs its own ``api`` — otherwise the overlay
+    is refused and the task silently falls back to the default model.
     """
     lines: list[str] = []
     if entry is not None and entry.provider != default_provider:
@@ -282,6 +396,8 @@ def build_patch_yaml(
             lines.append(f'        baseURL: {entry.base_url}')
         if entry.api_key_env:
             lines.append(f'        apiKeyEnv: {entry.api_key_env}')
+        if entry.custom:
+            lines.append(f"        api: {CUSTOM_ROUTE_API}")
         lines += [
             '        models:',
             f'          - id: {entry.model_id}',
