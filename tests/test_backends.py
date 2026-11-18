@@ -782,15 +782,16 @@ def _write_custom_route_catalog(root: Path) -> None:
     )
 
 
-def test_dsh_flags_hand_declared_routes_as_custom(tmp_path):
-    """Built-in (shipped) routes vs user-declared gateways must be distinguishable."""
+def test_dsh_marks_profile_declared_models_as_custom(tmp_path):
+    """The shipped default profile declares no providers: anything listed in
+    the user's profile layer is a model the user configured, not a built-in."""
     _write_custom_route_catalog(tmp_path)
     ex = DshExecutor(
         command="/bin/true", worktrees_dir=tmp_path / "wt",
         patch_dir=tmp_path / "patches", profile_home=tmp_path,
     )
     models = {m["id"]: m for m in ex.list_models()}
-    assert models["deepseek-v4-pro"].get("custom") is not True
+    assert models["deepseek-v4-pro"].get("custom") is True
     assert models["my-model-1"].get("custom") is True
 
 
@@ -803,6 +804,7 @@ def test_custom_route_patch_declares_wire_api(tmp_path):
         base_url="https://gw.example/v1",
         api_key_env="MY_GATEWAY_KEY",
         custom=True,
+        route_known=False,
     )
     text = dsh_profile.build_patch_yaml(
         provider=entry.provider, model_id=entry.model_id, entry=entry,
@@ -884,3 +886,21 @@ def test_codebuddy_merges_custom_models_file(tmp_path, monkeypatch):
     models = {m["id"]: m for m in ex.list_models()}
     assert models["my-custom-model"]["custom"] is True
     assert models["my-custom-model"]["label"] == "My Custom"
+
+
+def test_known_route_patch_keeps_route_api(tmp_path):
+    """A pi-ai-known route must NOT get api overridden by the overlay."""
+    entry = dsh_profile.ModelEntry(
+        provider="qwen-token-plan",
+        model_id="kimi-k2.7-code",
+        label="Kimi K2.7 Code",
+        base_url="https://qwen.example/v1",
+        api_key_env="QWEN_TOKEN_PLAN_API_KEY",
+        custom=True,
+        route_known=True,
+    )
+    text = dsh_profile.build_patch_yaml(
+        provider=entry.provider, model_id=entry.model_id, entry=entry,
+        default_provider="deepseek-official",
+    )
+    assert "api:" not in text

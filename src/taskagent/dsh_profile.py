@@ -26,9 +26,11 @@ from typing import Any
 class ModelEntry:
     """One selectable model and the provider it must run under.
 
-    ``custom`` marks a model whose provider route pi-ai does not ship (a
-    hand-declared gateway), i.e. one the user added rather than the bundled
-    catalog; the UI uses it to tell built-in models from custom ones.
+    ``custom`` marks a model the user declared in their profile layer (the
+    shipped default profile declares no providers at all), so the UI can tell
+    "models I configured" from models DSH itself provides. ``route_known`` says
+    whether pi-ai ships the provider route: an unknown route must re-declare
+    its wire ``api`` in the overlay, a known one must not.
     """
 
     provider: str
@@ -38,6 +40,7 @@ class ModelEntry:
     api_key_env: str = ""
     context: int | None = None
     custom: bool = False
+    route_known: bool = True
 
 
 # Provider routes shipped by pi-ai's bundled catalog (``PROVIDER_DATA`` in
@@ -222,7 +225,11 @@ def load_catalog(
                         base_url=slot["base_url"],
                         api_key_env=slot["api_key_env"],
                         context=_as_int(model.get("contextWindow")),
-                        custom=name not in BUILTIN_PROVIDERS,
+                        # Everything here comes from the user's own profile
+                        # layer — the shipped default declares no providers —
+                        # so these are the models the user configured.
+                        custom=True,
+                        route_known=name in BUILTIN_PROVIDERS,
                     )
 
     if providers is not None:
@@ -240,6 +247,7 @@ def load_catalog(
             ),
             context=entry.context,
             custom=entry.custom,
+            route_known=entry.route_known,
         )
         for entry in seen.values()
     ]
@@ -379,9 +387,9 @@ def build_patch_yaml(
 
     The provider block is only emitted when it is not already the headless
     profile's own provider; re-declaring an existing provider is harmless but
-    noisier, and the patch file shows up in reports. A custom route (one pi-ai
-    does not ship) additionally needs its own ``api`` — otherwise the overlay
-    is refused and the task silently falls back to the default model.
+    noisier, and the patch file shows up in reports. A route pi-ai does not
+    ship additionally needs its own ``api`` — otherwise the overlay is refused
+    with INVALID_CONFIG ("needs an api").
     """
     lines: list[str] = []
     if entry is not None and entry.provider != default_provider:
@@ -396,7 +404,7 @@ def build_patch_yaml(
             lines.append(f'        baseURL: {entry.base_url}')
         if entry.api_key_env:
             lines.append(f'        apiKeyEnv: {entry.api_key_env}')
-        if entry.custom:
+        if not entry.route_known:
             lines.append(f"        api: {CUSTOM_ROUTE_API}")
         lines += [
             '        models:',

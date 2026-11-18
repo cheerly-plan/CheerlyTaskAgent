@@ -19,15 +19,17 @@ export function formatContext(tokens: number | undefined | null): string {
   return `${tokens}`;
 }
 
-/** 模型下拉的 hint：当前使用 > 全局默认 > 自定义 > 上下文窗口。 */
+/**
+ * 模型下拉的 hint：当前使用 > 全局默认 > 上下文窗口。
+ * 「自定义」由选项 label 后缀表达，避免同一条目里重复出现。
+ */
 export function modelHint(
-  model: {context?: number; current?: boolean; custom?: boolean},
+  model: {context?: number; current?: boolean},
   extra?: string,
 ): string | undefined {
   const parts: string[] = [];
   if (model.current) parts.push('当前使用');
   if (extra) parts.push(extra);
-  if (model.custom) parts.push('自定义');
   const ctx = formatContext(model.context);
   if (ctx) parts.push(`上下文 ${ctx}`);
   return parts.length ? parts.join(' · ') : undefined;

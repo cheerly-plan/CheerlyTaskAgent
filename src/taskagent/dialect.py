@@ -480,6 +480,7 @@ class DshPatchInjector:
                     provider=route,
                     model_id=bare,
                     custom=True,
+                    route_known=route in dsh_profile.BUILTIN_PROVIDERS,
                     **dsh_profile.provider_route(declared, route),
                 )
             elif not bare and len(declared) == 1:
@@ -489,6 +490,7 @@ class DshPatchInjector:
                         provider=route,
                         model_id=model,
                         custom=True,
+                        route_known=route in dsh_profile.BUILTIN_PROVIDERS,
                         **dsh_profile.provider_route(declared, route),
                     )
         pinned = dsh_profile.parse_pinned_target(
