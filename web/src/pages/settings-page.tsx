@@ -162,7 +162,7 @@ export function SettingsPage() {
                     const backendModels = modelsByBackend[id] ?? [];
                     const customModels = backendModels.filter((model) => model.custom);
                     return (
-                      <tr key={id} className="border-b border-border/70 align-middle last:border-0">
+                      <tr key={id} className="border-b border-border/70 align-top last:border-0">
                         <td className="px-4 py-3">
                           <Input
                             className="h-8"

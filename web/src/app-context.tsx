@@ -89,7 +89,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   const [backends, setBackends] = React.useState<BackendInfo[]>([]);
   const [settings, setSettings] = React.useState<UISettings | null>(null);
   const [conn, setConn] = React.useState<ConnState>('connecting');
-  const [connText, setConnText] = React.useState('连接中…');
   const [loading, setLoading] = React.useState(true);
   const [selections, setSelections] = React.useState<Record<string, ActionSelection>>({});
 
@@ -148,36 +147,37 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     }
   }, []);
 
+  // CLI / 后端信息来自 /api/config。保存设置后也要重新拉取，否则顶栏执行端
+  // 与模型下拉会一直显示保存前的旧后端（包括旧的 CLI 路径与标签）。
+  const reloadConfig = React.useCallback(async () => {
+    try {
+      const config = await endpoints.config();
+      setModels(config.models ?? []);
+      setDefaultModel(config.default_model ?? '');
+      setBackends(
+        config.backends ?? [
+          {id: 'codebuddy', label: 'CodeBuddy CLI', command: config.executor, enabled: true},
+        ],
+      );
+    } catch (error) {
+      toast.error('加载配置失败：' + (error as Error).message);
+    }
+  }, []);
+
   React.useEffect(() => {
     (async () => {
-      try {
-        const config = await endpoints.config();
-        setModels(config.models ?? []);
-        setDefaultModel(config.default_model ?? '');
-        setBackends(config.backends ?? [{id: 'codebuddy', label: 'CodeBuddy CLI', command: config.executor, enabled: true}]);
-        // 执行端显示后端 label（而非裸 id，如 backend-1）。
-        const defaultBackend = (config.backends ?? []).find((b) => b.id === config.executor);
-        setConnText('执行端 ' + (defaultBackend?.label || config.executor));
-        await Promise.all([reloadMappings(), reloadItems(), reloadSettings()]);
-      } catch (error) {
-        toast.error('加载失败：' + (error as Error).message);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [reloadItems, reloadMappings, reloadSettings]);
+      await reloadConfig();
+      await Promise.all([reloadMappings(), reloadItems(), reloadSettings()]);
+    })().finally(() => setLoading(false));
+  }, [reloadConfig, reloadItems, reloadMappings, reloadSettings]);
 
   // SSE：后端有任何变更就只刷新任务列表（与原实现一致）
   React.useEffect(() => {
     const source = new EventSource('/api/events');
-    source.onopen = () => {
-      setConn('live');
-      setConnText('实时同步中');
-    };
-    source.onerror = () => {
-      setConn('reconnecting');
-      setConnText('重连中…');
-    };
+    // 连接状态只驱动徽标颜色；文案由下面的 connText 统一派生，避免把
+    // 顶栏的「执行端 XXX」覆盖成「实时同步中」。
+    source.onopen = () => setConn('live');
+    source.onerror = () => setConn('reconnecting');
     source.onmessage = (event) => {
       if (event.data !== '[DONE]') void reloadItems();
     };
@@ -512,13 +512,30 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         await endpoints.saveSettings(payload);
         probedBackends.current.clear();  // 后端配置变了，能力需重新探测
         await reloadSettings();
+        await reloadConfig();  // CLI / 后端清单随之刷新，顶栏执行端立即更新
         toast.success('设置已保存并已生效');
       } catch (error) {
         toast.error('保存失败：' + (error as Error).message);
       }
     },
-    [reloadSettings],
+    [reloadConfig, reloadSettings],
   );
+
+  // 顶栏执行端：以刚保存的 settings 为准（含用户新改的后端标签 / CLI），
+  // 配置里还没有时再回退到 /api/config 的后端清单，最后才显示裸 id。
+  const executorLabel = React.useMemo(() => {
+    const executorId = settings?.executor || '';
+    const fromSettings = (executorId ? settings?.backends?.[executorId]?.label : '') || '';
+    const fromConfig = backends.find((backend) => backend.id === executorId)?.label || '';
+    return fromSettings || fromConfig || executorId || '未配置';
+  }, [settings, backends]);
+
+  const connText =
+    conn === 'live'
+      ? `执行端 ${executorLabel}`
+      : conn === 'reconnecting'
+        ? '重连中…'
+        : '连接中…';
 
   const value: AppContextValue = {
     items,
