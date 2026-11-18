@@ -1380,8 +1380,11 @@ class DshExecutor(CodeBuddyExecutor):
             label=label,
             supports_model_selection=supports_model_selection,
         )
-        self.patch_dir = Path(patch_dir or (self.worktrees_dir.parent / "dsh-patches"))
-        self.profile_home = Path(profile_home or dsh_profile.dsh_home())
+        # The CLI runs with cwd=worktree, so a relative overlay path would be
+        # resolved *inside* the worktree and fail with ENOENT. Resolve once,
+        # while the server's own cwd is still correct.
+        self.patch_dir = Path(patch_dir or (self.worktrees_dir.parent / "dsh-patches")).expanduser().resolve()
+        self.profile_home = Path(profile_home or dsh_profile.dsh_home()).expanduser().resolve()
         self._catalog_cache: list[dsh_profile.ModelEntry] | None = None
         self._pinned_cache: tuple[str, str] | None | bool = False  # False = not probed
         # Whether per-task model selection actually works on THIS machine.

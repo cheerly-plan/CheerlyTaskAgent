@@ -477,7 +477,8 @@ class DshPatchInjector:
             entry=entry,
             default_provider=pinned[0] if pinned else "",
         )
-        path = ctx.patch_dir / f"{dsh_profile.safe_patch_name(item_id)}.yml"
+        # Absolute: the CLI's cwd is the worktree, not the server's cwd.
+        path = (ctx.patch_dir / f"{dsh_profile.safe_patch_name(item_id)}.yml").expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return ["--patch", str(path)]

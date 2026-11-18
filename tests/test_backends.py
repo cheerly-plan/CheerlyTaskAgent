@@ -684,3 +684,21 @@ def test_ndjson_verdict_uses_event_stream():
         returncode=0, stdout='{"type":"session"}\n', stderr="", label="DSH"
     )
     assert not ok
+
+
+def test_dsh_patch_path_is_absolute(tmp_path, monkeypatch):
+    """The CLI runs with cwd=worktree; a relative --patch would be ENOENT."""
+    _write_two_model_catalog(tmp_path)
+    dsh = DshExecutor(
+        command=str(_fake_dsh(tmp_path, supports_patch=True, applies_patch=True)),
+        worktrees_dir=tmp_path / "wt",
+        patch_dir=Path("relative/patches"),  # relative on purpose
+        profile_home=tmp_path,
+    )
+    dsh._pinned_cache = ("deepseek-official", "deepseek-flash")
+    item = WorkItem.create(title="t", description="d", kind="task", model="kimi-k2.7-code")
+    argv = dsh.build_command(item)
+    patch_path = Path(argv[argv.index("--patch") + 1])
+    assert patch_path.is_absolute()
+    assert patch_path.is_file()
+    dsh.cleanup_patch(item.id)
