@@ -110,6 +110,7 @@ export interface TapdSettings {
   status_on_success: string;
   status_on_failure: string;
   current_user: string;
+  auto_pull: boolean;
   interval_minutes: number;
   exec_mode: ExecMode;
 }
@@ -123,6 +124,15 @@ export interface BackendConfig {
   auto_sync: boolean;
 }
 
+/** 单一数据源对象（一个数据源、类型不同）。目前仅支持 type=tapd；其他类型留待后续接入。 */
+export interface DataSource {
+  type: string;
+  name: string;
+  enabled: boolean;
+  /** type=tapd 时的专属配置。 */
+  tapd: TapdSettings;
+}
+
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
@@ -132,6 +142,7 @@ export interface UISettings {
   auto_sync: boolean;
   backends: Record<string, BackendConfig>;
   tapd: TapdSettings;
+  data_source: DataSource;
 }
 
 export interface BrowseEntry {

@@ -85,6 +85,36 @@ def discover_command(command: str) -> str:
     return command
 
 
+def tapd_to_data_source(tapd: dict[str, Any]) -> dict[str, Any]:
+    """Convert the legacy single ``tapd`` settings dict into a ``data_source`` entry."""
+    return {
+        "type": "tapd",
+        "name": "TAPD",
+        "enabled": bool(tapd.get("enabled", False)),
+        "tapd": {k: v for k, v in tapd.items() if k != "enabled"},
+    }
+
+
+def normalise_data_source(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the single ``data_source`` object: type/name/enabled + type payload.
+
+    数据源本质上是「一个对象、类型不同」，所以用单一 ``data_source``（而非列表）
+    描述。``type`` 决定下方配置表单；目前仅支持 ``tapd``，其他类型留待接入。
+    """
+    src_type = str(item.get("type") or "tapd").strip() or "tapd"
+    name = str(item.get("name") or "").strip() or ("TAPD" if src_type == "tapd" else src_type)
+    # type payload: for tapd, nest under ``tapd``; keep unknown types' raw fields.
+    tapd = item.get("tapd")
+    if not isinstance(tapd, dict):
+        tapd = {k: v for k, v in item.items() if k not in {"type", "name", "enabled"}}
+    return {
+        "type": src_type,
+        "name": name,
+        "enabled": bool(item.get("enabled", False)),
+        "tapd": dict(tapd),
+    }
+
+
 UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "executor": "codebuddy",  # default backend for new tasks (legacy key, kept for /api/config)
     "codebuddy_command": "codebuddy",
@@ -93,6 +123,16 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "max_concurrent": 1,
     "auto_sync": True,
     "backends": _default_backends(),
+    # 数据源是一个「单一对象、类型不同」的配置：``data_source`` 含
+    # type/name/enabled + 类型专属字段。目前仅支持 tapd 类型；其他类型
+    # （jira/gitlab/github 等）留待后续接入。默认源为「未启用的 TAPD」，
+    # 与旧 tapd 单例保持同步（load 阶段把旧单例实质配置迁移进 data_source）。
+    "data_source": {
+        "type": "tapd",
+        "name": "TAPD",
+        "enabled": False,
+        "tapd": {},
+    },
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
@@ -107,6 +147,7 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
         "status_on_success": "resolved",
         "status_on_failure": "",
         "current_user": "taskagent",
+        "auto_pull": False,   # 定时拉取开关：默认关闭，独立于数据源总开关
         "interval_minutes": 5,
         "exec_mode": "dry-run",
     },
@@ -260,6 +301,7 @@ class Settings:
             "default_model": self.default_model or "",
             "max_concurrent": self.max_concurrent,
             "auto_sync": self.auto_sync,
+            "data_source": dict(UI_SETTINGS_DEFAULTS["data_source"]),
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
         }
         path = self.ui_settings_path
@@ -293,6 +335,8 @@ class Settings:
                         elif key == "tapd" and isinstance(value, dict):
                             data[key].update(value)
                             data[key].pop("nick", None)  # 已移除：拉项目改走 company_id
+                        elif key == "data_source" and isinstance(value, dict):
+                            data[key] = normalise_data_source(value)
                         elif key in data:
                             data[key] = value
             except (OSError, ValueError):
@@ -303,6 +347,28 @@ class Settings:
             data["backends"]["dsh"]["command"] = data.get("dsh_path") or "dsh"
             data["backends"]["codebuddy"]["model"] = data.get("default_model") or ""
             data["backends"]["codebuddy"]["auto_sync"] = bool(data.get("auto_sync", True))
+        # Migrate legacy single ``tapd`` into ``data_source`` when the saved
+        # data_source has no substantive tapd payload yet (i.e. never configured)
+        # AND the tapd config is substantive (enabled, or has
+        # workspace/company/api_user). A blank default tapd does not migrate, so a
+        # round-trip that never touches tapd keeps data_source.tapd empty.
+        legacy = data.get("tapd") or {}
+        substantive_legacy = (
+            legacy.get("enabled")
+            or str(legacy.get("workspace_id") or "").strip()
+            or str(legacy.get("company_id") or "").strip()
+            or str(legacy.get("api_user") or "").strip()
+        )
+        ds = data.get("data_source") or {}
+        ds_tapd = ds.get("tapd") if isinstance(ds.get("tapd"), dict) else {}
+        ds_substantive = (
+            bool(ds.get("enabled"))
+            or str(ds_tapd.get("workspace_id") or "").strip()
+            or str(ds_tapd.get("company_id") or "").strip()
+            or str(ds_tapd.get("api_user") or "").strip()
+        )
+        if substantive_legacy and not ds_substantive:
+            data["data_source"] = tapd_to_data_source(legacy)
         # Desktop-app CLIs are usually not on PATH: resolve the bundle path so a
         # fresh install works without the user pasting an absolute path.
         for backend in data.get("backends", {}).values():
@@ -354,6 +420,28 @@ class Settings:
                     elif not isinstance(val, list):
                         tapd[list_key] = list(data["tapd"].get(list_key, []))
                 data["tapd"].update(tapd)
+            elif key == "data_source" and isinstance(value, dict):
+                # 单一对象：完整接管。空白密码保留旧值（UI 掩码显示）。
+                src = normalise_data_source(value)
+                src_type = src["type"]
+                tapd = src.get("tapd") or {}
+                if src_type == "tapd":
+                    if not tapd.get("api_password"):
+                        # 回退源：旧 data_source.tapd → legacy tapd 单例（本次 save
+                        # 已合并的结果）→ 磁盘旧值。逐级取首个非空密码。
+                        old_tapd = data.get("data_source", {}).get("tapd", {})
+                        if isinstance(old_tapd, dict) and old_tapd.get("api_password"):
+                            tapd["api_password"] = old_tapd["api_password"]
+                        else:
+                            tapd["api_password"] = data["tapd"].get("api_password", "")
+                    for list_key in ("entity_types", "pull_statuses"):
+                        val = tapd.get(list_key)
+                        if isinstance(val, str):
+                            tapd[list_key] = [p.strip() for p in val.split(",") if p.strip()]
+                        elif not isinstance(val, list):
+                            tapd[list_key] = []
+                    src["tapd"] = tapd
+                data["data_source"] = src
             elif key in data:
                 data[key] = value
         data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
@@ -384,9 +472,32 @@ class Settings:
             if part.strip()
         )
         tapd["enabled"] = bool(tapd.get("enabled", False))
+        tapd["auto_pull"] = bool(tapd.get("auto_pull", False))
         tapd["interval_minutes"] = max(1, int(tapd.get("interval_minutes", 5) or 5))
         tapd["exec_mode"] = "apply" if tapd.get("exec_mode") == "apply" else "dry-run"
         tapd["entity_types"] = [e for e in tapd.get("entity_types", []) if e in {"story", "bug", "task"}] or ["story", "bug"]
+        # 保持 legacy 单例 `tapd` 与 data_source 的 tapd 载荷一致，让现有
+        # 调度/回填/拉取循环无需改动即可继续工作。仅当本次 payload 显式提交了
+        # data_source、且其 tapd 载荷「实质」配置过（enabled / workspace /
+        # company / api_user 任一非空）才反向同步覆盖 tapd 单例；否则保持 tapd
+        # 单例独立（兼容旧客户端只改 tapd 的路径），避免空 data_source 把
+        # tapd 单例的实质配置冲掉。data_source 密码为空时继承 tapd 单例已合并
+        # 的密码（避免 UI 掩码提交空密码把旧密码冲掉）。
+        if "data_source" in payload:
+            ds = data.get("data_source") or {}
+            ds_tapd = ds.get("tapd") if isinstance(ds.get("tapd"), dict) else {}
+            substantive = (
+                bool(ds.get("enabled"))
+                or str(ds_tapd.get("workspace_id") or "").strip()
+                or str(ds_tapd.get("company_id") or "").strip()
+                or str(ds_tapd.get("api_user") or "").strip()
+            )
+            if substantive:
+                merged_tapd = dict(ds_tapd)
+                if not merged_tapd.get("api_password"):
+                    merged_tapd["api_password"] = data["tapd"].get("api_password", "")
+                merged_tapd["enabled"] = bool(ds.get("enabled", False))
+                data["tapd"] = merged_tapd
         # Normalise backends: valid ids, sane timeouts. No backend is forced on.
         for backend_id, cfg in data["backends"].items():
             cfg["label"] = str(cfg.get("label") or "") or backend_id

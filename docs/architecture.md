@@ -66,7 +66,7 @@ flowchart LR
 | `backends.py` | 依据持久化的 UI `backends` 配置构建 `ExecutorRegistry`（每类后端一套独立 profile：命令/模型/超时/自动同步/启用），并向 `/api/config` 输出后端清单。 |
 | `report.py` | 每单生成精简 Markdown：概览、执行结果、改动文件、自动同步明细与备份位置、错误；codebuddy 原始 stdout 只提取最终结论、提示词/命令/输出放折叠附录（`<details>`），避免动辄 10 万字符。`render_report` 也供 `/api/items/{id}/report` 实时渲染，老报告一并精简呈现（磁盘 .md 存档不动）。前端轻量 Markdown 渲染器把表格/标题/折叠块结构化展示。 |
 | `events.py` / `api.py` | 事件总线 + SSE（沿用 Harness 帧格式）；HTTP 路由。 |
-| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；「数据源」Tab 仅 TAPD 卡——配置 API 凭证、项目（手填多个 ID 或点输入框右侧「拉取项目」：弹窗企业 ID 下拉（选项来自已记录项目，可手输新企业）→ 打开/切换企业自动拉取、也可手动刷新 → 多选项目、每个项目单独勾选其管理的本地仓库；页面「项目」输入框只读显示名称，「新增」弹窗登记项目名+ID 并勾选管理的本地仓库（不填企业 ID）；企业 ID 与项目列表缓存到 `tapd.projects`，下次打开先显示已存项目，企业自身已过滤）、关联本地项目映射、Webhook 地址+secret/拉取类型/回填状态/定时开关 + 「立即同步」；映射表也显示并可编辑「关联 TAPD 项目」，两处双向同步；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
+| `web/`（源码）+ `src/taskagent/web/`（构建产物） | 调度台前端：Vite + React 18 + TypeScript + Tailwind + shadcn/ui。四 Tab（任务列表 / 项目映射 / 数据源 / 系统设置），「+ 新建任务」弹窗只做**手动录入**；「数据源」Tab 为**单一数据源对象**（卡片顶部下拉选类型，目前仅 tapd，其他类型留待后续）；TAPD 即一张卡——配置 API 凭证、项目（点「拉取」弹窗：企业 ID 下拉（选项来自已记录项目，可手输新企业）→ 打开/切换企业自动拉取、也可手动刷新 → 多选项目、每个项目单独勾选其管理的本地仓库；页面「项目」为只读悬浮下拉展示名称 + 关联本地仓库，「新增」弹窗登记项目名+ID 并勾选管理的本地仓库；API 地址/账号/密码三个字段连续排列；企业 ID 与项目列表缓存到 `tapd.projects`，企业自身已过滤）、拉取类型/回填状态/定时拉取（独立开关 `auto_pull`，默认关闭）+「立即同步/全量重拉」，底部「保存」与同步按钮同行；Webhook 地址/secret 表单已隐藏（后端接口保留）；映射表在「编辑项目映射」弹窗用悬浮下拉多选「关联 TAPD 项目」（复用 FloatingRepoSelect，不再手动输入 ID），两处双向同步；含工作项看板、dry-run/apply/report。产物由 FastAPI 托管且不入仓，需先 `taskagent web-build`。 |
 
 ## 3. 关键流程
 

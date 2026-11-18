@@ -116,21 +116,27 @@ export function Field({
   htmlFor,
   children,
   className,
+  labelExtra,
 }: {
   label: React.ReactNode;
   hint?: React.ReactNode;
   htmlFor?: string;
   children: React.ReactNode;
   className?: string;
+  /** label 右侧的附加内容（如快捷链接），与标题同一行右对齐。 */
+  labelExtra?: React.ReactNode;
 }) {
   return (
     <div className={cn('mb-3.5', className)}>
-      <label
-        htmlFor={htmlFor}
-        className="mb-1.5 block text-xs font-semibold tracking-wide text-foreground/75"
-      >
-        {label}
-      </label>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <label
+          htmlFor={htmlFor}
+          className="block text-xs font-semibold tracking-wide text-foreground/75"
+        >
+          {label}
+        </label>
+        {labelExtra}
+      </div>
       {children}
       {hint ? <p className="mt-1 text-[11.5px] text-faint">{hint}</p> : null}
     </div>

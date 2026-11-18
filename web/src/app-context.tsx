@@ -512,9 +512,33 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           status_on_success: (tapd.status_on_success || 'resolved').trim(),
           status_on_failure: (tapd.status_on_failure || '').trim(),
           current_user: (tapd.current_user || 'taskagent').trim(),
+          auto_pull: tapd.auto_pull === true,
           interval_minutes: Math.max(1, Number(tapd.interval_minutes) || 5),
           exec_mode: tapd.exec_mode === 'apply' ? 'apply' : 'dry-run',
         } : ({} as UISettings['tapd']),
+        data_source: next.data_source ? {
+          type: (next.data_source.type || 'tapd').trim(),
+          name: (next.data_source.name || '').trim(),
+          enabled: next.data_source.enabled === true,
+          tapd: next.data_source.tapd ? {
+            enabled: next.data_source.tapd.enabled === true,
+            base_url: (next.data_source.tapd.base_url || 'https://api.tapd.cn').trim(),
+            workspace_id: (next.data_source.tapd.workspace_id || '').trim(),
+            company_id: (next.data_source.tapd.company_id || '').trim(),
+            projects: next.data_source.tapd.projects ?? [],
+            api_user: (next.data_source.tapd.api_user || '').trim(),
+            api_password: (next.data_source.tapd.api_password || '').trim(),
+            webhook_secret: (next.data_source.tapd.webhook_secret || '').trim(),
+            entity_types: next.data_source.tapd.entity_types ?? ['story', 'bug'],
+            pull_statuses: next.data_source.tapd.pull_statuses ?? [],
+            status_on_success: (next.data_source.tapd.status_on_success || 'resolved').trim(),
+            status_on_failure: (next.data_source.tapd.status_on_failure || '').trim(),
+            current_user: (next.data_source.tapd.current_user || 'taskagent').trim(),
+            auto_pull: next.data_source.tapd.auto_pull === true,
+            interval_minutes: Math.max(1, Number(next.data_source.tapd.interval_minutes) || 5),
+            exec_mode: next.data_source.tapd.exec_mode === 'apply' ? 'apply' : 'dry-run',
+          } : ({} as UISettings['tapd']),
+        } : ({} as UISettings['data_source']),
       };
       try {
         await endpoints.saveSettings(payload);

@@ -112,6 +112,8 @@ class UISettingsBody(BaseModel):
     auto_sync: bool = True
     backends: dict[str, Any] = Field(default_factory=dict)
     tapd: dict[str, Any] = Field(default_factory=dict)
+    # 单一数据源对象：type/name/enabled + 类型专属字段（目前仅 tapd）。
+    data_source: dict[str, Any] = Field(default_factory=dict)
 
 
 class TapdSyncBody(BaseModel):
@@ -328,11 +330,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"created": 1 if was_created else 0, "skipped": 0 if was_created else 1, "error": None}
 
     async def tapd_poll_loop() -> None:
-        """Periodically pull from TAPD while enabled; re-reads settings each tick."""
+        """Periodically pull from TAPD while auto_pull is on; re-reads settings each tick."""
         while True:
             cfg = settings.load_ui_settings().get("tapd", {})
             interval_s = max(1, int(cfg.get("interval_minutes", 5) or 5)) * 60
-            if cfg.get("enabled"):
+            if cfg.get("enabled") and cfg.get("auto_pull"):
                 result = await asyncio.to_thread(sync_tapd_now)
                 if result.get("error"):
                     logger.warning("定时同步 TAPD 失败：%s", result["error"])

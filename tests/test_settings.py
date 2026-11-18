@@ -31,6 +31,41 @@ def test_ui_settings_blank_password_keeps_existing(tmp_path):
     assert s.load_ui_settings()["tapd"]["api_password"] == "secret"
 
 
+def test_data_source_migrate_and_roundtrip(tmp_path):
+    s = Settings(data_dir=tmp_path)
+    # 初始无实质 data_source，也无 tapd 旧单例，默认源为「未启用的 TAPD」。
+    loaded = s.load_ui_settings()
+    assert loaded["data_source"]["type"] == "tapd"
+    assert loaded["data_source"]["enabled"] is False
+    assert loaded["data_source"]["tapd"] == {}
+
+    # 先写旧 tapd 单例（模拟历史文件），load 时应迁移进 data_source。
+    s.save_ui_settings({"tapd": {"enabled": True, "workspace_id": "101", "api_user": "app"}})
+    loaded = s.load_ui_settings()
+    ds = loaded["data_source"]
+    assert ds["type"] == "tapd" and ds["enabled"] is True
+    assert ds["tapd"]["workspace_id"] == "101"
+
+    # 显式保存 data_source，legacy tapd 单例应同步为该源的 tapd 载荷。
+    s.save_ui_settings({"data_source": {
+        "type": "tapd", "name": "TAPD", "enabled": True,
+        "tapd": {"workspace_id": "1,2", "api_user": "u1", "api_password": "p1"},
+    }})
+    loaded = s.load_ui_settings()
+    assert loaded["data_source"]["type"] == "tapd"
+    assert loaded["data_source"]["enabled"] is True
+    assert loaded["data_source"]["tapd"]["workspace_id"] == "1,2"
+    assert loaded["tapd"]["workspace_id"] == "1,2"
+    assert loaded["tapd"]["enabled"] is True
+
+    # 空白密码保留旧值。
+    s.save_ui_settings({"data_source": {
+        "type": "tapd", "name": "TAPD", "enabled": True,
+        "tapd": {"api_user": "u1", "api_password": ""},
+    }})
+    assert s.load_ui_settings()["data_source"]["tapd"]["api_password"] == "p1"
+
+
 def test_settings_api_roundtrip(tmp_path):
     app = create_app(Settings(data_dir=tmp_path, project_roots=()))
     with TestClient(app) as client:

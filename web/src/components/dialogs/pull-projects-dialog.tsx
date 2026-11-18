@@ -1,6 +1,7 @@
 import * as React from 'react';
-import {Check, ChevronDown, Loader2, RefreshCw} from 'lucide-react';
+import {Check, Loader2, RefreshCw} from 'lucide-react';
 
+import {FloatingRepoSelect} from '@/components/floating-repo-select';
 import {Button} from '@/components/ui/button';
 import {
   Dialog,
@@ -74,13 +75,11 @@ export function PullProjectsDialog({
 }: PullProjectsDialogProps) {
   const [customMode, setCustomMode] = React.useState(false);
   const [customValue, setCustomValue] = React.useState('');
-  const [expandedRepos, setExpandedRepos] = React.useState<Set<string>>(new Set());
 
   React.useEffect(() => {
     if (open) {
       setCustomMode(false);
       setCustomValue('');
-      setExpandedRepos(new Set());
     }
   }, [open]);
 
@@ -103,24 +102,7 @@ export function PullProjectsDialog({
     setCustomMode(false);
   };
 
-  const toggleRepos = (workspaceId: string) => {
-    setExpandedRepos((prev) => {
-      const next = new Set(prev);
-      if (next.has(workspaceId)) next.delete(workspaceId);
-      else next.add(workspaceId);
-      return next;
-    });
-  };
-
-  /** 折叠态摘要：已选仓库名（最多 2 个）+ 数量。 */
-  const repoSummary = (repoIds: string[]) => {
-    const names = repoIds
-      .map((id) => enabledMappings.find((m) => m.id === id)?.name)
-      .filter((name): name is string => Boolean(name));
-    if (names.length === 0) return '未关联仓库';
-    if (names.length <= 2) return names.join('、');
-    return `${names.slice(0, 2).join('、')} 等 ${names.length} 个`;
-  };
+  const repoOptions = enabledMappings.map((m) => ({id: m.id, name: m.name, path: m.path}));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -240,56 +222,18 @@ export function PullProjectsDialog({
                       </button>
                       {active && (
                         <div className="mt-2 border-t border-border/70 pt-2">
-                          <button
-                            type="button"
-                            onClick={() => toggleRepos(ws.id)}
-                            className="flex w-full items-center gap-2 text-left text-[11px] transition-colors hover:opacity-80"
-                          >
-                            <span className="shrink-0 font-medium text-faint">
-                              管理的本地仓库（{repoIds.length}）
-                            </span>
-                            <span className={cn('min-w-0 flex-1 truncate', repoIds.length ? 'text-foreground' : 'text-faint')}>
-                              {repoSummary(repoIds)}
-                            </span>
-                            <ChevronDown
-                              className={cn('size-3.5 shrink-0 text-faint transition-transform', expandedRepos.has(ws.id) && 'rotate-180')}
-                            />
-                          </button>
-                          {expandedRepos.has(ws.id) && (
-                            <div className="scrollbar-thin mt-1.5 max-h-[160px] space-y-0.5 overflow-y-auto">
-                              {enabledMappings.length === 0 ? (
-                                <p className="px-1 py-1 text-[11px] text-faint">暂无本地仓库映射，可先在「项目映射」页添加。</p>
-                              ) : (
-                                <div className="grid gap-1 sm:grid-cols-2">
-                                  {enabledMappings.map((mapping) => {
-                                    const checked = repoIds.includes(mapping.id);
-                                    return (
-                                      <button
-                                        key={mapping.id}
-                                        type="button"
-                                        onClick={() => onToggleRepo(ws.id, mapping.id)}
-                                        title={mapping.path}
-                                        className={cn(
-                                          'flex min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11.5px] transition-colors',
-                                          checked ? 'bg-primary/10 text-foreground' : 'hover:bg-secondary/60',
-                                        )}
-                                      >
-                                        <span
-                                          className={cn(
-                                            'flex size-3.5 shrink-0 items-center justify-center rounded border',
-                                            checked ? 'border-primary bg-primary text-white' : 'border-border',
-                                          )}
-                                        >
-                                          {checked ? <Check className="size-2.5" /> : null}
-                                        </span>
-                                        <span className="min-w-0 truncate">{mapping.name}</span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          )}
+                          <p className="mb-1 text-[11px] font-medium text-faint">
+                            管理的本地仓库（{repoIds.length}）
+                          </p>
+                          <FloatingRepoSelect
+                            options={repoOptions}
+                            selected={repoIds}
+                            onToggle={(mappingId) => onToggleRepo(ws.id, mappingId)}
+                            placeholder="未关联仓库（点此勾选）"
+                            emptyText="暂无本地仓库映射，可先在「项目映射」页添加。"
+                            size="sm"
+                            maxHeight={200}
+                          />
                         </div>
                       )}
                     </div>
