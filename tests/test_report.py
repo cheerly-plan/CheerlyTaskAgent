@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from taskagent.models import ItemStatus, RunResult, WorkItem
-from taskagent.report import render_report, summarize_stdout
+from taskagent.report import parent_title_of, render_report, summarize_stdout
 
 
 def _item(stdout: str = "", description: str = "改点东西") -> WorkItem:
@@ -98,3 +98,32 @@ def test_report_without_result_has_no_execution_section():
     report = render_report(item)
     assert "## 执行结果" not in report
     assert "下发给 codebuddy 的提示词" in report
+
+
+def test_child_report_shows_parent():
+    child = WorkItem.create(title="登录页", description="", parent_ref="tapd:story:p1")
+    # 有父标题时用标题。
+    assert "| 所属父需求 | 用户中心 |" in render_report(child, parent_title="用户中心")
+    # 没有父标题时降级到 source_ref，不会丢失归属信息。
+    assert "| 所属父需求 | tapd:story:p1 |" in render_report(child)
+
+
+def test_top_level_report_has_no_parent_line():
+    top = WorkItem.create(title="顶层需求", description="")
+    assert "所属父需求" not in render_report(top, parent_title="不应出现")
+
+
+def test_parent_title_of_looks_up_by_source_ref():
+    from taskagent.models import SourceType
+
+    parent = WorkItem.create(title="父需求", description="")
+    parent.source = SourceType.TAPD
+    parent.source_ref = "tapd:story:p1"
+
+    class FakeStore:
+        def list(self, limit=200, offset=0):
+            return [parent]
+
+    child = WorkItem.create(title="子需求", description="", parent_ref="tapd:story:p1")
+    assert parent_title_of(child, FakeStore()) == "父需求"
+    assert parent_title_of(WorkItem.create(title="顶层", description=""), FakeStore()) == ""

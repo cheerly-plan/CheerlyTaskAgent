@@ -53,6 +53,10 @@ export interface TapdPreviewItem {
   /** 变更字段（status=changed 时非空）。 */
   changes: string[];
   existing_id: string;
+  /** 父子需求：父的 source_ref；顶层为空。 */
+  parent_ref?: string;
+  /** True = 本次拉取里有子需求指向它，是父容器。 */
+  is_container?: boolean;
 }
 
 export interface TapdPreviewResult {

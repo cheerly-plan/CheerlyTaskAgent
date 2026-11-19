@@ -98,6 +98,8 @@ function RepoCell({
   mappings: ProjectMapping[];
   onMap: (id: string, repo: string) => void;
 }) {
+  // 父容器不执行，项目列不适用。
+  if (item.is_container) return <span className="text-xs text-faint">—</span>;
   const options = mappings
     .filter((mapping) => mapping.enabled)
     .map((mapping) => ({value: mapping.name, label: mapping.name}));
@@ -140,6 +142,7 @@ function ModeCell({
     {value: 'dry-run', label: 'dry-run'},
     {value: 'apply', label: 'apply'},
   ];
+  if (item.is_container) return <span className="text-xs text-faint">—</span>;
   if (!canEditConfig(item)) return <Mono>{mode}</Mono>;
   return (
     <SelectField
@@ -194,6 +197,8 @@ function ModelCell({
     hint: modelHint(model),
     group: modelCategory(model),
   }));
+  // 父容器不执行，模型列不适用。
+  if (item.is_container) return <span className="text-xs text-faint">—</span>;
   // 只有还没执行的任务能改模型；dry-run 跑完后模型必须与报告一致，锁定展示。
   const showSelect = canEditConfig(item) && options.length > 0;
 
@@ -262,9 +267,9 @@ export function TaskTable({
           <SortableHead label="类型" field="kind" sort={sort} onSort={onSort} />
           <SortableHead label="来源" field="source" sort={sort} onSort={onSort} />
           <SortableHead label="项目" field="repo" sort={sort} onSort={onSort} />
-          <SortableHead label="状态" field="status" sort={sort} onSort={onSort} />
           <TableHead className="w-[92px]">模式</TableHead>
           <TableHead>模型</TableHead>
+          <SortableHead label="状态" field="status" sort={sort} onSort={onSort} />
           <SortableHead label="创建时间" field="created" sort={sort} onSort={onSort} />
           <TableHead className="sticky right-0 z-20 border-l border-border/70 bg-[#fafafd] pr-4 text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]">
             操作
@@ -309,9 +314,6 @@ export function TaskTable({
             <TableCell>
               <RepoCell item={item} mappings={mappings} onMap={onMap} />
             </TableCell>
-            <TableCell>
-              <StatusBadge status={item.status} />
-            </TableCell>
             <TableCell className="w-[92px]">
               <ModeCell
                 item={item}
@@ -328,6 +330,13 @@ export function TaskTable({
                 onSelect={(key, value) => onSelect(item.id, key, value)}
                 onProbe={onProbe}
               />
+            </TableCell>
+            <TableCell>
+              {isContainer ? (
+                <span className="text-xs text-faint">—</span>
+              ) : (
+                <StatusBadge status={item.status} />
+              )}
             </TableCell>
             <TableCell>
               <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">

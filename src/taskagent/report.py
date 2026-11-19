@@ -14,6 +14,16 @@ from .models import WorkItem
 _STDOUT_PREVIEW_LIMIT = 4000
 
 
+def parent_title_of(item: WorkItem, store) -> str:
+    """子需求的父需求标题；父不存在或未建单时返回空串。"""
+    if not item.parent_ref:
+        return ""
+    for candidate in store.list(limit=100000):
+        if candidate.source_ref == item.parent_ref:
+            return candidate.title
+    return ""
+
+
 def summarize_stdout(raw: str, limit: int = _STDOUT_PREVIEW_LIMIT) -> str:
     """Extract codebuddy's final assistant conclusions from its JSON event stream.
 
@@ -76,7 +86,7 @@ def _collapsed(title: str, body: str) -> list[str]:
     ]
 
 
-def render_report(item: WorkItem) -> str:
+def render_report(item: WorkItem, parent_title: str = "") -> str:
     repo = item.repo
     result = item.result
     lines = [
@@ -86,6 +96,10 @@ def render_report(item: WorkItem) -> str:
         "|---|---|",
         f"| ID | `{item.id}` |",
         f"| 类型 | {item.kind.value} |",
+    ]
+    if item.parent_ref:
+        lines.append(f"| 所属父需求 | {parent_title or item.parent_ref} |")
+    lines += [
         f"| 来源 | {item.source.value} {item.source_ref} |",
         f"| 状态 | {item.status.value} |",
         f"| 执行模式 | {item.exec_mode} |",
@@ -165,8 +179,8 @@ def render_report(item: WorkItem) -> str:
     return "\n".join(lines)
 
 
-def write_report(item: WorkItem, reports_dir: Path) -> str:
+def write_report(item: WorkItem, reports_dir: Path, parent_title: str = "") -> str:
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / f"{item.id}.md"
-    path.write_text(render_report(item), encoding="utf-8")
+    path.write_text(render_report(item, parent_title), encoding="utf-8")
     return str(path)

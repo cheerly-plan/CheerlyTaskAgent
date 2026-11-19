@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {Check, ExternalLink, Loader2, RefreshCw} from 'lucide-react';
+import {Check, CornerDownRight, ExternalLink, GitBranch, Loader2, RefreshCw} from 'lucide-react';
 
 import {Button} from '@/components/ui/button';
 import {
@@ -27,6 +27,7 @@ import type {
   TapdImportSelection,
   TapdPreviewResult,
 } from '@/lib/api';
+import {orderForTreeView} from '@/lib/task-tree';
 
 interface TapdSyncDialogProps {
   open: boolean;
@@ -71,7 +72,7 @@ export function TapdSyncDialog({
   const [execMode, setExecMode] = React.useState<ExecMode>(defaultExecMode);
   const [submitting, setSubmitting] = React.useState(false);
 
-  const items = React.useMemo(() => preview?.items ?? [], [preview]);
+  const items = React.useMemo(() => orderForTreeView(preview?.items ?? []), [preview]);
   // 只有「新增 / 更新」可选；unchanged 仅作提示。
   const actionable = React.useMemo(() => items.filter((i) => i.status !== 'unchanged'), [items]);
 
@@ -228,6 +229,8 @@ export function TapdSyncDialog({
               {items.map((item) => {
                 const canSelect = item.status !== 'unchanged';
                 const active = selected.has(item.source_ref);
+                const isChild = Boolean(item.parent_ref);
+                const isContainer = Boolean(item.is_container);
                 return (
                   <button
                     key={item.source_ref}
@@ -237,6 +240,7 @@ export function TapdSyncDialog({
                     className={cn(
                       'flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors',
                       !canSelect && 'cursor-default opacity-60',
+                      isContainer && 'border-[#e3d9f8] bg-[#faf9fd]',
                       active ? 'border-primary bg-primary/5' : 'border-border hover:bg-secondary/60',
                     )}
                   >
@@ -248,8 +252,14 @@ export function TapdSyncDialog({
                     >
                       {active && <Check className="size-3" />}
                     </span>
+                    {isChild ? (
+                      <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
+                    ) : null}
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1.5">
+                        {isContainer ? (
+                          <GitBranch className="size-3.5 shrink-0 text-[#6d3fc0]" aria-hidden />
+                        ) : null}
                         {item.status === 'new' && <Badge variant="success">新增</Badge>}
                         {item.status === 'changed' && <Badge variant="warning">更新</Badge>}
                         {item.status === 'unchanged' && <Badge variant="muted">无变化</Badge>}

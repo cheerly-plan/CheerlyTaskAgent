@@ -55,8 +55,10 @@ export function isArchived(item: {status: Status; exec_mode?: string}): boolean 
  * 只有还没开始执行的「待映射 / 就绪」任务能改配置；一旦进入排队 / 执行中 /
  * 已结束（dry-run 或 apply），配置就锁定，保证执行报告与任务配置一致，
  * apply 沿用 dry-run 那一次的项目与模型。
+ * 父需求容器不执行任何配置，一律只读（由子需求汇总，无需仓库/模式/模型）。
  */
-export function canEditConfig(item: {status: Status}): boolean {
+export function canEditConfig(item: {status: Status; is_container?: boolean}): boolean {
+  if (item.is_container) return false;
   return item.status === 'discovered' || item.status === 'ready';
 }
 

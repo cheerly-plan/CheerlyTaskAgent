@@ -76,14 +76,7 @@ export function TaskActions({
       className="flex flex-wrap items-center justify-end gap-1.5"
       onClick={(event) => event.stopPropagation()}
     >
-      {container ? (
-        <span
-          className="inline-flex items-center gap-1 rounded-md border border-dashed border-[#d9cff3] px-2 py-1 text-[11px] text-[#6d3fc0]"
-          title="父需求容器：由子需求完成情况汇总，不直接执行"
-        >
-          容器
-        </span>
-      ) : dryDone ? (
+      {container ? null : dryDone ? (
         <Button
           size="sm"
           onClick={() => onAction('apply', item.id)}

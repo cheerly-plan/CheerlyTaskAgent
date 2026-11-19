@@ -21,7 +21,7 @@ from .events import EventBus, sse_frame
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
-from .report import render_report
+from .report import parent_title_of, render_report
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
@@ -369,6 +369,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         raw_cache: dict[str, dict[str, Any]] = {}
         previews: list[dict[str, Any]] = []
+        # 父子关系：子的 parent_ref 指向父的 source_ref；据此标出本次预览里的父容器。
+        parent_refs = {
+            getattr(item, "parent_ref", "") or ""
+            for item in result.items
+        }
         for item in result.items:
             raw = RawItem.from_tapd(item)
             probe = parse_raw(raw, exec_mode="dry-run")  # content only; choices applied at import
@@ -400,6 +405,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "repo_name": repo_name,
                 "changes": changes,
                 "existing_id": old.id if old is not None else "",
+                "parent_ref": raw.parent_ref,
+                "is_container": bool(raw.source_ref) and raw.source_ref in parent_refs,
             })
 
         stamps = [i.modified for i in result.items if i.modified]
@@ -967,7 +974,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Render from live item data so legacy reports (which embedded the
         # entire raw codebuddy stdout) are compact too. The on-disk .md remains
         # an untouched historical archive; downloads get this compact version.
-        return Response(render_report(item), media_type="text/markdown; charset=utf-8")
+        return Response(
+            render_report(item, parent_title_of(item, store)),
+            media_type="text/markdown; charset=utf-8",
+        )
 
     @app.get("/api/events")
     async def api_events(request: Request) -> StreamingResponse:

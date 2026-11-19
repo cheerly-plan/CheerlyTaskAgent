@@ -60,12 +60,18 @@ export function TaskCard({
             {item.git_url ? <span className="truncate">· {item.git_url}</span> : null}
           </div>
         </div>
-        <StatusBadge status={item.status} />
+        {isContainer ? (
+          <span className="text-xs text-faint">—</span>
+        ) : (
+          <StatusBadge status={item.status} />
+        )}
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <KindBadge kind={item.kind} />
-        {!editable ? (
+        {isContainer ? (
+          <Badge variant="muted">—</Badge>
+        ) : !editable ? (
           item.repo ? (
             <Badge variant="outline" className="gap-1">
               <FolderGit2 />
@@ -92,7 +98,7 @@ export function TaskCard({
         ) : (
           <Badge variant="muted">未映射</Badge>
         )}
-        {!editable ? (
+        {isContainer ? null : !editable ? (
           <Badge variant="secondary" className="font-mono">
             {mode}
           </Badge>
@@ -109,7 +115,7 @@ export function TaskCard({
             title="执行方式"
           />
         )}
-        {modelLocked ? (
+        {isContainer ? null : modelLocked ? (
           <Badge variant="muted" title={`由 ${backend?.label ?? ''} profile 决定`}>
             profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
           </Badge>

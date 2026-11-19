@@ -22,7 +22,7 @@ from .executor import Executor, ExecutorRegistry
 from .gitmap import GitProjectRegistry
 from .models import CommitResult, ItemKind, ItemStatus, SourceType, WorkItem
 from .projectmap import ProjectRegistry
-from .report import write_report
+from .report import parent_title_of, write_report
 from .sources import RawItem, parse_raw
 from .store import TaskStore
 
@@ -541,7 +541,9 @@ class Scheduler:
                 item.stage = "失败"
                 item.error = result.error
             item.finished_at = _utcnow()
-            item.report_path = write_report(item, self.settings.reports_dir)
+            item.report_path = write_report(
+                item, self.settings.reports_dir, parent_title_of(item, self.store)
+            )
             self.store.save(item)
             event = "item_succeeded" if result.ok else "item_failed"
             self.events.publish(

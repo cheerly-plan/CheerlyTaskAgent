@@ -26,9 +26,10 @@ interface Filters {
   source: string;
   status: string;
   project: string;
+  level: string;
 }
 
-const DEFAULT_FILTERS: Filters = {source: '', status: '', project: ''};
+const DEFAULT_FILTERS: Filters = {source: '', status: '', project: '', level: ''};
 
 function sortValue(item: WorkItem, field: string): string {
   switch (field) {
@@ -92,6 +93,12 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
         filters.project === '__none__' ? !item.repo : item.repo === filters.project,
       );
     }
+    if (filters.level) {
+      list = list.filter((item) => {
+        const level = item.is_container ? 'container' : item.parent_ref ? 'child' : 'standalone';
+        return level === filters.level;
+      });
+    }
     const query = keyword.trim().toLowerCase();
     if (query) {
       list = list.filter((item) =>
@@ -128,7 +135,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
     );
 
   const filterActive = Boolean(
-    filters.source || filters.status || filters.project || keyword,
+    filters.source || filters.status || filters.project || filters.level || keyword,
   );
   const resetFilters = () => {
     setFilters(DEFAULT_FILTERS);
@@ -232,6 +239,19 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
                 {value: '', label: '全部项目'},
                 {value: '__none__', label: '未映射'},
                 ...mappings.map((mapping) => ({value: mapping.name, label: mapping.name})),
+              ]}
+            />
+            <SelectField
+              size="sm"
+              className="w-[116px]"
+              value={filters.level}
+              title="层级"
+              onChange={(value) => setFilters((prev) => ({...prev, level: value}))}
+              options={[
+                {value: '', label: '全部层级'},
+                {value: 'container', label: '父需求'},
+                {value: 'child', label: '子需求'},
+                {value: 'standalone', label: '独立任务'},
               ]}
             />
             {view === 'card' ? (
