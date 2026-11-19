@@ -75,6 +75,15 @@ export function TapdSyncDialog({
   const items = React.useMemo(() => orderForTreeView(preview?.items ?? []), [preview]);
   // 只有「新增 / 更新」可选；unchanged 仅作提示。
   const actionable = React.useMemo(() => items.filter((i) => i.status !== 'unchanged'), [items]);
+  // 父需求不在本次预览结果里（父未建单 / 已被过滤）的子需求：导入后会成为孤儿。
+  const refs = React.useMemo(() => new Set(items.map((i) => i.source_ref)), [items]);
+  const parentTitleByRef = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of items) {
+      if (item.source_ref) map.set(item.source_ref, item.title);
+    }
+    return map;
+  }, [items]);
 
   // 每次打开预览：默认全选可操作项，并同步一次顶部配置为当前系统默认。
   React.useEffect(() => {
@@ -231,6 +240,8 @@ export function TapdSyncDialog({
                 const active = selected.has(item.source_ref);
                 const isChild = Boolean(item.parent_ref);
                 const isContainer = Boolean(item.is_container);
+                const parentInPreview = Boolean(item.parent_ref) && refs.has(item.parent_ref!);
+                const parentTitle = item.parent_ref ? parentTitleByRef.get(item.parent_ref) : '';
                 return (
                   <button
                     key={item.source_ref}
@@ -277,6 +288,17 @@ export function TapdSyncDialog({
                       <span className="mt-0.5 block truncate text-[11px] text-faint">
                         {item.source_ref} · 更新于 {item.modified || '—'}
                       </span>
+                      {isChild ? (
+                        parentInPreview ? (
+                          <span className="mt-0.5 block truncate text-[11px] text-[#6d3fc0]">
+                            属于父需求：{parentTitle || item.parent_ref}
+                          </span>
+                        ) : (
+                          <span className="mt-0.5 block truncate text-[11px] text-warning-foreground">
+                            父需求未出现在本次结果中，导入后将是独立任务
+                          </span>
+                        )
+                      ) : null}
                     </span>
                     {item.external_url && (
                       <a

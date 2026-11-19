@@ -1,3 +1,4 @@
+import * as React from 'react';
 import {ArrowDown, ArrowUp, ChevronsUpDown, CornerDownRight, FileText, FolderGit2, GitBranch} from 'lucide-react';
 
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
@@ -7,6 +8,7 @@ import {SelectField} from '@/components/select-field';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {canEditConfig, shortTime, sourceLabel} from '@/lib/labels';
+import {orphanChildren} from '@/lib/task-tree';
 import {
   cn,
   effectiveDefaultModelId,
@@ -259,6 +261,12 @@ export function TaskTable({
   onSort,
   containerClassName,
 }: TaskTableProps) {
+  // 父需求已被删除（父不在当前集合）的子需求：仍展示，但标记为「父已删除」。
+  const orphans = React.useMemo(
+    () => new Set(orphanChildren(items).map((item) => item.id)),
+    [items],
+  );
+
   return (
     <Table className="min-w-[980px]" containerClassName={containerClassName}>
       <TableHeader>
@@ -280,12 +288,19 @@ export function TaskTable({
         {items.map((item) => {
           const isChild = Boolean(item.parent_ref);
           const isContainer = Boolean(item.is_container);
+          const isOrphan = orphans.has(item.id);
           return (
           <TableRow key={item.id} className={cn('group', isContainer && 'bg-[#faf9fd]')}>
             <TableCell className={cn('pl-4', isChild && 'pl-8')}>
               <div className="flex items-center gap-2.5">
                 {isChild ? (
-                  <CornerDownRight className="size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
+                  <CornerDownRight
+                    className={cn(
+                      'size-3.5 shrink-0',
+                      isOrphan ? 'text-warning-foreground/60' : 'text-[#a9a0c4]',
+                    )}
+                    aria-hidden
+                  />
                 ) : null}
                 <span
                   className={cn(
@@ -301,6 +316,15 @@ export function TaskTable({
                 >
                   {item.title}
                 </div>
+                {isOrphan ? (
+                  <Badge
+                    variant="warning"
+                    className="shrink-0"
+                    title={`父需求 ${item.parent_ref} 已不在列表中（可能被删除），本条子需求成为独立任务`}
+                  >
+                    父已删除
+                  </Badge>
+                ) : null}
               </div>
             </TableCell>
             <TableCell>

@@ -371,8 +371,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         previews: list[dict[str, Any]] = []
         # 父子关系：子的 parent_ref 指向父的 source_ref；据此标出本次预览里的父容器。
         parent_refs = {
-            getattr(item, "parent_ref", "") or ""
-            for item in result.items
+            ref for ref in (
+                getattr(item, "parent_ref", "") or "" for item in result.items
+            ) if ref
         }
         for item in result.items:
             raw = RawItem.from_tapd(item)

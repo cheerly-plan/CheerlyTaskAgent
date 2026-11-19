@@ -782,3 +782,30 @@ def test_workitem_parent_fields_roundtrip():
     legacy = WorkItem.from_dict(data)
     assert legacy.parent_ref == ""
     assert legacy.is_container is False
+
+
+def test_parent_delete_leaves_child_intact(env):
+    """删除父需求后，子需求不应消失，只是变成独立任务。"""
+    scheduler, store, _gitmap, _events, _data = env
+    from taskagent.models import WorkItem
+
+    parent = WorkItem.create(
+        title="父需求", description="", source="tapd",
+        source_ref="tapd:story:1132312011001000017",
+    )
+    parent.is_container = True
+    store.save(parent)
+    child = WorkItem.create(
+        title="子需求", description="", source="tapd",
+        source_ref="tapd:story:1132312011001000018",
+        parent_ref="tapd:story:1132312011001000017",
+    )
+    store.save(child)
+    scheduler.link_parent_relations()
+
+    # 删除父：只剩子
+    (store.root / f"{parent.id}.json").unlink()
+    survivors = store.list(limit=1000)
+    assert [it.title for it in survivors] == ["子需求"]
+    # 子的 parent_ref 保留（指向已不存在的父），由 UI 标记为「父已删除」
+    assert survivors[0].parent_ref == "tapd:story:1132312011001000017"
