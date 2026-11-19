@@ -21,7 +21,9 @@ from .events import EventBus, sse_frame
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
+from .repoprofile import RepoProfileStore, ensure_profiles
 from .report import parent_title_of, render_report
+from .route import RouteHistory, route_item
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
@@ -76,6 +78,11 @@ class CommitRulesBody(BaseModel):
 
 class MapBody(BaseModel):
     repo_name: str
+
+
+class RepoOverrideBody(BaseModel):
+    roles: list[str] = []
+    keywords: list[str] = []
 
 
 class MappingBody(BaseModel):
@@ -190,6 +197,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         seed=settings.project_map_seed,
     )
     projects = ProjectRegistry(project_store)
+    # 结构化画像 + 历史学习：多仓库分流用，纯确定性、可解释，不依赖 LLM。
+    profile_store = RepoProfileStore(settings.data_dir / "repo-profiles.json")
+    route_history = RouteHistory(settings.data_dir / "route-history.json")
+    try:
+        ensure_profiles(profile_store, projects.list())
+    except Exception:  # 画像失败不该挡住启动
+        logger.warning("初始化仓库画像失败", exc_info=True)
     browser = FolderBrowser(settings.browse_root)
     events = EventBus()
 
@@ -329,16 +343,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as error:  # noqa: BLE001 - 关系绑定是增强，不能拖垮同步
             logger.warning("父子关系绑定失败：%s", error)
 
-    def _tapd_repo_hint(item: TapdItem, client: TapdClient) -> tuple[str, str]:
-        """Resolve the bound local repo name + a stage hint for one TAPD item."""
+    def _tapd_repo_hint(
+        item: TapdItem, client: TapdClient
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Resolve the bound local repo name + stage hint + routing detail.
+
+        多仓库时走 ``route_item``：历史学习 → 文本点名 → 角色契合 → 文本相关度，
+        都判不出来就留空并标出候选，等人工确认（确认后会记入历史）。
+        """
         wid = item.workspace_id or client.config.primary_workspace_id
         bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []
-        repo_name = bound[0].name if len(bound) == 1 else ""
-        hint = (
-            f"TAPD 项目关联 {len(bound)} 个本地仓库，待确定执行仓库：" + "、".join(m.name for m in bound)
-            if len(bound) > 1 else ""
+        if not bound:
+            return "", "", {"repo": "", "method": "none", "reason": "该项目未绑定本地仓库"}
+        profiles = {p.mapping_id: p for p in profile_store.all()}
+        decision = route_item(
+            workspace_id=str(wid),
+            title=item.title,
+            description=getattr(item, "description", "") or "",
+            candidates=bound,
+            profiles=profiles,
+            history=route_history,
         )
-        return repo_name, hint
+        repo_name = decision.repo
+        if decision.needs_confirm:
+            names = "、".join(m.name for m in bound)
+            hint = f"TAPD 项目绑定 {len(bound)} 个仓库（{names}）｜{decision.reason}"
+            repo_name = ""
+        else:
+            hint = f"自动指定仓库：{decision.repo}（{decision.reason}）"
+        return repo_name, hint, decision.to_dict()
 
     def preview_tapd_now(modified_since: str = "", force: bool = False) -> dict[str, Any]:
         """Fetch TAPD items and diff against existing tasks WITHOUT writing anything.
@@ -390,12 +423,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if old.description != probe.description:
                     changes.append("description")
             status = "new" if old is None else ("changed" if changes else "unchanged")
-            repo_name, stage_hint = _tapd_repo_hint(item, client)
+            repo_name, stage_hint, route_info = _tapd_repo_hint(item, client)
             raw_cache[raw.source_ref] = {
                 "raw": raw,
                 "status": status,
                 "repo_name": repo_name,
                 "stage_hint": stage_hint,
+                "route": route_info,
                 "modified": item.modified,
                 "existing_id": old.id if old is not None else "",
             }
@@ -408,6 +442,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "external_url": item.external_url,
                 "modified": item.modified,
                 "repo_name": repo_name,
+                "route": route_info,
                 "changes": changes,
                 "existing_id": old.id if old is not None else "",
                 "parent_ref": raw.parent_ref,
@@ -667,19 +702,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_list_mappings() -> dict[str, Any]:
         return {"mappings": [m.to_dict() for m in projects.list()]}
 
+    def _refresh_profile(mapping: Any) -> None:
+        """新增/修改映射后就地建立仓库画像，供多仓库分流使用。"""
+        if mapping.enabled:
+            try:
+                profile_store.rebuild(mapping.id, mapping.name, mapping.path)
+            except Exception:
+                logger.warning("建立仓库画像失败：%s", mapping.path, exc_info=True)
+
     @app.post("/api/mappings", status_code=201)
     def api_add_mapping(body: MappingBody) -> dict[str, Any]:
         try:
-            return projects.add(body.model_dump()).to_dict()
+            mapping = projects.add(body.model_dump())
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        _refresh_profile(mapping)
+        return mapping.to_dict()
 
     @app.post("/api/mappings/bulk", status_code=201)
     def api_add_mappings_bulk(body: BulkMappingBody) -> dict[str, Any]:
         added, failed = [], []
         for data in body.items:
             try:
-                added.append(projects.add(data.model_dump()).to_dict())
+                mapping = projects.add(data.model_dump())
+                _refresh_profile(mapping)
+                added.append(mapping.to_dict())
             except ValueError as error:
                 failed.append({"item": data.model_dump(), "error": str(error)})
         return {"added": added, "failed": failed}
@@ -689,14 +736,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             # exclude_unset so a partial update (e.g. toggle enabled) does not
             # wipe other fields with the model's empty defaults.
-            return projects.update(mapping_id, body.model_dump(exclude_unset=True)).to_dict()
+            updated = projects.update(mapping_id, body.model_dump(exclude_unset=True))
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        _refresh_profile(updated)
+        return updated.to_dict()
 
     @app.delete("/api/mappings/{mapping_id}")
     def api_delete_mapping(mapping_id: str) -> dict[str, bool]:
         if not projects.remove(mapping_id):
             raise HTTPException(404, "mapping not found")
+        profile_store.remove(mapping_id)
         return {"deleted": True}
 
     @app.get("/api/items")
@@ -843,6 +893,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, result["error"])
         return {"created": result["created"], "skipped": result["skipped"]}
 
+    @app.get("/api/repo-profiles")
+    def api_repo_profiles() -> dict[str, Any]:
+        """结构化画像：每个本地仓库的角色、依赖指纹、关键词等（多仓库分流依据）。"""
+        return {"profiles": [p.to_dict() for p in profile_store.all()]}
+
+    @app.post("/api/repo-profiles/rebuild")
+    def api_repo_profiles_rebuild() -> dict[str, Any]:
+        """重建全部画像（仓库有改动时可手动触发）。"""
+        result = ensure_profiles(profile_store, projects.list(), force=True)
+        return {**result, "profiles": [p.to_dict() for p in profile_store.all()]}
+
+    @app.post("/api/repo-profiles/{mapping_id}/override")
+    def api_repo_profile_override(mapping_id: str, body: RepoOverrideBody) -> dict[str, Any]:
+        """人工覆盖角色 / 关键词；覆盖优先于自动推断。"""
+        profile = profile_store.get(mapping_id)
+        if profile is None:
+            profile_store.rebuild(
+                mapping_id,
+                next((m.name for m in projects.list() if m.id == mapping_id), mapping_id),
+                next((m.path for m in projects.list() if m.id == mapping_id), ""),
+            )
+            profile = profile_store.get(mapping_id)
+        if profile is None:
+            raise HTTPException(404, "profile not found")
+        profile.override_roles = [r for r in body.roles if r]
+        profile.override_keywords = [k for k in body.keywords if k]
+        profile_store.save()
+        return profile.to_dict()
+
     @app.post("/api/items/auto-map")
     def api_auto_map() -> dict[str, Any]:
         """按 TAPD 项目绑定，把未映射的历史工单补上仓库。
@@ -895,9 +974,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/items/{item_id}/map")
     def api_map_item(item_id: str, body: MapBody) -> dict[str, Any]:
         try:
-            return scheduler.map_manually(item_id, body.repo_name).to_dict()
+            mapped = scheduler.map_manually(item_id, body.repo_name)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+        # 人工指定仓库 = 最可靠的路由证据，记入历史供同类需求复用。
+        if mapped.tapd_workspace_id:
+            try:
+                route_history.record(
+                    str(mapped.tapd_workspace_id),
+                    f"{mapped.title} {mapped.description or ''}",
+                    mapped.repo.name if mapped.repo else body.repo_name,
+                )
+            except Exception:
+                logger.warning("记录路由历史失败", exc_info=True)
+        return mapped.to_dict()
 
     @app.post("/api/items/{item_id}/run")
     async def api_run_item(item_id: str, body: RunBody) -> dict[str, Any]:

@@ -282,7 +282,22 @@ export function TapdSyncDialog({
                         {item.status === 'changed' && <Badge variant="warning">更新</Badge>}
                         {item.status === 'unchanged' && <Badge variant="muted">无变化</Badge>}
                         <Badge variant="outline">{item.kind}</Badge>
-                        {item.repo_name && <Badge variant="info">{item.repo_name}</Badge>}
+                        {item.repo_name && (
+                          <Badge
+                            variant="info"
+                            title={item.route ? `自动指定：${item.route.reason}` : undefined}
+                          >
+                            {item.repo_name}
+                          </Badge>
+                        )}
+                        {!item.repo_name && item.route?.needs_confirm && item.route.candidates?.length ? (
+                          <Badge
+                            variant="warning"
+                            title={item.route.reason}
+                          >
+                            待选仓库（{item.route.candidates.length}）
+                          </Badge>
+                        ) : null}
                         {isChild ? (
                           <Badge
                             variant="purple"

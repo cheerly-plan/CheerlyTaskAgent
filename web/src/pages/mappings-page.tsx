@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {FolderGit2, Pencil, Plus, Search, Trash2} from 'lucide-react';
+import {FolderGit2, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {EmptyState, Mono} from '@/components/status-bits';
@@ -8,12 +8,42 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Switch} from '@/components/ui/switch';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
-import {endpoints, readGitOrigin, type TapdWorkspace} from '@/lib/api';
+import {endpoints, readGitOrigin, type RepoProfile, type TapdWorkspace} from '@/lib/api';
 import {cn} from '@/lib/utils';
 
 export function MappingsPage() {
   const {settings, mappings, pickFolder, openScan, openMappingModal, toggleMapping, deleteMapping} = useApp();
   const [fetchedProjects, setFetchedProjects] = React.useState<TapdWorkspace[]>([]);
+  const [profiles, setProfiles] = React.useState<Record<string, RepoProfile>>({});
+  const [rebuilding, setRebuilding] = React.useState(false);
+
+  // 仓库画像（多仓库分流的依据）：进页面拉一次，供表格展示角色。
+  const loadProfiles = React.useCallback(async () => {
+    try {
+      const result = await endpoints.repoProfiles();
+      const map: Record<string, RepoProfile> = {};
+      for (const profile of result.profiles ?? []) map[profile.mapping_id] = profile;
+      setProfiles(map);
+    } catch {
+      /* 画像只是辅助信息，失败不影响页面 */
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles, mappings.length]);
+
+  const rebuildProfiles = async () => {
+    setRebuilding(true);
+    try {
+      const result = await endpoints.rebuildRepoProfiles();
+      const map: Record<string, RepoProfile> = {};
+      for (const profile of result.profiles ?? []) map[profile.mapping_id] = profile;
+      setProfiles(map);
+    } finally {
+      setRebuilding(false);
+    }
+  };
 
   // 缓存还没写进设置时，静默拉一次项目名，避免这页只显示裸项目 ID。
   React.useEffect(() => {
@@ -63,6 +93,15 @@ export function MappingsPage() {
             <Search />
             扫描
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void rebuildProfiles()}
+            title="重新扫描每个仓库的技术栈与关键词（多仓库分流依据）"
+          >
+            <RefreshCw className={rebuilding ? 'animate-spin' : ''} />
+            重建画像
+          </Button>
           <Button size="sm" onClick={() => openMappingModal(null)}>
             <Plus />
             新增
@@ -83,6 +122,7 @@ export function MappingsPage() {
               <TableHead className="pl-5">项目名</TableHead>
               <TableHead>本地路径</TableHead>
               <TableHead>仓库信息 / 备注</TableHead>
+              <TableHead>仓库画像</TableHead>
               <TableHead>TAPD 项目</TableHead>
               <TableHead>状态</TableHead>
               <TableHead className="pr-5 text-right">操作</TableHead>
@@ -104,6 +144,38 @@ export function MappingsPage() {
                   >
                     {mapping.note || '—'}
                   </span>
+                </TableCell>
+                <TableCell>
+                  {(() => {
+                    const profile = profiles[mapping.id];
+                    const roles = profile?.override_roles?.length
+                      ? profile.override_roles
+                      : profile?.roles ?? [];
+                    if (!roles.length) {
+                      return <span className="text-xs text-faint">—</span>;
+                    }
+                    const label: Record<string, string> = {
+                      frontend: '前端',
+                      backend: '后端',
+                      mobile: '移动端',
+                      desktop: '桌面端',
+                    };
+                    return (
+                      <div className="flex flex-wrap gap-1">
+                        {roles.map((role) => (
+                          <Badge
+                            key={role}
+                            variant="purple"
+                            className="gap-1"
+                            title={profile?.fingerprints?.length ? `依据：${profile.fingerprints.join('、')}` : undefined}
+                          >
+                            <Sparkles className="size-2.5" />
+                            {label[role] ?? role}
+                          </Badge>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell>
                   {(() => {

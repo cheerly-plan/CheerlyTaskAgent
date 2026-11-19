@@ -40,6 +40,38 @@ export interface WorkItem {
   created_at?: string;
 }
 
+/** 多仓库分流结果（后端 route.py 的决策）。 */
+export interface RouteDecision {
+  repo: string;
+  /** auto | history | explicit | role | text | ambiguous | none */
+  method: string;
+  confidence: number;
+  reason: string;
+  candidates?: {repo: string; score: number; reason: string}[];
+  needs_confirm?: boolean;
+}
+
+/** 本地仓库的结构化画像（多仓库分流依据）。 */
+export interface RepoProfile {
+  mapping_id: string;
+  name: string;
+  path: string;
+  roles: string[];
+  package_name: string;
+  description: string;
+  keywords: string[];
+  readme_title: string;
+  readme_excerpt: string;
+  top_dirs: string[];
+  languages: Record<string, number>;
+  fingerprints: string[];
+  commit_keywords: string[];
+  head_sha: string;
+  built_at: string;
+  override_roles: string[];
+  override_keywords: string[];
+}
+
 /** TAPD 同步预览中的一条候选（尚未落库）。 */
 export interface TapdPreviewItem {
   source_ref: string;
@@ -52,6 +84,8 @@ export interface TapdPreviewItem {
   modified: string;
   /** 根据 TAPD 项目绑定推断出的本地仓库名（空表示未推断到）。 */
   repo_name: string;
+  /** 多仓库分流结果：方法（history/role/text/ambiguous…）、置信度、理由、候选。 */
+  route?: RouteDecision;
   /** 变更字段（status=changed 时非空）。 */
   changes: string[];
   existing_id: string;
@@ -282,6 +316,12 @@ export const endpoints = {
   runItem: (id: string, body: {exec_mode: ExecMode; model?: string | null; approved?: boolean; executor?: string}) =>
     api<unknown>(`/api/items/${id}/run`, jsonInit('POST', body)),
   cancelItem: (id: string) => api<{cancelled: boolean}>(`/api/items/${id}/cancel`, {method: 'POST'}),
+  repoProfiles: () => api<{profiles: RepoProfile[]}>('/api/repo-profiles'),
+  rebuildRepoProfiles: () =>
+    api<{created: number; rebuilt: number; pruned: number; profiles: RepoProfile[]}>(
+      '/api/repo-profiles/rebuild',
+      {method: 'POST'},
+    ),
   autoMapItems: () =>
     api<{mapped: number; ambiguous: number; unmatched: number}>('/api/items/auto-map', {method: 'POST'}),
   deleteItem: (id: string) => api<unknown>(`/api/items/${id}`, {method: 'DELETE'}),
