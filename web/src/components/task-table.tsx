@@ -6,7 +6,7 @@ import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {SelectField} from '@/components/select-field';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
-import {ACTIVE_STATUSES, TERMINAL_STATUSES, isArchived, shortTime, sourceLabel} from '@/lib/labels';
+import {canEditConfig, shortTime, sourceLabel} from '@/lib/labels';
 import {
   cn,
   effectiveDefaultModelId,
@@ -101,8 +101,8 @@ function RepoCell({
   const options = mappings
     .filter((mapping) => mapping.enabled)
     .map((mapping) => ({value: mapping.name, label: mapping.name}));
-  // 已归档的 apply 记录只读展示，不再给下拉。
-  if (isArchived(item) || !options.length) {
+  // 已进入执行流程（排队/执行中/已结束）的任务只读展示，配置锁定。
+  if (!canEditConfig(item) || !options.length) {
     return item.repo ? (
       <Badge variant="outline" className="gap-1">
         <FolderGit2 />
@@ -140,8 +140,7 @@ function ModeCell({
     {value: 'dry-run', label: 'dry-run'},
     {value: 'apply', label: 'apply'},
   ];
-  const running = ACTIVE_STATUSES.includes(item.status);
-  if (running || isArchived(item)) return <Mono>{mode}</Mono>;
+  if (!canEditConfig(item)) return <Mono>{mode}</Mono>;
   return (
     <SelectField
       size="sm"
@@ -195,10 +194,8 @@ function ModelCell({
     hint: modelHint(model),
     group: modelCategory(model),
   }));
-  const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
-  const terminal = TERMINAL_STATUSES.includes(item.status) && !dryDone;
-  const running = ACTIVE_STATUSES.includes(item.status);
-  const showSelect = !terminal && !running && options.length > 0;
+  // 只有还没执行的任务能改模型；dry-run 跑完后模型必须与报告一致，锁定展示。
+  const showSelect = canEditConfig(item) && options.length > 0;
 
   if (!showSelect) {
     return <ModelTag item={item} backends={backends} models={models} />;

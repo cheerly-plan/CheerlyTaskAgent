@@ -3,7 +3,7 @@ import {Plus, Square, Trash2, FileText, Play} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
 import type {BackendInfo, ItemAction, ModelChoice, WorkItem} from '@/lib/api';
-import {ACTIVE_STATUSES, TERMINAL_STATUSES} from '@/lib/labels';
+import {ACTIVE_STATUSES, TERMINAL_STATUSES, canEditConfig} from '@/lib/labels';
 import {effectiveDefaultModelId, modelCategory, modelHint, sortModelsByCategory} from '@/lib/utils';
 
 export interface ActionSelection {
@@ -73,7 +73,16 @@ export function TaskActions({
       className="flex flex-wrap items-center justify-end gap-1.5"
       onClick={(event) => event.stopPropagation()}
     >
-      {!terminal && !running ? (
+      {dryDone ? (
+        <Button
+          size="sm"
+          onClick={() => onAction('apply', item.id)}
+          title="沿用本次 dry-run 的项目与模型执行 apply（会在隔离 worktree 改代码，需二次确认）"
+        >
+          <Play />
+          apply
+        </Button>
+      ) : !terminal && !running ? (
         <Button size="sm" onClick={() => onAction('exec', item.id)} title="按模式列选择的方式执行">
           <Play />
           执行
@@ -87,7 +96,7 @@ export function TaskActions({
         </Button>
       ) : null}
 
-      {showModelSelect && !terminal && !running ? (
+      {showModelSelect && canEditConfig(item) ? (
         canPickModel && modelOptions.length > 0 ? (
           <SelectField
             size="sm"

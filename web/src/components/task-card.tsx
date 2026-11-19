@@ -5,9 +5,8 @@ import {SelectField} from '@/components/select-field';
 import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
-import {ACTIVE_STATUSES, sourceLabel} from '@/lib/labels';
+import {canEditConfig, sourceLabel} from '@/lib/labels';
 import {effectiveDefaultModelId, modelMatches, resolvedModelLabel} from '@/lib/utils';
-import {isArchived} from '@/lib/labels';
 
 interface TaskCardProps {
   item: WorkItem;
@@ -40,7 +39,7 @@ export function TaskCard({
     .filter((mapping) => mapping.enabled)
     .map((mapping) => ({value: mapping.name, label: mapping.name}));
   const mode = (selection.mode || item.exec_mode || 'dry-run') as ExecMode;
-  const running = ACTIVE_STATUSES.includes(item.status);
+  const editable = canEditConfig(item);
   return (
     <div className="group flex flex-col rounded-xl border border-border bg-card p-4 shadow-sm transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-primary/30 hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
@@ -59,7 +58,7 @@ export function TaskCard({
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <KindBadge kind={item.kind} />
-        {isArchived(item) ? (
+        {!editable ? (
           item.repo ? (
             <Badge variant="outline" className="gap-1">
               <FolderGit2 />
@@ -86,7 +85,7 @@ export function TaskCard({
         ) : (
           <Badge variant="muted">未映射</Badge>
         )}
-        {running || isArchived(item) ? (
+        {!editable ? (
           <Badge variant="secondary" className="font-mono">
             {mode}
           </Badge>
