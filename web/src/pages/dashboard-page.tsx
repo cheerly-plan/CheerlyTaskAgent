@@ -6,7 +6,7 @@ import {KpiCards} from '@/components/kpi-cards';
 import {StatusBadge} from '@/components/status-bits';
 import {Card} from '@/components/ui/card';
 import {ACTIVE_STATUSES, shortTime} from '@/lib/labels';
-import {orderForTreeView} from '@/lib/task-tree';
+import {groupByParent} from '@/lib/task-tree';
 import {cn} from '@/lib/utils';
 
 /** 概览：关键数字 + 最近工单。 */
@@ -25,14 +25,12 @@ export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
     return result;
   }, [items]);
 
-  const recent = React.useMemo(
+  // 最近工单同样按父需求合并：先取最近的若干条，再分组聚拢，同父的会排在一起。
+  const recentGroups = React.useMemo(
     () =>
-      orderForTreeView(
-        items
-          .slice()
-          .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
-          .slice(0, 6),
-      ),
+      groupByParent(
+        items.slice().sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '')),
+      ).slice(0, 6),
     [items],
   );
 
@@ -57,11 +55,26 @@ export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
             全部任务
           </button>
         </div>
-        {recent.length === 0 ? (
+        {recentGroups.length === 0 ? (
           <p className="px-5 py-10 text-center text-[12px] text-faint">暂无工单</p>
         ) : (
           <ul className="divide-y divide-border">
-            {recent.map((item) => {
+            {recentGroups.map((group) => (
+              <React.Fragment key={group.key || `solo-${group.items[0]?.id}`}>
+                {group.key ? (
+                  <li className="flex items-center gap-2.5 bg-[#faf9fd] px-5 py-2">
+                    <span className="grid size-6 shrink-0 place-items-center rounded-md bg-[#ece5fb] text-[#6d3fc0]">
+                      <GitBranch className="size-3" aria-hidden />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+                      {group.parentTitle || group.key}
+                    </span>
+                    <span className="shrink-0 text-[11px] text-faint">
+                      {group.items.length} 个子需求
+                    </span>
+                  </li>
+                ) : null}
+                {group.items.map((item) => {
               const isChild = Boolean(item.parent_ref);
               const isContainer = Boolean(item.is_container);
               return (
@@ -90,7 +103,9 @@ export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
                 </span>
               </li>
               );
-            })}
+                })}
+              </React.Fragment>
+            ))}
           </ul>
         )}
       </Card>
