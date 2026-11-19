@@ -83,12 +83,10 @@ export function TaskActions({
           title="沿用本次 dry-run 的项目与模型执行 apply（会在隔离 worktree 改代码，需二次确认）"
         >
           <Play />
-          apply
         </Button>
       ) : !terminal && !running ? (
-        <Button size="sm" onClick={() => onAction('exec', item.id)} title="按模式列选择的方式执行">
-          <Play />
-          执行
+        <Button variant="outline" size="sm" onClick={() => onAction('exec', item.id)} title="按模式列选择的方式执行">
+          <Play color="black" />
         </Button>
       ) : null}
 
