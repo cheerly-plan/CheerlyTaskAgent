@@ -30,6 +30,8 @@ export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-5">
+      <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-foreground">数据看板</h2>
+
       <KpiCards
         total={items.length}
         running={counts.running}
