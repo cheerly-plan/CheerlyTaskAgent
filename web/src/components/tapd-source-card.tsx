@@ -344,36 +344,19 @@ export function TapdSourceCard({
     toast.success(`已更新项目：${patch.name}，记得点「保存」`);
   };
 
-  const removeProject = async (projectId: string) => {
-    // 一次性从所有来源清除：已保存项目、选中 workspace_id、本地名称缓存与拉取工作集。
-    // 只清 tapd.projects 不够——nameCache / workspaces 里还在，重渲染后又会把项目带回来。
+  const removeProject = (projectId: string) => {
+    // 只更新草稿，点「保存」后才真正落库（与表单其它字段一致）。
+    // projects / workspace_id / 本地缓存一起清：只清一处，重渲染时项目会被补全回来。
     const nextIds = selectedIds.filter((id) => id !== projectId);
+    const nextTapd: TapdSettings = {
+      ...tapd,
+      projects: allSavedProjects.filter((item) => item.id !== projectId),
+      workspace_id: nextIds.join(','),
+    };
     setNameCache((prev) => prev.filter((item) => item.id !== projectId));
     setWorkspaces((prev) => prev.filter((item) => item.id !== projectId));
-    onPatch({
-      ...source,
-      tapd: {
-        ...tapd,
-        projects: allSavedProjects.filter((item) => item.id !== projectId),
-        workspace_id: nextIds.join(','),
-      },
-    });
-    // 解除映射里对该项目的关联。
-    const touched: string[] = [];
-    for (const mapping of mappings) {
-      const ids = mapping.tapd_workspace_ids?.length
-        ? mapping.tapd_workspace_ids
-        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
-      if (!ids.includes(projectId)) continue;
-      const nextMappingIds = ids.filter((id) => id !== projectId);
-      await endpoints.updateMapping(mapping.id, {
-        tapd_workspace_ids: nextMappingIds,
-        tapd_workspace_id: nextMappingIds[0] ?? '',
-      });
-      touched.push(mapping.id);
-    }
-    if (touched.length) await reloadMappings();
-    toast.success('已删除项目，记得点「保存」');
+    onPatch({...source, tapd: nextTapd});
+    toast.success('已移除项目，点「保存」后生效');
   };
 
   return (
