@@ -287,13 +287,17 @@ export function TaskTable({
             {group.key ? (
               /* 父需求分组标题：父可能不在本地（只导入了子需求），用快照标题展示。 */
               <TableRow className="bg-[#faf9fd] hover:bg-[#faf9fd]">
-                <TableCell colSpan={9} className="py-1.5 pl-4">
-                  <div className="flex items-center gap-2 text-[12px] text-[#6d3fc0]">
-                    <GitBranch className="size-3.5 shrink-0" aria-hidden />
-                    <span className="font-medium">
+                <TableCell colSpan={9} className="py-2 pl-4">
+                  <div className="flex items-center gap-2.5">
+                    <span className="grid size-7 shrink-0 place-items-center rounded-md bg-[#ece5fb] text-[#6d3fc0]">
+                      <GitBranch className="size-3.5" />
+                    </span>
+                    <span className="min-w-0 truncate font-medium text-foreground">
                       {group.parentTitle || group.key}
                     </span>
-                    <span className="text-faint">{group.items.length} 个子需求</span>
+                    <span className="shrink-0 text-[11.5px] text-faint">
+                      {group.items.length} 个子需求
+                    </span>
                   </div>
                 </TableCell>
               </TableRow>
