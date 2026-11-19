@@ -15,7 +15,7 @@ export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' 
 export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
   {key: 'dashboard', label: '数据看板', icon: LayoutDashboard},
   {key: 'tasks', label: '任务列表', icon: List},
-  {key: 'history', label: '执行历史', icon: History},
+  {key: 'history', label: '历史任务', icon: History},
   {key: 'mapping', label: '项目映射', icon: FolderGit2},
   {key: 'sources', label: '数据源', icon: Inbox},
   {key: 'settings', label: '系统设置', icon: Settings2},

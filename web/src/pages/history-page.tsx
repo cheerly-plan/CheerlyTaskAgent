@@ -46,7 +46,7 @@ function sortValue(item: WorkItem, field: string): string {
   }
 }
 
-/** 执行历史：只展示 apply 执行结束的任务（成功 / 失败 / 跳过 / 已取消），可看报告、重试、删除。 */
+/** 历史任务：只展示 apply 执行结束的任务（成功 / 失败 / 跳过 / 已取消），可看报告、重试、删除。 */
 export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const {
     items,
@@ -141,10 +141,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
       <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
-            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">执行历史</h3>
-            <p className="mt-0.5 text-[11.5px] text-faint">
-              已结束的任务归档于此，可查看执行报告或重新执行。
-            </p>
+            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">历史任务</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -266,7 +263,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
         {finished.length === 0 ? (
           <EmptyState
             icon={History}
-            title="还没有执行历史"
+            title="还没有历史任务"
             description="apply 执行结束后（成功 / 失败 / 跳过 / 已取消）会自动归档到这里；dry-run 预演留在任务列表。"
             action={
               onOpenTasks ? (

@@ -76,7 +76,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
   const tapd = settings?.data_source?.tapd ?? settings?.tapd;
   const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
 
-  // 只有 apply 的终态会归档到「执行历史」；dry-run 结果留在列表，方便接着 apply。
+  // 只有 apply 的终态会归档到「历史任务」；dry-run 结果留在列表，方便接着 apply。
   const activeItems = React.useMemo(
     () => items.filter((item) => !isArchived(item)),
     [items],
@@ -308,7 +308,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
             description={
               items.length === 0
                 ? '点右上角「新建任务」手动录入需求或 Bug；TAPD 工单在「数据源」Tab 自动接入。'
-                : '所有任务都已执行结束并归档。可在「执行历史」里查看报告或重新执行。'
+                : '所有任务都已执行结束并归档。可在「历史任务」里查看报告或重新执行。'
             }
             action={
               items.length === 0 ? (
@@ -317,7 +317,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
                 </Button>
               ) : onOpenHistory ? (
                 <Button variant="outline" className="mt-2" onClick={onOpenHistory}>
-                  查看执行历史
+                  查看历史任务
                 </Button>
               ) : undefined
             }
@@ -408,7 +408,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
       </Card>
 
       <p className="mt-3 shrink-0 text-[11.5px] text-faint">
-        提示：点「报告」查看执行详情；执行结束的任务会自动归档到「执行历史」。apply 会在隔离 worktree 中真实改代码，执行前需二次确认。
+        提示：点「报告」查看执行详情；执行结束的任务会自动归档到「历史任务」。apply 会在隔离 worktree 中真实改代码，执行前需二次确认。
       </p>
     </div>
   );
