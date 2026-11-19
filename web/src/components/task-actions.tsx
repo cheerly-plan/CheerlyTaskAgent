@@ -79,7 +79,7 @@ export function TaskActions({
         <>
           <SelectField
             size="sm"
-            className="w-[124px]"
+            className="w-[116px]"
             value={selection.map ?? ''}
             placeholder="请选择仓库"
             options={repoOptions}

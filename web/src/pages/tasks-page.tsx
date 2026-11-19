@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {ArrowDown, ArrowUp, LayoutGrid, List, RefreshCw, Search, Wand2, X} from 'lucide-react';
+import {ArrowDown, ArrowUp, LayoutGrid, List, Plus, RefreshCw, Search, Wand2, X} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {EmptyState} from '@/components/status-bits';
@@ -50,6 +50,8 @@ export function TasksPage() {
   const {
     items,
     itemsTotal,
+    settings,
+    syncTapd,
     mappings,
     models,
     backends,
@@ -70,6 +72,18 @@ export function TasksPage() {
   const [refreshing, setRefreshing] = React.useState(false);
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
+  const [syncing, setSyncing] = React.useState(false);
+
+  const tapd = settings?.data_source?.tapd ?? settings?.tapd;
+  const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
+  const syncNow = async (force: boolean) => {
+    setSyncing(true);
+    try {
+      await syncTapd(force);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const visible = React.useMemo(() => {
     let list = items.slice();
@@ -138,6 +152,39 @@ export function TasksPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-foreground">任务列表</h2>
+          <p className="mt-1 text-[12px] text-faint">{countText}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void syncNow(false)}
+            disabled={syncing || !tapdReady}
+            title={tapdReady ? '增量拉取：只拉上次同步后修改的条目' : '请先在「数据源」配置 TAPD 与 API 凭证'}
+          >
+            <RefreshCw className={syncing ? 'animate-spin' : ''} />
+            立即同步
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void syncNow(true)}
+            disabled={syncing || !tapdReady}
+            title={tapdReady ? '忽略增量游标，重新拉取全部工单（已存在的按 source_ref 去重）' : '请先在「数据源」配置 TAPD 与 API 凭证'}
+          >
+            <RefreshCw className={syncing ? 'animate-spin' : ''} />
+            全量重拉
+          </Button>
+          <Button size="sm" onClick={openNewTask}>
+            <Plus />
+            新建任务
+          </Button>
+        </div>
+      </div>
+
       <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
         {/* 工具栏：搜索 / 筛选 / 视图切换 */}
         <div className="flex shrink-0 flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">

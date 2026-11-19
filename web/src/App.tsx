@@ -15,17 +15,11 @@ function Shell() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      <AppSidebar
-        page={page}
-        onPage={setPage}
-        onNewTask={openNewTask}
-        conn={conn}
-        connText={connText}
-      />
+      <AppSidebar page={page} onPage={setPage} conn={conn} connText={connText} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileBar page={page} onPage={setPage} onNewTask={openNewTask} />
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-8">
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
           {page === 'dashboard' ? <DashboardPage onOpenTasks={() => setPage('tasks')} /> : null}
           {page === 'tasks' ? <TasksPage /> : null}
           {page === 'mapping' ? <MappingsPage /> : null}

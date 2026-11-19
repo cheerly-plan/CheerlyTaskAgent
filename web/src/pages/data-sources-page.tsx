@@ -6,7 +6,7 @@ import {endpoints, type DataSource, type UISettings} from '@/lib/api';
 import {toast} from 'sonner';
 
 export function DataSourcesPage() {
-  const {settings, saveSettings, syncTapd, mappings, reloadMappings} = useApp();
+  const {settings, saveSettings, mappings, reloadMappings} = useApp();
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
 
   React.useEffect(() => {
@@ -77,7 +77,6 @@ export function DataSourcesPage() {
             onSave={() => void save()}
             mappings={mappings}
             reloadMappings={reloadMappings}
-            onSyncTapd={syncTapd}
           />
         ) : (
           <p className="text-sm text-faint">暂不支持该数据源类型。</p>

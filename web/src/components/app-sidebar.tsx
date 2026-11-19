@@ -26,28 +26,20 @@ export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
 interface AppSidebarProps {
   page: PageKey;
   onPage: (page: PageKey) => void;
-  onNewTask: () => void;
   conn: ConnState;
   connText: string;
 }
 
 /** 左侧导航：品牌 + 主操作（新建任务）+ 页面菜单 + 连接状态。 */
-export function AppSidebar({page, onPage, onNewTask, conn, connText}: AppSidebarProps) {
+export function AppSidebar({page, onPage, conn, connText}: AppSidebarProps) {
   const style = CONN_STYLE[conn];
   return (
-    <aside className="hidden w-[236px] shrink-0 flex-col border-r border-border bg-card lg:flex">
+    <aside className="hidden w-[220px] shrink-0 flex-col border-r border-border bg-card lg:flex">
       <div className="flex h-14 items-center gap-2.5 border-b border-border px-4">
         <BrandMark size={26} />
         <span className="truncate text-[14.5px] font-semibold tracking-[-0.02em] text-foreground">
           CheerlyTaskAgent
         </span>
-      </div>
-
-      <div className="px-3 py-3">
-        <Button className="w-full" onClick={onNewTask}>
-          <Plus />
-          新建任务
-        </Button>
       </div>
 
       <nav className="flex-1 space-y-0.5 px-2 py-1">

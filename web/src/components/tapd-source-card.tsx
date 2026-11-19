@@ -44,7 +44,6 @@ interface TapdSourceCardProps {
   onSave: () => void;
   mappings: ProjectMapping[];
   reloadMappings: () => Promise<void>;
-  onSyncTapd: (force?: boolean) => Promise<void>;
 }
 
 /** 数据源本质上是「一个对象、类型不同」；这里列出已支持的类型供切换。 */
@@ -60,10 +59,8 @@ export function TapdSourceCard({
   onSave,
   mappings,
   reloadMappings,
-  onSyncTapd,
 }: TapdSourceCardProps) {
   const tapd: TapdSettings = source.tapd ?? TAPD_DEFAULT;
-  const [syncing, setSyncing] = React.useState(false);
   const [workspaces, setWorkspaces] = React.useState<TapdWorkspace[]>(tapd.projects ?? []);
   const [nameCache, setNameCache] = React.useState<TapdWorkspace[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = React.useState(false);
@@ -79,16 +76,6 @@ export function TapdSourceCard({
   };
 
   const tapdCredentialsReady = Boolean(tapd.api_user && tapd.api_password);
-  const tapdConfigured = Boolean(tapd.workspace_id && tapdCredentialsReady);
-
-  const sync = async (force = false) => {
-    setSyncing(true);
-    try {
-      await onSyncTapd(force);
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   const selectedIds = (tapd.workspace_id || '').split(',').map((id) => id.trim()).filter(Boolean);
 
@@ -392,19 +379,6 @@ export function TapdSourceCard({
         />
         </h3>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button onClick={() => void sync()} disabled={syncing || !tapdConfigured} title="增量拉取：只拉上次同步后修改的条目">
-            <RefreshCw className={syncing ? 'animate-spin' : ''} />
-            {syncing ? '同步中…' : '立即同步'}
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => void sync(true)}
-            disabled={syncing || !tapdConfigured}
-            title="忽略增量游标，重新拉取全部工单（已存在的按 source_ref 去重）"
-          >
-            <RefreshCw className={syncing ? 'animate-spin' : ''} />
-            全量重拉
-          </Button>
           <Button onClick={onSave}>
             <Save />
             保存

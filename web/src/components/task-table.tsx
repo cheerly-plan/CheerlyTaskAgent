@@ -140,7 +140,7 @@ function ModelCell({
   return (
     <SelectField
       size="sm"
-      className="w-[168px]"
+      className="w-[140px]"
       value={selected}
       options={options}
       onChange={(value) => onSelect('model', value)}
@@ -169,8 +169,8 @@ function ModelTag({
   const label = resolvedModelLabel(list, modelId);
   if (custom) {
     return (
-      <Badge variant="purple" title="用户在 CLI 中自行配置的模型">
-        {label} · 自定义
+      <Badge variant="purple" title={`${label} · 用户在 CLI 中自行配置的模型`} className="max-w-[170px]">
+        <span className="truncate">{label} · 自定义</span>
       </Badge>
     );
   }
