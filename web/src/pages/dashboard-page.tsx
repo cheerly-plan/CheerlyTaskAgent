@@ -1,16 +1,13 @@
 import * as React from 'react';
-import {ArrowRight} from 'lucide-react';
-
 import {useApp} from '@/app-context';
 import {KpiCards} from '@/components/kpi-cards';
 import {StatusBadge} from '@/components/status-bits';
-import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {ACTIVE_STATUSES, shortTime} from '@/lib/labels';
 
 /** 数据看板：概览数字 + 最近工单。 */
 export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
-  const {items, mappings, itemsTotal} = useApp();
+  const {items, mappings} = useApp();
 
   const counts = React.useMemo(() => {
     const result = {running: 0, succeeded: 0, failed: 0};
@@ -33,18 +30,7 @@ export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-5">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-foreground">数据看板</h2>
-          <p className="mt-1 text-[12px] text-faint">
-            共 {itemsTotal ?? items.length} 个工作项 · {mappings.length} 个项目映射
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={onOpenTasks}>
-          查看全部任务
-          <ArrowRight />
-        </Button>
-      </div>
+      <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-foreground">数据看板</h2>
 
       <KpiCards
         total={items.length}

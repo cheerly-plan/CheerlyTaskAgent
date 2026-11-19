@@ -152,12 +152,13 @@ export function TasksPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-foreground">任务列表</h2>
-          <p className="mt-1 text-[12px] text-faint">{countText}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
+        <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
+          <div>
+            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">任务列表</h3>
+            <p className="mt-0.5 text-[11.5px] text-faint">{countText}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="outline"
@@ -182,10 +183,9 @@ export function TasksPage() {
             <Plus />
             新建任务
           </Button>
+          </div>
         </div>
-      </div>
 
-      <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
         {/* 工具栏：搜索 / 筛选 / 视图切换 */}
         <div className="flex shrink-0 flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">
           <div className="relative min-w-0 flex-1 lg:max-w-[260px]">

@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import {AppProvider, useApp} from '@/app-context';
-import {AppSidebar, MobileBar, type PageKey} from '@/components/app-sidebar';
+import {AppSidebar, ConnBadge, MobileBar, type PageKey} from '@/components/app-sidebar';
 import {DashboardPage} from '@/pages/dashboard-page';
 import {DataSourcesPage} from '@/pages/data-sources-page';
 import {MappingsPage} from '@/pages/mappings-page';
@@ -15,10 +15,13 @@ function Shell() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      <AppSidebar page={page} onPage={setPage} conn={conn} connText={connText} />
+      <AppSidebar page={page} onPage={setPage} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileBar page={page} onPage={setPage} onNewTask={openNewTask} />
+        <div className="hidden h-12 shrink-0 items-center justify-end px-5 lg:flex lg:px-6">
+          <ConnBadge conn={conn} connText={connText} />
+        </div>
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
           {page === 'dashboard' ? <DashboardPage onOpenTasks={() => setPage('tasks')} /> : null}
           {page === 'tasks' ? <TasksPage /> : null}

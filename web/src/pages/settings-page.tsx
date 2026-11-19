@@ -112,14 +112,14 @@ export function SettingsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
       {/* ── 执行后端：完全由配置驱动，可增删 ─────────────────────────── */}
-      <div className="flex min-h-[200px] min-h-0 flex-col">
-        <div className="mb-0.5 flex shrink-0 flex-wrap items-start justify-between gap-2">
+      <Card className="flex min-h-[200px] min-h-0 flex-col overflow-hidden">
+        <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
               <Server className="size-4 text-primary" />
               执行后端
             </h3>
-            <p className="mt-0.5 text-[11.5px] text-faint">
+            <p className="mt-1 text-[11.5px] text-faint">
               后端由配置驱动，可按需添加或删除；只有启用的后端可被调用，没有后端时任务会因缺少执行器而失败。
             </p>
           </div>
@@ -130,11 +130,10 @@ export function SettingsPage() {
         </div>
 
         {backendEntries.length === 0 ? (
-          <Card className="mt-3 p-6 text-center text-[12px] text-faint">
+          <div className="p-6 text-center text-[12px] text-faint">
             还没有配置执行后端，点击「添加后端」新建一个。
-          </Card>
+          </div>
         ) : (
-          <Card className="mt-3 flex max-h-full min-h-0 flex-col overflow-hidden">
             <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full border-collapse text-[12.5px]">
                 <thead className="sticky top-0 z-10 bg-card">
@@ -280,9 +279,8 @@ export function SettingsPage() {
                 </tbody>
               </table>
             </div>
-          </Card>
         )}
-      </div>
+      </Card>
 
       {/* ── 调度策略：没有后端时无默认后端/并发可配置，隐藏 ─────────── */}
       {backendEntries.length > 0 && (

@@ -26,13 +26,10 @@ export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
 interface AppSidebarProps {
   page: PageKey;
   onPage: (page: PageKey) => void;
-  conn: ConnState;
-  connText: string;
 }
 
 /** 左侧导航：品牌 + 主操作（新建任务）+ 页面菜单 + 连接状态。 */
-export function AppSidebar({page, onPage, conn, connText}: AppSidebarProps) {
-  const style = CONN_STYLE[conn];
+export function AppSidebar({page, onPage}: AppSidebarProps) {
   return (
     <aside className="hidden w-[220px] shrink-0 flex-col border-r border-border bg-card lg:flex">
       <div className="flex h-14 items-center gap-2.5 border-b border-border px-4">
@@ -64,22 +61,26 @@ export function AppSidebar({page, onPage, conn, connText}: AppSidebarProps) {
           );
         })}
       </nav>
-
-      <div className="border-t border-border p-3">
-        <span
-          className={cn(
-            'inline-flex w-full items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11.5px] font-medium',
-            style.className,
-          )}
-        >
-          <span
-            className={cn('size-1.5 rounded-full', conn === 'live' && 'animate-pulse')}
-            style={{background: style.dot}}
-          />
-          {connText}
-        </span>
-      </div>
     </aside>
+  );
+}
+
+/** 执行端连接状态徽标（页面右上角）。 */
+export function ConnBadge({conn, connText}: {conn: ConnState; connText: string}) {
+  const style = CONN_STYLE[conn];
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11.5px] font-medium',
+        style.className,
+      )}
+    >
+      <span
+        className={cn('size-1.5 rounded-full', conn === 'live' && 'animate-pulse')}
+        style={{background: style.dot}}
+      />
+      {connText}
+    </span>
   );
 }
 
