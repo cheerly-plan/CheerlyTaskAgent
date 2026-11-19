@@ -156,7 +156,6 @@ export function TasksPage() {
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">任务列表</h3>
-            <p className="mt-0.5 text-[11.5px] text-faint">{countText}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
           <Button
