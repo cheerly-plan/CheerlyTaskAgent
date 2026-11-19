@@ -61,7 +61,8 @@ export function DashboardPage() {
       if (!stamp) continue;
       const d = new Date(stamp);
       if (Number.isNaN(d.getTime())) continue;
-      const key = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60_000);
+      const key = `${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')}`;
       const bucket = buckets.get(key);
       if (!bucket) continue;
       if (item.status === 'succeeded') bucket.succeeded += 1;
