@@ -2,7 +2,6 @@ import * as React from 'react';
 import {ArrowDown, ArrowUp, LayoutGrid, List, RefreshCw, Search, Wand2, X} from 'lucide-react';
 
 import {useApp} from '@/app-context';
-import {KpiCards} from '@/components/kpi-cards';
 import {EmptyState} from '@/components/status-bits';
 import {TaskCard} from '@/components/task-card';
 import {
@@ -17,7 +16,7 @@ import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {SelectField} from '@/components/select-field';
 import {cn} from '@/lib/utils';
-import {ACTIVE_STATUSES, kindLabel, sortFields, statusLabel} from '@/lib/labels';
+import {kindLabel, sortFields, statusLabel} from '@/lib/labels';
 import type {WorkItem} from '@/lib/api';
 
 type ViewMode = 'table' | 'card';
@@ -108,16 +107,6 @@ export function TasksPage() {
     [visible, safePage, pageSize],
   );
 
-  const counts = React.useMemo(() => {
-    const result = {running: 0, succeeded: 0, failed: 0};
-    for (const item of items) {
-      if (ACTIVE_STATUSES.includes(item.status)) result.running += 1;
-      else if (item.status === 'succeeded') result.succeeded += 1;
-      else if (item.status === 'failed') result.failed += 1;
-    }
-    return result;
-  }, [items]);
-
   const toggleSort = (field: SortField) =>
     setSort((prev) =>
       prev.field === field
@@ -149,14 +138,6 @@ export function TasksPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <KpiCards
-        total={items.length}
-        running={counts.running}
-        succeeded={counts.succeeded}
-        failed={counts.failed}
-        mappings={mappings.length}
-      />
-
       <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
         {/* 工具栏：搜索 / 筛选 / 视图切换 */}
         <div className="flex shrink-0 flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">

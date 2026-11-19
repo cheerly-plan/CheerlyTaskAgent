@@ -7,7 +7,7 @@ import {NewTaskDialog, type ManualTaskDraft} from '@/components/dialogs/new-task
 import {MappingDialog} from '@/components/dialogs/mapping-dialog';
 import {ReportDialog} from '@/components/dialogs/report-dialog';
 import {ScanDialog} from '@/components/dialogs/scan-dialog';
-import type {ConnState} from '@/components/app-header';
+import type {ConnState} from '@/components/app-sidebar';
 import type {ActionSelection} from '@/components/task-actions';
 import {esc, renderMarkdown} from '@/lib/markdown';
 import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
