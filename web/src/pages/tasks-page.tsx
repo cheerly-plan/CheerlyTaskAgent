@@ -94,10 +94,10 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
       );
     }
     if (filters.level) {
-      list = list.filter((item) => {
-        const level = item.is_container ? 'container' : item.parent_ref ? 'child' : 'standalone';
-        return level === filters.level;
-      });
+      // 只按「是否属于某个父需求」区分：父需求本身不执行，单独筛它没有意义。
+      list = list.filter((item) =>
+        filters.level === 'child' ? Boolean(item.parent_ref) : !item.parent_ref,
+      );
     }
     const query = keyword.trim().toLowerCase();
     if (query) {
@@ -248,8 +248,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               title="层级"
               onChange={(value) => setFilters((prev) => ({...prev, level: value}))}
               options={[
-                {value: '', label: '全部层级'},
-                {value: 'container', label: '父需求'},
+                {value: '', label: '全部'},
                 {value: 'child', label: '子需求'},
                 {value: 'standalone', label: '独立任务'},
               ]}
