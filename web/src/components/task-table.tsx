@@ -286,9 +286,13 @@ export function TaskTable({
           <React.Fragment key={group.key || `solo-${group.items[0]?.id}`}>
             {group.key ? (
               /* 父需求分组标题：父可能不在本地（只导入了子需求），用快照标题展示。 */
-              <TableRow className="bg-[#faf9fd] hover:bg-[#faf9fd]">
-                <TableCell colSpan={9} className="py-2 pl-4">
-                  <div className="flex items-center gap-2.5">
+              <TableRow className="group/head bg-[#faf9fd] hover:bg-[#faf9fd]">
+                {/* 分组标题 sticky 在左侧：表格横向滚动时标题不会跟着滚走、也不会被裁成半截。 */}
+                <TableCell
+                  colSpan={9}
+                  className="sticky left-0 z-[2] py-2 pl-4"
+                >
+                  <div className="flex w-max max-w-[calc(100vw-360px)] items-center gap-2.5">
                     <span className="grid size-7 shrink-0 place-items-center rounded-md bg-[#ece5fb] text-[#6d3fc0]">
                       <GitBranch className="size-3.5" />
                     </span>
