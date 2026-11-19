@@ -119,9 +119,6 @@ export function SettingsPage() {
               <Server className="size-4 text-primary" />
               执行后端
             </h3>
-            <p className="mt-1 text-[11.5px] text-faint">
-              后端由配置驱动，可按需添加或删除；只有启用的后端可被调用，没有后端时任务会因缺少执行器而失败。
-            </p>
           </div>
           <Button variant="outline" size="sm" onClick={addBackend}>
             <Plus />
@@ -312,11 +309,11 @@ export function SettingsPage() {
 
       {/* ── 操作栏 ───────────────────────────────────────────────── */}
       <Card className="flex shrink-0 flex-wrap items-center gap-2 p-4">
-        <Button onClick={() => void saveSettings(draft)}>
+        <Button size="sm" onClick={() => void saveSettings(draft)}>
           <Save />
           保存设置
         </Button>
-        <Button variant="outline" onClick={() => void reloadSettings()}>
+        <Button size="sm" variant="outline" onClick={() => void reloadSettings()}>
           <RefreshCw />
           重新载入
         </Button>

@@ -379,7 +379,7 @@ export function TapdSourceCard({
         />
         </h3>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button onClick={onSave}>
+          <Button size="sm" onClick={onSave}>
             <Save />
             保存
           </Button>
