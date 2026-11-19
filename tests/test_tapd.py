@@ -298,3 +298,154 @@ def test_sync_force_ignores_incremental_cursor(tmp_path, monkeypatch):
     assert cursors[0] == ""
     assert cursors[1] == "2026-01-01 10:00:00"
     assert cursors[2] == ""
+
+
+def _make_tapd_app(tmp_path):
+    """Build an app with TAPD configured but polling disabled."""
+    from taskagent.config import Settings
+
+    settings = Settings(data_dir=tmp_path, project_roots=())
+    ui = settings.load_ui_settings()
+    ui["tapd"].update({
+        "enabled": False,
+        "workspace_id": "32312011",
+        "api_user": "u",
+        "api_password": "p",
+    })
+    settings.save_ui_settings(ui)
+    return settings
+
+
+def test_preview_endpoint_without_credentials(tmp_path):
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        r = client.post("/api/tapd/preview")
+        assert r.status_code == 400
+        assert "TAPD 未配置" in r.json()["detail"]
+
+
+def test_preview_classifies_new_changed_unchanged_without_writing(tmp_path, monkeypatch):
+    """Preview tags items by diff vs local tasks and does NOT persist anything."""
+    from taskagent import tapd as tapd_module
+    from taskagent.models import WorkItem
+
+    settings = _make_tapd_app(tmp_path)
+    new_item = tapd_module.TapdItem(
+        entity_type="story", id="100", workspace_id="32312011",
+        title="全新需求", description="desc-new", status="open", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-02 10:00:00",
+    )
+    changed_item = tapd_module.TapdItem(
+        entity_type="bug", id="200", workspace_id="32312011",
+        title="已改标题", description="desc-changed", status="open", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-03 10:00:00",
+    )
+    same_item = tapd_module.TapdItem(
+        entity_type="story", id="300", workspace_id="32312011",
+        title="未变化需求", description="desc-same", status="open", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-04 10:00:00",
+    )
+
+    def fake_fetch_all(self, *, modified_since="", limit=200, max_pages=5):
+        result = tapd_module.TapdResult()
+        result.items = [new_item, changed_item, same_item]
+        return result
+
+    monkeypatch.setattr(tapd_module.TapdClient, "fetch_all", fake_fetch_all)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        # Seed the two existing tasks directly in the store (status=DONE-ish data kept).
+        from taskagent.store import TaskStore
+        from taskagent.sources import parse_raw
+        store = TaskStore(settings.tasks_dir)
+        # Seed with exactly what parse_raw produces so "unchanged" truly matches.
+        changed_probe = parse_raw(RawItem.from_tapd(changed_item))
+        changed_old = WorkItem.create(
+            title="旧标题", description=changed_probe.description,
+            source="tapd", source_ref="tapd:bug:200",
+        )
+        same_probe = parse_raw(RawItem.from_tapd(same_item))
+        same_old = WorkItem.create(
+            title=same_probe.title, description=same_probe.description,
+            source="tapd", source_ref="tapd:story:300",
+        )
+        store.save(changed_old)
+        store.save(same_old)
+
+        r = client.post("/api/tapd/preview", json={})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        by_ref = {i["source_ref"]: i for i in data["items"]}
+
+        assert by_ref["tapd:story:100"]["status"] == "new"
+        assert by_ref["tapd:bug:200"]["status"] == "changed"
+        assert "title" in by_ref["tapd:bug:200"]["changes"]
+        assert by_ref["tapd:story:300"]["status"] == "unchanged"
+        assert data["nonce"]
+
+        # Preview must not create tasks: only the 2 seeded ones remain.
+        assert client.get("/api/items").json()["total"] == 2
+
+
+def test_import_applies_new_and_updated_and_advances_cursor(tmp_path, monkeypatch):
+    """Import writes only checked items: new -> created, changed -> updated."""
+    from taskagent import tapd as tapd_module
+    from taskagent.models import WorkItem
+    from taskagent.store import TaskStore
+
+    settings = _make_tapd_app(tmp_path)
+    new_item = tapd_module.TapdItem(
+        entity_type="story", id="100", workspace_id="32312011",
+        title="全新需求", description="desc-new", status="open", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-02 10:00:00",
+    )
+    changed_item = tapd_module.TapdItem(
+        entity_type="bug", id="200", workspace_id="32312011",
+        title="已改标题", description="desc-changed", status="open", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-03 10:00:00",
+    )
+
+    def fake_fetch_all(self, *, modified_since="", limit=200, max_pages=5):
+        result = tapd_module.TapdResult()
+        result.items = [new_item, changed_item]
+        return result
+
+    monkeypatch.setattr(tapd_module.TapdClient, "fetch_all", fake_fetch_all)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        from taskagent.sources import parse_raw
+        store = TaskStore(settings.tasks_dir)
+        changed_probe = parse_raw(RawItem.from_tapd(changed_item))
+        changed_old = WorkItem.create(
+            title="旧标题", description=changed_probe.description,
+            source="tapd", source_ref="tapd:bug:200",
+        )
+        from taskagent.models import ItemStatus
+        changed_old.status = ItemStatus.SUCCEEDED
+        store.save(changed_old)
+
+        pv = client.post("/api/tapd/preview", json={}).json()
+        # Import BOTH the new item and the changed one.
+        r = client.post("/api/tapd/import", json={
+            "items": [
+                {"source_ref": "tapd:story:100", "executor": "codebuddy", "model": "hy4flash", "exec_mode": "dry-run"},
+                {"source_ref": "tapd:bug:200", "executor": "codebuddy", "model": "glm-5.3", "exec_mode": "dry-run"},
+            ],
+            "cursor": pv["cursor"],
+        })
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["created"] == 1
+        assert result["updated"] == 1
+        assert result["skipped"] == 0
+
+        # Changed task updated in place (title refreshed, status/history kept).
+        updated = store.get(changed_old.id)
+        assert updated.title == "已改标题"
+        assert updated.status == "succeeded"
+        assert updated.model == "glm-5.3"
+
+        # New task created with the chosen config.
+        items = client.get("/api/items").json()["items"]
+        created = next(i for i in items if i["source_ref"] == "tapd:story:100")
+        assert created["model"] == "hy4flash"

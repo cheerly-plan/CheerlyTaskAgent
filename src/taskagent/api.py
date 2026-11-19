@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import secrets
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,7 @@ from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .report import render_report
 from .scheduler import Scheduler, SchedulerSettings
-from .sources import ManualSource, RawItem
+from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
 from .tapd import TapdClient, TapdConfig, TapdError, TapdItem
 
@@ -122,6 +123,23 @@ class TapdSyncBody(BaseModel):
     exec_mode: str | None = None
     modified_since: str = ""
     force: bool = False  # 忽略增量游标，全量重拉
+
+
+class TapdImportItem(BaseModel):
+    """One checked item from the preview, with the user's per-item choices."""
+
+    source_ref: str
+    executor: str | None = None
+    model: str | None = None
+    exec_mode: str | None = None
+    repo_name: str | None = None
+
+
+class TapdImportBody(BaseModel):
+    """Confirm the preview: import only the checked items into the task list."""
+
+    items: list[TapdImportItem] = Field(default_factory=list)
+    cursor: str = ""  # newest modified from the preview; advanced only on import
 
 
 def web_not_built_page() -> str:
@@ -250,6 +268,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── TAPD (authoritative source) ────────────────────────────────────────────
     _tapd_last_sync: dict[str, str] = {"modified": ""}  # incremental cursor, in-memory
+    # Preview → import handoff. The preview stores the fully-parsed raw items
+    # here so the import step never trusts client-supplied titles/descriptions.
+    # A nonce ties a preview to its import (stale/duplicate previews are ignored).
+    _tapd_preview: dict[str, Any] = {"nonce": "", "raw": {}, "cursor": ""}
 
     def sync_tapd_now(modified_since: str = "", force: bool = False) -> dict[str, Any]:
         """Pull stories/bugs from TAPD -> parse -> import. Never raises.
@@ -297,6 +319,149 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if stamps:
             _tapd_last_sync["modified"] = max(stamps)
         return {"created": created, "skipped": skipped, "error": None}
+
+    def _tapd_repo_hint(item: TapdItem, client: TapdClient) -> tuple[str, str]:
+        """Resolve the bound local repo name + a stage hint for one TAPD item."""
+        wid = item.workspace_id or client.config.primary_workspace_id
+        bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []
+        repo_name = bound[0].name if len(bound) == 1 else ""
+        hint = (
+            f"TAPD 项目关联 {len(bound)} 个本地仓库，待确定执行仓库：" + "、".join(m.name for m in bound)
+            if len(bound) > 1 else ""
+        )
+        return repo_name, hint
+
+    def preview_tapd_now(modified_since: str = "", force: bool = False) -> dict[str, Any]:
+        """Fetch TAPD items and diff against existing tasks WITHOUT writing anything.
+
+        Each item is classified as:
+          - ``new``       — no task with this source_ref exists yet
+          - ``changed``   — a task exists but title/description differ (TAPD was edited)
+          - ``unchanged`` — a task exists with identical content (nothing to do)
+
+        Fully-parsed raw items are cached in-process so the later import step
+        uses authoritative content, never client-supplied fields. The cursor is
+        NOT advanced here — only a confirmed import does that.
+        """
+        client, _cfg = make_tapd_client()
+        if not client.config.is_configured():
+            return {"items": [], "cursor": "", "nonce": "", "error":
+                    "TAPD 未配置，缺少：" + ", ".join(client.config.missing())}
+        cursor = "" if force else (modified_since or _tapd_last_sync["modified"])
+        result = client.fetch_all(modified_since=cursor)
+        if result.error:
+            return {"items": [], "cursor": "", "nonce": "", "error": result.error}
+
+        # Index existing tasks by source_ref (= dedupe_key for TAPD items).
+        existing: dict[str, Any] = {}
+        for task in scheduler.store.list(limit=100000):
+            if task.source_ref:
+                existing[task.source_ref] = task
+
+        raw_cache: dict[str, dict[str, Any]] = {}
+        previews: list[dict[str, Any]] = []
+        for item in result.items:
+            raw = RawItem.from_tapd(item)
+            probe = parse_raw(raw, exec_mode="dry-run")  # content only; choices applied at import
+            old = existing.get(raw.source_ref)
+            changes: list[str] = []
+            if old is not None:
+                if old.title != probe.title:
+                    changes.append("title")
+                if old.description != probe.description:
+                    changes.append("description")
+            status = "new" if old is None else ("changed" if changes else "unchanged")
+            repo_name, stage_hint = _tapd_repo_hint(item, client)
+            raw_cache[raw.source_ref] = {
+                "raw": raw,
+                "status": status,
+                "repo_name": repo_name,
+                "stage_hint": stage_hint,
+                "modified": item.modified,
+                "existing_id": old.id if old is not None else "",
+            }
+            previews.append({
+                "source_ref": raw.source_ref,
+                "status": status,
+                "title": probe.title,
+                "description": probe.description,
+                "kind": probe.kind.value if hasattr(probe.kind, "value") else str(probe.kind),
+                "external_url": item.external_url,
+                "modified": item.modified,
+                "repo_name": repo_name,
+                "changes": changes,
+                "existing_id": old.id if old is not None else "",
+            })
+
+        stamps = [i.modified for i in result.items if i.modified]
+        nonce = secrets.token_hex(8)
+        _tapd_preview.update({"nonce": nonce, "raw": raw_cache, "cursor": max(stamps) if stamps else ""})
+        return {"items": previews, "cursor": _tapd_preview["cursor"], "nonce": nonce, "error": None}
+
+    def import_tapd_now(body: TapdImportBody) -> dict[str, Any]:
+        """Import only the checked preview items; advance cursor to the imported ones.
+
+        Uses cached authoritative raw items keyed by source_ref. Unchecked items
+        are left for a later sync: the cursor only moves up to the newest modified
+        among the items actually imported, so nothing is silently dropped.
+        """
+        if not body.items:
+            return {"created": 0, "updated": 0, "skipped": 0, "error": None}
+        if not _tapd_preview["nonce"]:
+            return {"created": 0, "updated": 0, "skipped": 0, "error": "预览已失效，请重新同步"}
+        created = updated = skipped = 0
+        imported_stamps: list[str] = []
+        for sel in body.items:
+            cached = _tapd_preview["raw"].get(sel.source_ref)
+            if not cached:
+                skipped += 1
+                continue
+            raw: RawItem = cached["raw"]
+            exec_mode = sel.exec_mode or "dry-run"
+            if exec_mode not in {"dry-run", "apply"}:
+                exec_mode = "dry-run"
+            repo_name = sel.repo_name if sel.repo_name is not None else cached["repo_name"]
+            try:
+                if cached["status"] == "changed" and cached["existing_id"]:
+                    # Update in place: keep status/results/history, refresh content only.
+                    old = scheduler.store.get(cached["existing_id"])
+                    if old is None:
+                        skipped += 1
+                        continue
+                    probe = parse_raw(raw, exec_mode=exec_mode)
+                    old.title = probe.title
+                    old.description = probe.description
+                    if sel.executor:
+                        old.executor = sel.executor
+                    if sel.model is not None:
+                        old.model = sel.model or None
+                    if repo_name:
+                        resolved = scheduler.projects.resolve_name(repo_name) if scheduler.projects else None
+                        if resolved:
+                            old.repo = resolved
+                    old.touch()
+                    scheduler.store.save(old)
+                    updated += 1
+                else:
+                    scheduler.import_raw(
+                        raw, exec_mode=exec_mode, repo_name=repo_name,
+                        executor=sel.executor, model=sel.model,
+                        stage_hint=cached["stage_hint"],
+                        auto_map=False if repo_name else True,
+                    )
+                    created += 1
+                if cached.get("modified"):
+                    imported_stamps.append(cached["modified"])
+            except ValueError as error:
+                logger.warning("TAPD 导入失败 %s：%s", sel.source_ref, error)
+                skipped += 1
+        # Only advance as far as the latest item we actually imported.
+        if imported_stamps:
+            newest_imported = max(imported_stamps)
+            final_cursor = min(newest_imported, body.cursor) if body.cursor else newest_imported
+            _tapd_last_sync["modified"] = max(_tapd_last_sync["modified"], final_cursor)
+        _tapd_preview.update({"nonce": "", "raw": {}, "cursor": ""})
+        return {"created": created, "updated": updated, "skipped": skipped, "error": None}
 
     def tapd_webhook_sync(event: str, object_id: str) -> dict[str, Any]:
         """A webhook carries only an id — always pull full details from TAPD."""
@@ -593,6 +758,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result.get("error"):
             raise HTTPException(400, result["error"])
         return {"created": result["created"], "skipped": result["skipped"]}
+
+    @app.post("/api/tapd/preview")
+    async def api_tapd_preview(body: TapdSyncBody | None = None) -> dict[str, Any]:
+        """Preview TAPD changes (new/changed/unchanged) without touching tasks."""
+        result = await asyncio.to_thread(
+            preview_tapd_now,
+            (body.modified_since if body else "") or "",
+            bool(body.force) if body else False,
+        )
+        if result.get("error"):
+            raise HTTPException(400, result["error"])
+        return {
+            "items": result["items"],
+            "cursor": result["cursor"],
+            "nonce": result["nonce"],
+        }
+
+    @app.post("/api/tapd/import")
+    async def api_tapd_import(body: TapdImportBody) -> dict[str, Any]:
+        """Import only the checked preview items into the task list."""
+        result = await asyncio.to_thread(import_tapd_now, body)
+        if result.get("error"):
+            raise HTTPException(400, result["error"])
+        return {"created": result["created"], "updated": result["updated"], "skipped": result["skipped"]}
 
     @app.post("/api/tapd/webhook")
     async def api_tapd_webhook(request: Request) -> dict[str, Any]:

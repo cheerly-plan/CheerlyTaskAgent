@@ -127,7 +127,13 @@ def test_backend_probe_reports_capability_on_demand(tmp_path):
     /api/config must not spawn CLI processes; the UI calls this once, the first
     time the user opens a model picker.
     """
-    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    settings = Settings(data_dir=tmp_path, project_roots=())
+    ui = settings.load_ui_settings()
+    # Point dsh at a nonexistent binary so the probe deterministically degrades
+    # to model_selection=False, regardless of whether DSH is installed locally.
+    ui["backends"]["dsh"]["command"] = "/nonexistent/dsh-cli-for-test"
+    settings.save_ui_settings(ui)
+    app = create_app(settings)
     with TestClient(app) as client:
         # config is optimistic (no probe yet)
         config = client.get("/api/config").json()

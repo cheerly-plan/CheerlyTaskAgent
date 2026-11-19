@@ -441,6 +441,10 @@ def test_list_models_falls_back_to_help_without_cache(monkeypatch, tmp_path):
     home = tmp_path / "empty-home"
     home.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)
+    # Clear config-dir overrides so custom models.json (real ~/.workbuddy) is
+    # not picked up — this test asserts the "nothing available" case.
+    monkeypatch.delenv("WORKBUDDY_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEBUDDY_CONFIG_DIR", raising=False)
 
     ex = CodeBuddyExecutor(command="/nonexistent/codebuddy")
     # No cache + nonexistent CLI => empty, not a crash.

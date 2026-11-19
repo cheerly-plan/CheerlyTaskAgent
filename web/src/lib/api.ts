@@ -32,6 +32,37 @@ export interface WorkItem {
   created_at?: string;
 }
 
+/** TAPD 同步预览中的一条候选（尚未落库）。 */
+export interface TapdPreviewItem {
+  source_ref: string;
+  /** new=新增；changed=需求有更新；unchanged=本地已有且无变化。 */
+  status: 'new' | 'changed' | 'unchanged';
+  title: string;
+  description: string;
+  kind: Kind;
+  external_url: string;
+  modified: string;
+  /** 根据 TAPD 项目绑定推断出的本地仓库名（空表示未推断到）。 */
+  repo_name: string;
+  /** 变更字段（status=changed 时非空）。 */
+  changes: string[];
+  existing_id: string;
+}
+
+export interface TapdPreviewResult {
+  items: TapdPreviewItem[];
+  cursor: string;
+  nonce: string;
+}
+
+export interface TapdImportSelection {
+  source_ref: string;
+  executor?: string | null;
+  model?: string | null;
+  exec_mode?: ExecMode;
+  repo_name?: string;
+}
+
 export interface ProjectMapping {
   id: string;
   name: string;
@@ -257,6 +288,16 @@ export const endpoints = {
 
   syncTapd: (body?: {modified_since?: string; exec_mode?: string; force?: boolean}) =>
     api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
+
+  /** 预览 TAPD 变更，不落库。 */
+  tapdPreview: (body?: {modified_since?: string; force?: boolean}) =>
+    api<TapdPreviewResult>('/api/tapd/preview', jsonInit('POST', body ?? {})),
+
+  /** 确认导入勾选的预览条目。 */
+  tapdImport: (body: {items: TapdImportSelection[]; cursor: string}) =>
+    api<{created: number; updated: number; skipped: number}>(
+      '/api/tapd/import', jsonInit('POST', body),
+    ),
 
   tapdWorkspaces: (body?: {company_id?: string}) =>
     api<{projects: TapdWorkspace[]}>('/api/tapd/workspaces', jsonInit('POST', body ?? {})),

@@ -51,7 +51,7 @@ export function TasksPage() {
     items,
     itemsTotal,
     settings,
-    syncTapd,
+    openTapdSync,
     mappings,
     models,
     backends,
@@ -72,18 +72,9 @@ export function TasksPage() {
   const [refreshing, setRefreshing] = React.useState(false);
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
-  const [syncing, setSyncing] = React.useState(false);
 
   const tapd = settings?.data_source?.tapd ?? settings?.tapd;
   const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
-  const syncNow = async (force: boolean) => {
-    setSyncing(true);
-    try {
-      await syncTapd(force);
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   const visible = React.useMemo(() => {
     let list = items.slice();
@@ -161,21 +152,21 @@ export function TasksPage() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => void syncNow(false)}
-            disabled={syncing || !tapdReady}
-            title={tapdReady ? '增量拉取：只拉上次同步后修改的条目' : '请先在「数据源」配置 TAPD 与 API 凭证'}
+            onClick={() => openTapdSync(false)}
+            disabled={!tapdReady}
+            title={tapdReady ? '增量预览：列出上次同步后修改的条目，确认后再导入' : '请先在「数据源」配置 TAPD 与 API 凭证'}
           >
-            <RefreshCw className={syncing ? 'animate-spin' : ''} />
+            <RefreshCw />
             立即同步
           </Button>
           <Button
             size="sm"
             variant="outline"
-            onClick={() => void syncNow(true)}
-            disabled={syncing || !tapdReady}
-            title={tapdReady ? '忽略增量游标，重新拉取全部工单（已存在的按 source_ref 去重）' : '请先在「数据源」配置 TAPD 与 API 凭证'}
+            onClick={() => openTapdSync(true)}
+            disabled={!tapdReady}
+            title={tapdReady ? '全量预览：忽略增量游标，列出全部工单，确认后再导入' : '请先在「数据源」配置 TAPD 与 API 凭证'}
           >
-            <RefreshCw className={syncing ? 'animate-spin' : ''} />
+            <RefreshCw />
             全量重拉
           </Button>
           <Button size="sm" onClick={openNewTask}>

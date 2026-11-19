@@ -7,6 +7,7 @@ import {NewTaskDialog, type ManualTaskDraft} from '@/components/dialogs/new-task
 import {MappingDialog} from '@/components/dialogs/mapping-dialog';
 import {ReportDialog} from '@/components/dialogs/report-dialog';
 import {ScanDialog} from '@/components/dialogs/scan-dialog';
+import {TapdSyncDialog} from '@/components/dialogs/tapd-sync-dialog';
 import type {ConnState} from '@/components/app-sidebar';
 import type {ActionSelection} from '@/components/task-actions';
 import {esc, renderMarkdown} from '@/lib/markdown';
@@ -14,10 +15,13 @@ import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
 import {
   endpoints,
   type BackendInfo,
+  type ExecMode,
   type ItemAction,
   type MappingDraft,
   type ModelChoice,
   type ProjectMapping,
+  type TapdImportSelection,
+  type TapdPreviewResult,
   type TapdWorkspace,
   type UISettings,
   type WorkItem,
@@ -46,6 +50,8 @@ interface AppContextValue {
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
   openNewTask: () => void;
   syncTapd: (force?: boolean) => Promise<void>;
+  /** 打开 TAPD 同步预览弹窗；force=true 表示全量重拉。 */
+  openTapdSync: (force?: boolean) => void;
   pickFolder: (apply: (path: string) => void) => void;
   openScan: (path: string) => void;
   openMappingModal: (mapping: ProjectMapping | null) => void;
@@ -98,6 +104,12 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   const [selections, setSelections] = React.useState<Record<string, ActionSelection>>({});
 
   const [newTaskOpen, setNewTaskOpen] = React.useState(false);
+  const [tapdSync, setTapdSync] = React.useState<{
+    open: boolean;
+    force: boolean;
+    loading: boolean;
+    preview: TapdPreviewResult | null;
+  }>({open: false, force: false, loading: false, preview: null});
   const [folderPicker, setFolderPicker] = React.useState<FolderPickerState>({open: false, apply: null});
   const [scan, setScan] = React.useState<{open: boolean; path: string}>({open: false, path: ''});
   const [mappingDialog, setMappingDialog] = React.useState<{open: boolean; editing: ProjectMapping | null}>({
@@ -420,6 +432,40 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     }
   }, [reloadItems]);
 
+  // ── TAPD 同步预览（先预览、勾选配置、确认后再落库）────────────────────────
+  const fetchTapdPreview = React.useCallback(async (force: boolean) => {
+    setTapdSync((prev) => ({...prev, loading: true, force}));
+    try {
+      const result = await endpoints.tapdPreview({force});
+      setTapdSync((prev) => ({...prev, loading: false, preview: result}));
+    } catch (error) {
+      setTapdSync((prev) => ({...prev, loading: false}));
+      toast.error('预览 TAPD 失败：' + (error as Error).message);
+    }
+  }, []);
+
+  const openTapdSync = React.useCallback((force = false) => {
+    setTapdSync({open: true, force, loading: true, preview: null});
+    void fetchTapdPreview(force);
+  }, [fetchTapdPreview]);
+
+  const confirmTapdImport = React.useCallback(async (selections: TapdImportSelection[]) => {
+    const cursor = tapdSync.preview?.cursor ?? '';
+    try {
+      const result = await endpoints.tapdImport({items: selections, cursor});
+      const parts = [
+        result.created ? `新增 ${result.created}` : '',
+        result.updated ? `更新 ${result.updated}` : '',
+        result.skipped ? `跳过 ${result.skipped}` : '',
+      ].filter(Boolean);
+      toast.success(`已导入：${parts.join('，') || '0 条'}`);
+      setTapdSync((prev) => ({...prev, open: false, preview: null}));
+      await reloadItems();
+    } catch (error) {
+      toast.error('导入 TAPD 工单失败：' + (error as Error).message);
+    }
+  }, [tapdSync.preview, reloadItems]);
+
   // ── 项目映射 ──────────────────────────────────────────────────────────────
   const saveMapping = React.useCallback(
     async (draft: MappingDraft) => {
@@ -590,6 +636,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     runItemAction,
     openNewTask: () => setNewTaskOpen(true),
     syncTapd,
+    openTapdSync,
     pickFolder: (apply) => setFolderPicker({open: true, apply}),
     openScan: (path) => setScan({open: true, path}),
     openMappingModal: (mapping) => setMappingDialog({open: true, editing: mapping}),
@@ -623,6 +670,21 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         defaultExecutor={settings?.executor || ''}
         onProbe={(id) => ensureBackendProbe(id)}
         onManualCreate={(draft, mode) => void createManual(draft, mode)}
+      />
+
+      <TapdSyncDialog
+        open={tapdSync.open}
+        onOpenChange={(open) => setTapdSync((prev) => ({...prev, open}))}
+        force={tapdSync.force}
+        loading={tapdSync.loading}
+        preview={tapdSync.preview}
+        backends={backends}
+        models={models}
+        defaultExecutor={settings?.executor || ''}
+        defaultModel={effectiveDefaultModel}
+        defaultExecMode={(settings?.tapd?.exec_mode || settings?.data_source?.tapd?.exec_mode || 'dry-run') as ExecMode}
+        onRefresh={() => void fetchTapdPreview(tapdSync.force)}
+        onConfirm={confirmTapdImport}
       />
 
       <FolderPickerDialog
