@@ -89,12 +89,14 @@ export function MappingsPage() {
               <TableRow key={mapping.id}>
                 <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
                 <TableCell>
-                  <Mono className="break-all">{mapping.path}</Mono>
+                  <Mono className="block max-w-[300px] truncate" title={mapping.path}>
+                    {mapping.path}
+                  </Mono>
                 </TableCell>
                 <TableCell>
                   <span
-                    className="line-clamp-2 block max-w-[320px] text-[12.5px] text-foreground/70"
-                    title={mapping.note}
+                    className="block max-w-[320px] truncate text-[12.5px] text-foreground/70"
+                    title={mapping.note || undefined}
                   >
                     {mapping.note || '—'}
                   </span>
@@ -124,7 +126,7 @@ export function MappingsPage() {
                       onCheckedChange={() => void toggleMapping(mapping.id)}
                       aria-label={`${mapping.enabled ? '停用' : '启用'} ${mapping.name}`}
                     />
-                    <span className={cn('text-xs', mapping.enabled ? 'text-foreground/80' : 'text-faint')}>
+                    <span className={cn('whitespace-nowrap text-xs', mapping.enabled ? 'text-foreground/80' : 'text-faint')}>
                       {mapping.enabled ? '启用' : '停用'}
                     </span>
                   </div>

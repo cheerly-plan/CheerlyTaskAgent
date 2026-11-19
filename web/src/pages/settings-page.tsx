@@ -235,7 +235,7 @@ export function SettingsPage() {
                           />
                         </td>
                         <td className="w-[136px] px-4 py-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex h-8 items-center gap-2">
                             <Switch
                               className="shrink-0"
                               checked={current.auto_sync}
@@ -248,7 +248,7 @@ export function SettingsPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex h-8 items-center gap-2">
                             <Switch
                               checked={current.enabled}
                               onCheckedChange={(checked) => patchBackend(id, 'enabled', checked)}
