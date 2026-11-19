@@ -21,6 +21,8 @@ export interface WorkItem {
   git_url?: string;
   /** 父子需求：父的 source_ref；顶层为空。 */
   parent_ref?: string;
+  /** 父需求标题快照：父不在本地时用它显示归属。 */
+  parent_title?: string;
   /** 子需求的 source_ref 列表（仅父容器有值）。 */
   children_ids?: string[];
   /** True = 父容器节点，不执行。 */
@@ -55,6 +57,8 @@ export interface TapdPreviewItem {
   existing_id: string;
   /** 父子需求：父的 source_ref；顶层为空。 */
   parent_ref?: string;
+  /** 父需求标题快照：父不在本地时用它显示归属。 */
+  parent_title?: string;
   /** True = 本次拉取里有子需求指向它，是父容器。 */
   is_container?: boolean;
 }

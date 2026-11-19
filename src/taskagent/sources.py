@@ -39,6 +39,7 @@ class RawItem:
     attachments: list[dict[str, Any]] = field(default_factory=list)
     git_url_hint: str = ""
     parent_ref: str = ""       # 父需求 source_ref；顶层为空
+    parent_title: str = ""     # 父需求标题（导入时快照，父未入库也能展示归属）
     children_ids: list[str] = field(default_factory=list)  # 子需求 source_ref 列表
 
     @classmethod
@@ -82,6 +83,7 @@ class RawItem:
             source_ref=item.ref,
             git_url_hint=getattr(item, "git_url_hint", ""),
             parent_ref=getattr(item, "parent_ref", "") or "",
+            parent_title=getattr(item, "parent_title", "") or "",
         )
 
 

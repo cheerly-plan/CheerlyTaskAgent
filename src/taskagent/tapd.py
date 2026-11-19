@@ -108,6 +108,7 @@ class TapdItem:
     modified: str
     git_url_hint: str = ""
     parent_id: str = ""        # 父需求 id；顶层为 "0" 或空
+    parent_title: str = ""     # 父需求标题（TAPD 若返回 parent_name / parent 等字段）
     children_ids: list[str] = field(default_factory=list)  # 子需求 id 列表（TAPD children_id 格式 |id1|id2|）
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -340,6 +341,7 @@ class TapdClient:
             modified=first("modified"),
             git_url_hint=git_hint,
             parent_id=parent_id,
+            parent_title=first("parent_name", "parent_title"),
             children_ids=children_ids,
             raw=obj,
         )

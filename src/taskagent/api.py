@@ -375,8 +375,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 getattr(item, "parent_ref", "") or "" for item in result.items
             ) if ref
         }
+        # 父标题索引：TAPD 不保证返回 parent_name，用本次拉到的父需求标题补齐。
+        title_by_ref = {item.ref: item.title for item in result.items if item.ref}
         for item in result.items:
             raw = RawItem.from_tapd(item)
+            if raw.parent_ref and not raw.parent_title:
+                raw.parent_title = title_by_ref.get(raw.parent_ref, "")
             probe = parse_raw(raw, exec_mode="dry-run")  # content only; choices applied at import
             old = existing.get(raw.source_ref)
             changes: list[str] = []

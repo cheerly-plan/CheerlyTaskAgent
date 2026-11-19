@@ -220,6 +220,7 @@ class WorkItem:
     git_url: str = ""               # git URL hint extracted from the source
     # 父子需求：parent_ref 指向父的 source_ref（tapd:<type>:<id>）；parent_ref 为空即顶层。
     parent_ref: str = ""
+    parent_title: str = ""          # 父需求标题快照：父不在本地时也能显示归属
     children_ids: list[str] = field(default_factory=list)  # 子需求的 source_ref 列表
     is_container: bool = False      # True = 父容器节点，不进执行队列
     repo: LocalRepo | None = None   # resolved local checkout
@@ -255,6 +256,7 @@ class WorkItem:
         executor: str = "codebuddy",
         model: str | None = None,
         parent_ref: str = "",
+        parent_title: str = "",
         children_ids: list[str] | None = None,
         is_container: bool = False,
     ) -> WorkItem:
@@ -267,6 +269,7 @@ class WorkItem:
             source_ref=source_ref,
             git_url=git_url.strip(),
             parent_ref=parent_ref.strip(),
+            parent_title=parent_title.strip(),
             children_ids=list(children_ids or []),
             is_container=bool(is_container),
             dedupe_key=dedupe_key or source_ref or _new_id(),
@@ -307,6 +310,7 @@ class WorkItem:
             "tapd_workspace_id": self.tapd_workspace_id,
             "git_url": self.git_url,
             "parent_ref": self.parent_ref,
+            "parent_title": self.parent_title,
             "children_ids": list(self.children_ids),
             "is_container": self.is_container,
             "repo": self.repo.name if self.repo else None,
@@ -333,6 +337,7 @@ class WorkItem:
             "tapd_workspace_id": self.tapd_workspace_id,
             "git_url": self.git_url,
             "parent_ref": self.parent_ref,
+            "parent_title": self.parent_title,
             "children_ids": list(self.children_ids),
             "is_container": self.is_container,
             "repo": self.repo.to_dict() if self.repo else None,
@@ -371,6 +376,7 @@ class WorkItem:
             source_ref=data.get("source_ref", ""),
             git_url=data.get("git_url", ""),
             parent_ref=data.get("parent_ref", "") or "",
+            parent_title=str(data.get("parent_title", "") or ""),
             children_ids=[
                 str(c).strip() for c in (data.get("children_ids") or []) if str(c).strip()
             ],

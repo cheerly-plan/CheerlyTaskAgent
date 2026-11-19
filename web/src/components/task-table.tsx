@@ -8,7 +8,7 @@ import {SelectField} from '@/components/select-field';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {canEditConfig, shortTime, sourceLabel} from '@/lib/labels';
-import {orphanChildren} from '@/lib/task-tree';
+import {groupByParent} from '@/lib/task-tree';
 import {
   cn,
   effectiveDefaultModelId,
@@ -261,11 +261,8 @@ export function TaskTable({
   onSort,
   containerClassName,
 }: TaskTableProps) {
-  // 父需求已被删除（父不在当前集合）的子需求：仍展示，但标记为「父已删除」。
-  const orphans = React.useMemo(
-    () => new Set(orphanChildren(items).map((item) => item.id)),
-    [items],
-  );
+  // 按父需求合并：同父的子需求聚在一起，父需求行（若本地有）作为分组标题。
+  const groups = React.useMemo(() => groupByParent(items), [items]);
 
   return (
     <Table className="min-w-[980px]" containerClassName={containerClassName}>
@@ -285,22 +282,31 @@ export function TaskTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {items.map((item) => {
+        {groups.map((group) => (
+          <React.Fragment key={group.key || `solo-${group.items[0]?.id}`}>
+            {group.key ? (
+              /* 父需求分组标题：父可能不在本地（只导入了子需求），用快照标题展示。 */
+              <TableRow className="bg-[#faf9fd] hover:bg-[#faf9fd]">
+                <TableCell colSpan={9} className="py-1.5 pl-4">
+                  <div className="flex items-center gap-2 text-[12px] text-[#6d3fc0]">
+                    <GitBranch className="size-3.5 shrink-0" aria-hidden />
+                    <span className="font-medium">
+                      {group.parentTitle || group.key}
+                    </span>
+                    <span className="text-faint">{group.items.length} 个子需求</span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : null}
+            {group.items.map((item) => {
           const isChild = Boolean(item.parent_ref);
           const isContainer = Boolean(item.is_container);
-          const isOrphan = orphans.has(item.id);
           return (
           <TableRow key={item.id} className={cn('group', isContainer && 'bg-[#faf9fd]')}>
             <TableCell className={cn('pl-4', isChild && 'pl-8')}>
               <div className="flex items-center gap-2.5">
                 {isChild ? (
-                  <CornerDownRight
-                    className={cn(
-                      'size-3.5 shrink-0',
-                      isOrphan ? 'text-warning-foreground/60' : 'text-[#a9a0c4]',
-                    )}
-                    aria-hidden
-                  />
+                  <CornerDownRight className="size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
                 ) : null}
                 <span
                   className={cn(
@@ -316,15 +322,6 @@ export function TaskTable({
                 >
                   {item.title}
                 </div>
-                {isOrphan ? (
-                  <Badge
-                    variant="warning"
-                    className="shrink-0"
-                    title={`父需求 ${item.parent_ref} 已不在列表中（可能被删除），本条子需求成为独立任务`}
-                  >
-                    父已删除
-                  </Badge>
-                ) : null}
               </div>
             </TableCell>
             {isContainer ? (
@@ -410,8 +407,10 @@ export function TaskTable({
               </>
             )}
           </TableRow>
-          );
-        })}
+            );
+            })}
+          </React.Fragment>
+        ))}
       </TableBody>
     </Table>
   );

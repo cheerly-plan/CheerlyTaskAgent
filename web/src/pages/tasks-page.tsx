@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {ArrowDown, ArrowUp, LayoutGrid, List, Plus, RefreshCw, Search, Wand2, X} from 'lucide-react';
+import {ArrowDown, ArrowUp, GitBranch, LayoutGrid, List, Plus, RefreshCw, Search, Wand2, X} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {EmptyState} from '@/components/status-bits';
@@ -16,7 +16,7 @@ import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {SelectField} from '@/components/select-field';
 import {cn} from '@/lib/utils';
-import {orderForTreeView} from '@/lib/task-tree';
+import {groupByParent, orderForTreeView} from '@/lib/task-tree';
 import {isArchived, kindLabel, sortFields, statusLabel} from '@/lib/labels';
 import type {WorkItem} from '@/lib/api';
 
@@ -126,6 +126,9 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
     () => visible.slice((safePage - 1) * pageSize, safePage * pageSize),
     [visible, safePage, pageSize],
   );
+
+  // 卡片视图：同样按父需求分组，同父的子需求聚在一块。
+  const cardGroups = React.useMemo(() => groupByParent(pageItems), [pageItems]);
 
   const toggleSort = (field: SortField) =>
     setSort((prev) =>
@@ -371,20 +374,33 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
             onProbe={(id) => ensureBackendProbe(id)}
           />
         ) : (
-          <div className="grid min-h-0 flex-1 gap-3 overflow-auto bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {pageItems.map((item) => (
-              <TaskCard
-                key={item.id}
-                item={item}
-                selection={selections[item.id] ?? {}}
-                onSelect={setSelection}
-                onAction={(action, id) => void runItemAction(action, id)}
-                onMap={(id, repo) => void mapItemNow(id, repo)}
-                mappings={mappings}
-                models={models}
-                backends={backends}
-                onProbe={(id) => ensureBackendProbe(id)}
-              />
+          <div className="min-h-0 flex-1 space-y-4 overflow-auto bg-[#fafafd] p-4">
+            {cardGroups.map((group) => (
+              <div key={group.key || `solo-${group.items[0]?.id}`}>
+                {group.key ? (
+                  <div className="mb-2 flex items-center gap-2 text-[12px] text-[#6d3fc0]">
+                    <GitBranch className="size-3.5 shrink-0" aria-hidden />
+                    <span className="font-medium">{group.parentTitle || group.key}</span>
+                    <span className="text-faint">{group.items.length} 个子需求</span>
+                  </div>
+                ) : null}
+                <div className={cn('grid gap-3', group.key ? 'sm:grid-cols-2 xl:grid-cols-3' : 'sm:grid-cols-2 xl:grid-cols-3')}>
+                  {group.items.map((item) => (
+                    <TaskCard
+                      key={item.id}
+                      item={item}
+                      selection={selections[item.id] ?? {}}
+                      onSelect={setSelection}
+                      onAction={(action, id) => void runItemAction(action, id)}
+                      onMap={(id, repo) => void mapItemNow(id, repo)}
+                      mappings={mappings}
+                      models={models}
+                      backends={backends}
+                      onProbe={(id) => ensureBackendProbe(id)}
+                    />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
