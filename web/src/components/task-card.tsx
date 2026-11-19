@@ -54,18 +54,18 @@ export function TaskCard({
               {item.title}
             </div>
           </div>
-          {isContainer ? null : (
-            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
-              <span>{sourceLabel[item.source] ?? item.source}</span>
-              {item.source_ref ? <span className="truncate">· {item.source_ref}</span> : null}
-              {item.git_url ? <span className="truncate">· {item.git_url}</span> : null}
-            </div>
-          )}
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
+            <span>{sourceLabel[item.source] ?? item.source}</span>
+            {item.source_ref ? <span className="truncate">· {item.source_ref}</span> : null}
+            {item.git_url ? <span className="truncate">· {item.git_url}</span> : null}
+          </div>
         </div>
-        {isContainer ? null : <StatusBadge status={item.status} />}
+        <StatusBadge status={item.status} />
       </div>
 
-      {isContainer ? null : (
+      {isContainer ? (
+        <p className="mt-2 text-[11.5px] text-faint">父需求，本身不执行；执行它的子需求。</p>
+      ) : (
         <>
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <KindBadge kind={item.kind} />

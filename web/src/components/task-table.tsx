@@ -328,13 +328,33 @@ export function TaskTable({
               </div>
             </TableCell>
             {isContainer ? (
-              /* 父需求：整行只保留标题，其余列一律留白，不提供任何操作。 */
+              /* 父需求：展示基本信息，但没有仓库/模式/模型/操作（它本身不执行）。 */
               <>
-                <TableCell colSpan={3} />
-                <TableCell className="w-[92px]" />
-                <TableCell />
-                <TableCell />
-                <TableCell />
+                <TableCell>
+                  <KindBadge kind={item.kind} />
+                </TableCell>
+                <TableCell>
+                  <span className="text-[12.5px] text-foreground/70">
+                    {sourceLabel[item.source] ?? item.source ?? '—'}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  <span className="text-xs text-faint">—</span>
+                </TableCell>
+                <TableCell className="w-[92px]">
+                  <span className="text-xs text-faint">—</span>
+                </TableCell>
+                <TableCell>
+                  <span className="text-xs text-faint">—</span>
+                </TableCell>
+                <TableCell>
+                  <StatusBadge status={item.status} />
+                </TableCell>
+                <TableCell>
+                  <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
+                    {shortTime(item.created_at)}
+                  </span>
+                </TableCell>
                 <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]" />
               </>
             ) : (
