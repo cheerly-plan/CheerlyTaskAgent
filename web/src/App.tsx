@@ -48,7 +48,7 @@ function Shell() {
       <div className="flex min-h-0 flex-1">
         <AppSidebar page={page} onPage={setPage} />
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
-          {page === 'dashboard' ? <DashboardPage onOpenTasks={() => setPage('tasks')} /> : null}
+          {page === 'dashboard' ? <DashboardPage /> : null}
           {page === 'tasks' ? <TasksPage onOpenHistory={() => setPage('history')} /> : null}
           {page === 'history' ? <HistoryPage onOpenTasks={() => setPage('tasks')} /> : null}
           {page === 'mapping' ? <MappingsPage /> : null}
