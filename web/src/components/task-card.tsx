@@ -1,4 +1,4 @@
-import {FolderGit2, Layers} from 'lucide-react';
+import {CornerDownRight, FolderGit2, GitBranch, Layers} from 'lucide-react';
 
 import {Badge} from '@/components/ui/badge';
 import {SelectField} from '@/components/select-field';
@@ -6,6 +6,7 @@ import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {canEditConfig, sourceLabel} from '@/lib/labels';
+import {cn} from '@/lib/utils';
 import {effectiveDefaultModelId, modelMatches, resolvedModelLabel} from '@/lib/utils';
 
 interface TaskCardProps {
@@ -31,6 +32,8 @@ export function TaskCard({
   backends,
   onProbe,
 }: TaskCardProps) {
+  const isChild = Boolean(item.parent_ref);
+  const isContainer = Boolean(item.is_container);
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
   const backend = backends.find((entry) => entry.id === item.executor);
   const modelLocked = backend?.model_selection === false;
@@ -41,11 +44,15 @@ export function TaskCard({
   const mode = (selection.mode || item.exec_mode || 'dry-run') as ExecMode;
   const editable = canEditConfig(item);
   return (
-    <div className="group flex flex-col rounded-xl border border-border bg-card p-4 shadow-sm transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-primary/30 hover:shadow-md">
+    <div className={cn('group flex flex-col rounded-xl border bg-card p-4 shadow-sm transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:shadow-md', isContainer ? 'border-[#e3d9f8]' : 'border-border hover:border-primary/30')}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="line-clamp-2 text-[13.5px] font-semibold leading-snug text-foreground group-hover:text-primary">
-            {item.title}
+          <div className="flex items-start gap-1.5">
+            {isChild ? <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden /> : null}
+            {isContainer ? <GitBranch className="mt-0.5 size-3.5 shrink-0 text-[#6d3fc0]" aria-hidden /> : null}
+            <div className="line-clamp-2 text-[13.5px] font-semibold leading-snug text-foreground group-hover:text-primary">
+              {item.title}
+            </div>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-faint">
             <span>{sourceLabel[item.source] ?? item.source}</span>
@@ -145,6 +152,7 @@ export function TaskCard({
           models={models}
           backends={backends}
           onProbe={onProbe}
+          container={isContainer}
         />
       </div>
     </div>

@@ -38,6 +38,8 @@ class RawItem:
     tapd_workspace_id: str = ""
     attachments: list[dict[str, Any]] = field(default_factory=list)
     git_url_hint: str = ""
+    parent_ref: str = ""       # 父需求 source_ref；顶层为空
+    children_ids: list[str] = field(default_factory=list)  # 子需求 source_ref 列表
 
     @classmethod
     def from_email(
@@ -70,6 +72,8 @@ class RawItem:
         body = getattr(item, "description", "") or ""
         if meta_lines:
             body = "\n".join(meta_lines) + "\n\n" + body
+        # 子的 parent_id → 父 source_ref（tapd:<type>:<id>）；父的 children_id 是裸 id，
+        # 这里不做子 source_ref 反推（父类型未必与子一致），交给同步后处理按 parent_ref 聚合。
         return cls(
             source=SourceType.TAPD,
             tapd_workspace_id=str(getattr(item, "workspace_id", "") or ""),
@@ -77,6 +81,7 @@ class RawItem:
             body=body,
             source_ref=item.ref,
             git_url_hint=getattr(item, "git_url_hint", ""),
+            parent_ref=getattr(item, "parent_ref", "") or "",
         )
 
 
@@ -135,6 +140,7 @@ def parse_raw(raw: RawItem, *, exec_mode: str = "dry-run") -> WorkItem:
         git_url=git_url,
         dedupe_key=dedupe,
         exec_mode=exec_mode,
+        parent_ref=raw.parent_ref,
     )
 
 

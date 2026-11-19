@@ -16,6 +16,7 @@ import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {SelectField} from '@/components/select-field';
 import {cn} from '@/lib/utils';
+import {orderForTreeView} from '@/lib/task-tree';
 import {isArchived, kindLabel, sortFields, statusLabel} from '@/lib/labels';
 import type {WorkItem} from '@/lib/api';
 
@@ -103,7 +104,8 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
       const result = sortValue(a, sort.field).localeCompare(sortValue(b, sort.field), 'zh-CN');
       return sort.direction === 'asc' ? result : -result;
     });
-    return list;
+    // 树形顺序：子需求紧跟父需求，便于看出层级（父始终是容器）。
+    return orderForTreeView(list);
   }, [activeItems, filters, keyword, sort]);
 
   // 筛选、搜索、排序或每页数量变化后回到第一页，避免停在越界页。

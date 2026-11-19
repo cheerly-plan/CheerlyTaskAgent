@@ -107,12 +107,24 @@ class TapdItem:
     created: str
     modified: str
     git_url_hint: str = ""
+    parent_id: str = ""        # 父需求 id；顶层为 "0" 或空
+    children_ids: list[str] = field(default_factory=list)  # 子需求 id 列表（TAPD children_id 格式 |id1|id2|）
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ref(self) -> str:
         """Stable source_ref used for dedupe: tapd:story:12345."""
         return f"tapd:{self.entity_type}:{self.id}"
+
+    @property
+    def parent_ref(self) -> str:
+        """source_ref of the parent; empty for top-level items."""
+        pid = str(self.parent_id or "").strip()
+        if not pid or pid == "0":
+            return ""
+        # 父子需求通常同类型（story→story）；task 的父固定是 story。
+        parent_type = "story" if self.entity_type == "task" else self.entity_type
+        return f"tapd:{parent_type}:{pid}"
 
     @property
     def external_url(self) -> str:
@@ -302,6 +314,18 @@ class TapdClient:
         description = first("description")
         # A git URL is often kept in a custom field; expose common ones.
         git_hint = first("custom_field_git_url", "git_url", "custom_field_one")
+        # 父子需求：TAPD 用 parent_id（子→父，顶层为 "0"）和 children_id（父→子，
+        # 格式 |id1|id2|，空值 lone "|"）。两者双向冗余，都提取以便交叉校验。
+        # story 的父在 parent_id；task 归属的 story 在 story_id。
+        # 跳过 "0"（TAPD 顶层哨兵值），继续找下一个候选字段。
+        parent_id = ""
+        for key in ("parent_id", "story_id"):
+            candidate = str(obj.get(key) or "").strip()
+            if candidate and candidate != "0":
+                parent_id = candidate
+                break
+        children_raw = first("children_id")
+        children_ids = [c.strip() for c in children_raw.split("|") if c.strip()] if children_raw else []
         return TapdItem(
             entity_type=entity_type,
             id=first("id"),
@@ -315,6 +339,8 @@ class TapdClient:
             created=first("created"),
             modified=first("modified"),
             git_url_hint=git_hint,
+            parent_id=parent_id,
+            children_ids=children_ids,
             raw=obj,
         )
 

@@ -19,6 +19,12 @@ export interface WorkItem {
   source: string;
   source_ref?: string;
   git_url?: string;
+  /** 父子需求：父的 source_ref；顶层为空。 */
+  parent_ref?: string;
+  /** 子需求的 source_ref 列表（仅父容器有值）。 */
+  children_ids?: string[];
+  /** True = 父容器节点，不执行。 */
+  is_container?: boolean;
   repo?: string;
   status: Status;
   exec_mode: ExecMode;

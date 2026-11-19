@@ -1,4 +1,4 @@
-import {ArrowDown, ArrowUp, ChevronsUpDown, FileText, FolderGit2} from 'lucide-react';
+import {ArrowDown, ArrowUp, ChevronsUpDown, CornerDownRight, FileText, FolderGit2, GitBranch} from 'lucide-react';
 
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
 import {Badge} from '@/components/ui/badge';
@@ -272,12 +272,23 @@ export function TaskTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {items.map((item) => (
-          <TableRow key={item.id} className="group">
-            <TableCell className="pl-4">
+        {items.map((item) => {
+          const isChild = Boolean(item.parent_ref);
+          const isContainer = Boolean(item.is_container);
+          return (
+          <TableRow key={item.id} className={cn('group', isContainer && 'bg-[#faf9fd]')}>
+            <TableCell className={cn('pl-4', isChild && 'pl-8')}>
               <div className="flex items-center gap-2.5">
-                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-secondary text-[#7b7e92]">
-                  <FileText className="size-3.5" />
+                {isChild ? (
+                  <CornerDownRight className="size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
+                ) : null}
+                <span
+                  className={cn(
+                    'grid size-7 shrink-0 place-items-center rounded-md',
+                    isContainer ? 'bg-[#ece5fb] text-[#6d3fc0]' : 'bg-secondary text-[#7b7e92]',
+                  )}
+                >
+                  {isContainer ? <GitBranch className="size-3.5" /> : <FileText className="size-3.5" />}
                 </span>
                 <div
                   className="min-w-0 truncate font-medium text-foreground group-hover:text-primary"
@@ -333,10 +344,12 @@ export function TaskTable({
                 backends={backends}
                 onProbe={onProbe}
                 showModelSelect={false}
+                container={isContainer}
               />
             </TableCell>
           </TableRow>
-        ))}
+          );
+        })}
       </TableBody>
     </Table>
   );

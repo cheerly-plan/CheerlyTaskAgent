@@ -314,11 +314,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except ValueError as error:
                 logger.warning("TAPD 建单失败 %s：%s", item.ref, error)
                 skipped += 1
+        # 新建/回填完子需求后重算父子关系（父容器标记 + 子列表）。
+        _relink_parents()
         # Advance cursor using the newest modified timestamp seen.
         stamps = [i.modified for i in result.items if i.modified]
         if stamps:
             _tapd_last_sync["modified"] = max(stamps)
         return {"created": created, "skipped": skipped, "error": None}
+
+    def _relink_parents() -> None:
+        """同步/导入后重算父子关系（标记父容器 + 回填子列表），失败不影响主流程。"""
+        try:
+            scheduler.link_parent_relations()
+        except Exception as error:  # noqa: BLE001 - 关系绑定是增强，不能拖垮同步
+            logger.warning("父子关系绑定失败：%s", error)
 
     def _tapd_repo_hint(item: TapdItem, client: TapdClient) -> tuple[str, str]:
         """Resolve the bound local repo name + a stage hint for one TAPD item."""
@@ -460,6 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             newest_imported = max(imported_stamps)
             final_cursor = min(newest_imported, body.cursor) if body.cursor else newest_imported
             _tapd_last_sync["modified"] = max(_tapd_last_sync["modified"], final_cursor)
+        _relink_parents()
         _tapd_preview.update({"nonce": "", "raw": {}, "cursor": ""})
         return {"created": created, "updated": updated, "skipped": skipped, "error": None}
 
@@ -492,6 +502,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except ValueError as error:
             return {"created": 0, "skipped": 0, "error": str(error)}
+        _relink_parents()
         return {"created": 1 if was_created else 0, "skipped": 0 if was_created else 1, "error": None}
 
     async def tapd_poll_loop() -> None:

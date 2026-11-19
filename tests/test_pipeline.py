@@ -706,3 +706,79 @@ def test_import_raw_with_bound_repo_name(env, tmp_path):
     assert item.repo is not None and item.repo.name == "BoundRepo"
     assert item.status == ItemStatus.READY
     assert "绑定" in item.stage
+
+
+# ── parent/child requirements ────────────────────────────────────────────────
+def test_import_raw_persists_parent_ref_and_backfills(env):
+    scheduler, store, _, _, _ = env
+    child = RawItem(
+        source=SourceType.TAPD, source_ref="tapd:story:58",
+        title="前端", body="", parent_ref="tapd:story:36",
+    )
+    item, created = scheduler.import_raw(child, auto_map=False)
+    assert created is True
+    assert item.parent_ref == "tapd:story:36"
+    # 落盘后能读回
+    assert store.get(item.id).parent_ref == "tapd:story:36"
+
+    # 重新拉取（同 source_ref）应回填 parent_ref 到旧工单
+    old = next(i for i in store.list(limit=50) if i.source_ref == "tapd:story:58")
+    old.parent_ref = ""
+    store.save(old)
+    scheduler._seen_keys[child.source_ref] = old.id
+    again, was_created = scheduler.import_raw(child, auto_map=False)
+    assert was_created is False
+    assert again.parent_ref == "tapd:story:36"
+
+
+def test_link_parent_relations_marks_container_and_children(env):
+    scheduler, store, _, _, _ = env
+    parent = RawItem(source=SourceType.TAPD, source_ref="tapd:story:36", title="父", body="")
+    scheduler.import_raw(parent, auto_map=False)
+    for cid in ("58", "99"):
+        scheduler.import_raw(
+            RawItem(source=SourceType.TAPD, source_ref=f"tapd:story:{cid}",
+                    title=f"子{cid}", body="", parent_ref="tapd:story:36"),
+            auto_map=False,
+        )
+
+    result = scheduler.link_parent_relations()
+    assert result["containers"] == 1
+
+    by_ref = {it.source_ref: it for it in store.list(limit=50)}
+    p = by_ref["tapd:story:36"]
+    assert p.is_container is True
+    assert p.children_ids == ["tapd:story:58", "tapd:story:99"]
+    # 子需求本身不是容器
+    assert by_ref["tapd:story:58"].is_container is False
+
+    # 幂等：再跑一次不重复计
+    again = scheduler.link_parent_relations()
+    assert again["containers"] == 0
+
+
+def test_link_parent_relations_skips_orphan(env):
+    scheduler, store, _, _, _ = env
+    scheduler.import_raw(
+        RawItem(source=SourceType.TAPD, source_ref="tapd:story:58",
+                title="孤儿子", body="", parent_ref="tapd:story:36"),
+        auto_map=False,
+    )
+    result = scheduler.link_parent_relations()
+    assert result["containers"] == 0  # 父未建单，跳过
+    child = store.list(limit=10)[0]
+    assert child.parent_ref == "tapd:story:36"  # 关系保留，不丢
+
+
+def test_workitem_parent_fields_roundtrip():
+    item = WorkItem.create(title="x", description="", parent_ref="tapd:story:1", is_container=False)
+    data = item.to_dict()
+    assert data["parent_ref"] == "tapd:story:1"
+    restored = WorkItem.from_dict(data)
+    assert restored.parent_ref == "tapd:story:1"
+    assert restored.is_container is False
+    # 旧数据缺字段也能加载
+    data.pop("parent_ref"); data.pop("children_ids"); data.pop("is_container")
+    legacy = WorkItem.from_dict(data)
+    assert legacy.parent_ref == ""
+    assert legacy.is_container is False

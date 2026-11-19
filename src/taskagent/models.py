@@ -218,6 +218,10 @@ class WorkItem:
     source_ref: str = ""            # email message id / TAPD story id / ""
     tapd_workspace_id: str = ""     # TAPD 项目 ID（用于按绑定自动映射仓库）
     git_url: str = ""               # git URL hint extracted from the source
+    # 父子需求：parent_ref 指向父的 source_ref（tapd:<type>:<id>）；parent_ref 为空即顶层。
+    parent_ref: str = ""
+    children_ids: list[str] = field(default_factory=list)  # 子需求的 source_ref 列表
+    is_container: bool = False      # True = 父容器节点，不进执行队列
     repo: LocalRepo | None = None   # resolved local checkout
     status: ItemStatus = ItemStatus.DISCOVERED
     dedupe_key: str = ""
@@ -250,6 +254,9 @@ class WorkItem:
         exec_mode: str = "dry-run",
         executor: str = "codebuddy",
         model: str | None = None,
+        parent_ref: str = "",
+        children_ids: list[str] | None = None,
+        is_container: bool = False,
     ) -> WorkItem:
         return cls(
             id=_new_id(),
@@ -259,6 +266,9 @@ class WorkItem:
             source=SourceType(source),
             source_ref=source_ref,
             git_url=git_url.strip(),
+            parent_ref=parent_ref.strip(),
+            children_ids=list(children_ids or []),
+            is_container=bool(is_container),
             dedupe_key=dedupe_key or source_ref or _new_id(),
             exec_mode=exec_mode if exec_mode in {"dry-run", "apply"} else "dry-run",
             executor=executor or "codebuddy",
@@ -296,6 +306,9 @@ class WorkItem:
             "source_ref": self.source_ref,
             "tapd_workspace_id": self.tapd_workspace_id,
             "git_url": self.git_url,
+            "parent_ref": self.parent_ref,
+            "children_ids": list(self.children_ids),
+            "is_container": self.is_container,
             "repo": self.repo.name if self.repo else None,
             "status": self.status.value,
             "exec_mode": self.exec_mode,
@@ -319,6 +332,9 @@ class WorkItem:
             "source_ref": self.source_ref,
             "tapd_workspace_id": self.tapd_workspace_id,
             "git_url": self.git_url,
+            "parent_ref": self.parent_ref,
+            "children_ids": list(self.children_ids),
+            "is_container": self.is_container,
             "repo": self.repo.to_dict() if self.repo else None,
             "status": self.status.value,
             "dedupe_key": self.dedupe_key,
@@ -354,6 +370,11 @@ class WorkItem:
             source=SourceType(data.get("source", SourceType.MANUAL.value)),
             source_ref=data.get("source_ref", ""),
             git_url=data.get("git_url", ""),
+            parent_ref=data.get("parent_ref", "") or "",
+            children_ids=[
+                str(c).strip() for c in (data.get("children_ids") or []) if str(c).strip()
+            ],
+            is_container=bool(data.get("is_container", False)),
             repo=repo,
             status=ItemStatus(data.get("status", ItemStatus.DISCOVERED.value)),
             dedupe_key=data.get("dedupe_key", ""),

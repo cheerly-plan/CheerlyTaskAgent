@@ -229,6 +229,47 @@ def test_tapd_raw_ref_drives_dedupe():
     assert raw.title.startswith("[需求]")
 
 
+def test_normalise_extracts_parent_fields():
+    child = TapdClient._normalise("story", {
+        "id": "58", "workspace_id": "9", "name": "前端开发",
+        "parent_id": "36", "children_id": "|",
+    })
+    assert child.parent_id == "36"
+    assert child.children_ids == []
+    assert child.parent_ref == "tapd:story:36"
+
+    parent = TapdClient._normalise("story", {
+        "id": "36", "workspace_id": "9", "name": "父需求",
+        "parent_id": "0", "children_id": "|58|99|",
+    })
+    assert parent.parent_id == ""
+    assert parent.children_ids == ["58", "99"]
+    assert parent.parent_ref == ""
+
+    task = TapdClient._normalise("task", {
+        "id": "7", "workspace_id": "9", "title": "子任务",
+        "story_id": "36", "parent_id": "0",
+    })
+    # task 的父是它归属的 story，parent_ref 固定按 story 构造
+    assert task.parent_id == "36"
+    assert task.parent_ref == "tapd:story:36"
+
+
+def test_from_tapd_passes_parent_ref():
+    from taskagent.sources import parse_raw
+
+    child = TapdItem(
+        entity_type="story", id="58", workspace_id="9",
+        title="前端", description="", status="planning", owner="",
+        priority="", iteration_id="", created="", modified="",
+        parent_id="36",
+    )
+    raw = RawItem.from_tapd(child)
+    assert raw.parent_ref == "tapd:story:36"
+    assert parse_raw(raw).parent_ref == "tapd:story:36"
+    assert parse_raw(raw).is_container is False
+
+
 def test_sync_endpoint_without_credentials(tmp_path):
     app = create_app(Settings(data_dir=tmp_path, project_roots=()))
     with TestClient(app) as client:

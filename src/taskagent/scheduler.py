@@ -115,6 +115,13 @@ class Scheduler:
         if existing_id:
             existing = self.store.get(existing_id)
             if existing:
+                # 重新拉取时回填父子字段：旧工单没有 parent_ref，或 TAPD 侧关系变了。
+                # 只写有值的 parent_ref，不主动清空（避免拉取窗口不含父时误清空）。
+                parent_changed = bool(probe.parent_ref) and probe.parent_ref != existing.parent_ref
+                if parent_changed:
+                    existing.parent_ref = probe.parent_ref
+                    self.store.save(existing)
+                    self.events.publish(Event("item_updated", existing.id, {"item": existing.summary()}))
                 return existing, False
         item = probe
         item.tapd_workspace_id = raw.tapd_workspace_id
@@ -136,6 +143,42 @@ class Scheduler:
         self._seen_keys[item.dedupe_key] = item.id
         self.events.publish(Event("item_imported", item.id, {"item": item.summary()}))
         return item, True
+
+    def link_parent_relations(self) -> dict[str, int]:
+        """根据各工单的 ``parent_ref`` 维护父子关系。
+
+        - 把"被子需求引用为父"的工单标记为 container（不进执行队列）。
+        - 回填每个父工单的 ``children_ids``（子工单的 source_ref 列表）。
+        - 对只写了 ``children_ids``（来自父的 TAPD children_id）但子工单尚未建单/
+          未写 parent_ref 的情况不强行建连；父子判定以子的 parent_ref 为准。
+
+        返回 ``{"containers": 标记数, "linked": 回填子列表数}`` 供调用方观测。
+        """
+        items = self.store.list(limit=100000)
+        by_ref = {it.source_ref: it for it in items if it.source_ref}
+        children_by_parent: dict[str, list[str]] = {}
+        for it in items:
+            if it.parent_ref and it.parent_ref != it.source_ref:
+                children_by_parent.setdefault(it.parent_ref, []).append(it.source_ref)
+
+        containers = linked = 0
+        for parent_ref, child_refs in children_by_parent.items():
+            parent = by_ref.get(parent_ref)
+            if parent is None:
+                continue  # 孤儿：父未建单，保持子的 parent_ref，待后续单独补建
+            child_refs = sorted(set(child_refs))
+            changed = False
+            if not parent.is_container:
+                parent.is_container = True
+                changed = True
+                containers += 1
+            if parent.children_ids != child_refs:
+                parent.children_ids = child_refs
+                changed = True
+                linked += 1
+            if changed:
+                self.store.save(parent)
+        return {"containers": containers, "linked": linked}
 
     def create_manual(
         self,

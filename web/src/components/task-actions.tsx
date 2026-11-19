@@ -26,6 +26,8 @@ interface TaskActionsProps {
   onProbe?: (executorId?: string) => void;
   /** 是否在操作区渲染模型下拉；表格视图把它挪到「模型」列下方。 */
   showModelSelect?: boolean;
+  /** 父需求容器：不提供执行/apply，只保留查看与删除。 */
+  container?: boolean;
 }
 
 /**
@@ -44,6 +46,7 @@ export function TaskActions({
   compact,
   onProbe,
   showModelSelect = true,
+  container = false,
 }: TaskActionsProps) {
   const dryDone = item.status === 'succeeded' && item.exec_mode === 'dry-run';
   const retryable = ['failed', 'cancelled'].includes(item.status);
@@ -73,7 +76,14 @@ export function TaskActions({
       className="flex flex-wrap items-center justify-end gap-1.5"
       onClick={(event) => event.stopPropagation()}
     >
-      {dryDone ? (
+      {container ? (
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-[#d9cff3] px-2 py-1 text-[11px] text-[#6d3fc0]"
+          title="父需求容器：由子需求完成情况汇总，不直接执行"
+        >
+          容器
+        </span>
+      ) : dryDone ? (
         <Button
           size="sm"
           onClick={() => onAction('apply', item.id)}
