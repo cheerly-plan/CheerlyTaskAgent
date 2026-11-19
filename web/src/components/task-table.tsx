@@ -189,8 +189,8 @@ function ModelCell({
   const selected = selection.model || item.model || fallback;
   const options = sortModelsByCategory(modelList).map((model) => ({
     value: model.id,
-    // 下拉本身就是展示：自定义模型把标记并进选项文案，避免和上方标签重复。
-    label: model.custom ? `${model.label ?? model.id} · 自定义` : (model.label ?? model.id),
+    // 分组标题已经写明「自定义模型」，选项不再重复后缀。
+    label: model.label ?? model.id,
     hint: modelHint(model),
     group: modelCategory(model),
   }));

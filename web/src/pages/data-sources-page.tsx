@@ -35,11 +35,14 @@ export function DataSourcesPage() {
     }
   };
 
-  const save = async () => {
-    // 取消勾选 = 不再拉取该项目；同步解除它和本地仓库的映射，
+  // sourceOverride：删除项目等操作需要「构造新配置后立即落库」，不能依赖闭包里的旧 draft。
+  const save = async (sourceOverride?: DataSource) => {
+    const effective = sourceOverride ?? source;
+    const effectiveTapd = effective.tapd;
+    // 取消勾选 / 删除 = 不再拉取该项目；同步解除它和本地仓库的映射，
     // 否则项目映射页会残留一个永远不会再产出工单的绑定。
     const selected = new Set(
-      (draft.data_source?.tapd?.workspace_id ?? '')
+      (effectiveTapd?.workspace_id ?? '')
         .split(',')
         .map((id) => id.trim())
         .filter(Boolean),
@@ -63,7 +66,8 @@ export function DataSourcesPage() {
       await reloadMappings();
       toast.info(`已解除 ${unlinked} 个映射中不再拉取的 TAPD 项目关联`);
     }
-    await saveSettings(draft);
+    // 顶层 tapd 与 data_source.tapd 同步写入，避免两处配置不一致导致项目复活。
+    await saveSettings({...draft, tapd: effectiveTapd as UISettings['tapd'], data_source: effective});
   };
 
   return (

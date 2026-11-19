@@ -93,13 +93,18 @@ export function TapdSourceCard({
     }
     return [...map.values()];
   };
-  const allSavedProjects = normalizeProjects(
-    [...(tapd.projects ?? []), ...nameCache],
-    tapd.company_id || '',
-  );
+  // 下拉只列「已登记」的项目（tapd.projects）。nameCache 仅用于给 workspace_id 里
+  // 尚未登记的项目补全中文名，不作为独立选项——否则拉取缓存里的项目会混进来且删不掉。
+  const allSavedProjects = normalizeProjects(tapd.projects ?? [], tapd.company_id || '');
   for (const id of selectedIds) {
     if (!allSavedProjects.some((p) => p.id === id)) {
-      allSavedProjects.push({id, name: id, pretty_name: '', company_id: (tapd.company_id || '').trim()});
+      const cached = nameCache.find((n) => n.id === id);
+      allSavedProjects.push({
+        id,
+        name: cached?.name || id,
+        pretty_name: cached?.pretty_name || '',
+        company_id: (tapd.company_id || '').trim(),
+      });
     }
   }
 
@@ -340,8 +345,11 @@ export function TapdSourceCard({
   };
 
   const removeProject = async (projectId: string) => {
-    // 一次性从项目缓存和选中 workspace_id 中移除（避免连续 patchTapd 相互覆盖）。
+    // 一次性从所有来源清除：已保存项目、选中 workspace_id、本地名称缓存与拉取工作集。
+    // 只清 tapd.projects 不够——nameCache / workspaces 里还在，重渲染后又会把项目带回来。
     const nextIds = selectedIds.filter((id) => id !== projectId);
+    setNameCache((prev) => prev.filter((item) => item.id !== projectId));
+    setWorkspaces((prev) => prev.filter((item) => item.id !== projectId));
     onPatch({
       ...source,
       tapd: {
