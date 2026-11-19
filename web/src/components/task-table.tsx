@@ -327,59 +327,68 @@ export function TaskTable({
                 ) : null}
               </div>
             </TableCell>
-            <TableCell>
-              <KindBadge kind={item.kind} />
-            </TableCell>
-            <TableCell>
-              <span className="text-[12.5px] text-foreground/70">
-                {sourceLabel[item.source] ?? item.source ?? '—'}
-              </span>
-            </TableCell>
-            <TableCell>
-              <RepoCell item={item} mappings={mappings} onMap={onMap} />
-            </TableCell>
-            <TableCell className="w-[92px]">
-              <ModeCell
-                item={item}
-                value={selections[item.id]?.mode}
-                onSelect={(value) => onSelect(item.id, 'mode', value)}
-              />
-            </TableCell>
-            <TableCell>
-              <ModelCell
-                item={item}
-                backends={backends}
-                models={models}
-                selection={selections[item.id] ?? {}}
-                onSelect={(key, value) => onSelect(item.id, key, value)}
-                onProbe={onProbe}
-              />
-            </TableCell>
-            <TableCell>
-              {isContainer ? (
-                <span className="text-xs text-faint">—</span>
-              ) : (
-                <StatusBadge status={item.status} />
-              )}
-            </TableCell>
-            <TableCell>
-              <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
-                {shortTime(item.created_at)}
-              </span>
-            </TableCell>
-            <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]">
-              <TaskActions
-                item={item}
-                selection={selections[item.id] ?? {}}
-                onSelect={(key, value) => onSelect(item.id, key, value)}
-                onAction={onAction}
-                models={models}
-                backends={backends}
-                onProbe={onProbe}
-                showModelSelect={false}
-                container={isContainer}
-              />
-            </TableCell>
+            {isContainer ? (
+              /* 父需求：整行只保留标题，其余列一律留白，不提供任何操作。 */
+              <>
+                <TableCell colSpan={3} />
+                <TableCell className="w-[92px]" />
+                <TableCell />
+                <TableCell />
+                <TableCell />
+                <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]" />
+              </>
+            ) : (
+              <>
+                <TableCell>
+                  <KindBadge kind={item.kind} />
+                </TableCell>
+                <TableCell>
+                  <span className="text-[12.5px] text-foreground/70">
+                    {sourceLabel[item.source] ?? item.source ?? '—'}
+                  </span>
+                </TableCell>
+                <TableCell>
+                  <RepoCell item={item} mappings={mappings} onMap={onMap} />
+                </TableCell>
+                <TableCell className="w-[92px]">
+                  <ModeCell
+                    item={item}
+                    value={selections[item.id]?.mode}
+                    onSelect={(value) => onSelect(item.id, 'mode', value)}
+                  />
+                </TableCell>
+                <TableCell>
+                  <ModelCell
+                    item={item}
+                    backends={backends}
+                    models={models}
+                    selection={selections[item.id] ?? {}}
+                    onSelect={(key, value) => onSelect(item.id, key, value)}
+                    onProbe={onProbe}
+                  />
+                </TableCell>
+                <TableCell>
+                  <StatusBadge status={item.status} />
+                </TableCell>
+                <TableCell>
+                  <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
+                    {shortTime(item.created_at)}
+                  </span>
+                </TableCell>
+                <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]">
+                  <TaskActions
+                    item={item}
+                    selection={selections[item.id] ?? {}}
+                    onSelect={(key, value) => onSelect(item.id, key, value)}
+                    onAction={onAction}
+                    models={models}
+                    backends={backends}
+                    onProbe={onProbe}
+                    showModelSelect={false}
+                  />
+                </TableCell>
+              </>
+            )}
           </TableRow>
           );
         })}

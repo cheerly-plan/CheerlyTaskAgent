@@ -72,33 +72,29 @@ export function TapdSyncDialog({
   const [execMode, setExecMode] = React.useState<ExecMode>(defaultExecMode);
   const [submitting, setSubmitting] = React.useState(false);
 
-  const items = React.useMemo(() => orderForTreeView(preview?.items ?? []), [preview]);
+  const allItems = React.useMemo(() => preview?.items ?? [], [preview]);
+  // 父需求（容器）只作为归属信息，不参与导入；列表里不出现，避免勾了也没意义。
+  const items = React.useMemo(
+    () => orderForTreeView(allItems.filter((i) => !i.is_container)),
+    [allItems],
+  );
+  const containerTitleByRef = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of allItems) {
+      if (item.is_container && item.source_ref) map.set(item.source_ref, item.title);
+    }
+    return map;
+  }, [allItems]);
   // 只有「新增 / 更新」可选；unchanged 仅作提示。
   const actionable = React.useMemo(() => items.filter((i) => i.status !== 'unchanged'), [items]);
-  // 父需求不在本次预览结果里（父未建单 / 已被过滤）的子需求：导入后会成为孤儿。
-  const refs = React.useMemo(() => new Set(items.map((i) => i.source_ref)), [items]);
+  // 子需求的「父需求」标签：父标题从完整预览里查（父本身不参与导入）。
   const parentTitleByRef = React.useMemo(() => {
-    const map = new Map<string, string>();
-    for (const item of items) {
+    const map = new Map<string, string>(containerTitleByRef);
+    for (const item of allItems) {
       if (item.source_ref) map.set(item.source_ref, item.title);
     }
     return map;
-  }, [items]);
-
-  // 父子索引：parent -> children；child -> parent（只收本次预览里可选的条目）。
-  const selectableRefs = React.useMemo(
-    () => new Set(actionable.map((i) => i.source_ref)),
-    [actionable],
-  );
-  const childrenByParent = React.useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const item of actionable) {
-      const pref = item.parent_ref;
-      if (!pref || pref === item.source_ref) continue;
-      map.set(pref, [...(map.get(pref) ?? []), item.source_ref]);
-    }
-    return map;
-  }, [actionable]);
+  }, [allItems, containerTitleByRef]);
 
   // 每次打开预览：默认全选可操作项，并同步一次顶部配置为当前系统默认。
   React.useEffect(() => {
@@ -109,44 +105,11 @@ export function TapdSyncDialog({
     setExecMode(defaultExecMode);
   }, [open, actionable, defaultExecutor, defaultModel, defaultExecMode]);
 
-  /**
-   * 勾选联动：
-   * - 勾上父需求 → 连带勾上它的全部子需求（否则父建了、子却没建，树会断开）
-   * - 取消父需求 → 连带取消子需求
-   * - 取消某个子需求 → 父保持勾选（父本身仍要导入）
-   * 父不可选（无变化）时，子仍可单独勾选。
-   */
   const toggle = (ref: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
-      const children = childrenByParent.get(ref) ?? [];
-      if (next.has(ref)) {
-        next.delete(ref);
-        for (const child of children) next.delete(child);
-      } else {
-        next.add(ref);
-        for (const child of children) next.add(child);
-      }
-      return next;
-    });
-
-  /** 父需求的勾选子统计（用于行尾「n/m 子需求」与半选态）。 */
-  const childStats = (ref: string) => {
-    const children = childrenByParent.get(ref) ?? [];
-    const picked = children.filter((child) => selected.has(child)).length;
-    return {total: children.length, picked, all: children.length > 0 && picked === children.length};
-  };
-
-  /** 单独切换某个父需求下的全部子需求。 */
-  const toggleChildren = (ref: string) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      const children = childrenByParent.get(ref) ?? [];
-      const allPicked = children.length > 0 && children.every((child) => next.has(child));
-      for (const child of children) {
-        if (allPicked) next.delete(child);
-        else next.add(child);
-      }
+      if (next.has(ref)) next.delete(ref);
+      else next.add(ref);
       return next;
     });
 
@@ -288,16 +251,7 @@ export function TapdSyncDialog({
                 const active = selected.has(item.source_ref);
                 const isChild = Boolean(item.parent_ref);
                 const isContainer = Boolean(item.is_container);
-                const parentInPreview = Boolean(item.parent_ref) && refs.has(item.parent_ref!);
                 const parentTitle = item.parent_ref ? parentTitleByRef.get(item.parent_ref) : '';
-                const stats = childStats(item.source_ref);
-                const hasChildren = stats.total > 0;
-                // 子需求被勾选、但父需求没勾：父不会导入，子会变成孤儿。
-                const parentSkipped =
-                  isChild &&
-                  selectableRefs.has(item.parent_ref!) &&
-                  !selected.has(item.parent_ref!) &&
-                  active;
                 return (
                   <button
                     key={item.source_ref}
@@ -332,24 +286,6 @@ export function TapdSyncDialog({
                         {item.status === 'unchanged' && <Badge variant="muted">无变化</Badge>}
                         <Badge variant="outline">{item.kind}</Badge>
                         {item.repo_name && <Badge variant="info">{item.repo_name}</Badge>}
-                        {hasChildren ? (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleChildren(item.source_ref);
-                            }}
-                            title={stats.all ? '取消勾选全部子需求' : '勾选全部子需求'}
-                            className={cn(
-                              'rounded-full border px-1.5 py-0.5 text-[10.5px] transition-colors',
-                              stats.all
-                                ? 'border-primary/40 bg-primary/10 text-primary'
-                                : 'border-border bg-secondary/70 text-foreground/70 hover:border-primary/40 hover:text-primary',
-                            )}
-                          >
-                            {stats.picked}/{stats.total} 子需求
-                          </button>
-                        ) : null}
                       </span>
                       <span className="mt-1 block truncate text-[13px] text-foreground" title={item.title}>
                         {item.title}
@@ -362,21 +298,10 @@ export function TapdSyncDialog({
                       <span className="mt-0.5 block truncate text-[11px] text-faint">
                         {item.source_ref} · 更新于 {item.modified || '—'}
                       </span>
-                      {parentSkipped ? (
-                        <span className="mt-0.5 block truncate text-[11px] text-warning-foreground">
-                          父需求未勾选，本条导入后将成为独立任务
-                        </span>
-                      ) : null}
                       {isChild ? (
-                        parentInPreview ? (
-                          <span className="mt-0.5 block truncate text-[11px] text-[#6d3fc0]">
-                            属于父需求：{parentTitle || item.parent_ref}
-                          </span>
-                        ) : (
-                          <span className="mt-0.5 block truncate text-[11px] text-warning-foreground">
-                            父需求未出现在本次结果中，导入后将是独立任务
-                          </span>
-                        )
+                        <span className="mt-0.5 block truncate text-[11px] text-[#6d3fc0]">
+                          父需求：{parentTitle || item.parent_ref}
+                        </span>
                       ) : null}
                     </span>
                     {item.external_url && (
