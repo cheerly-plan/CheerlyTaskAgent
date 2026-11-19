@@ -14,10 +14,11 @@ const RANGES = [
   {value: '30', label: '最近 30 天'},
 ];
 
+// 紫色系：成功最深、失败中等、其它最浅，和整体品牌色一致。
 const SERIES: ChartSeries[] = [
-  {key: 'succeeded', label: '成功', color: '#2e9e6b'},
-  {key: 'failed', label: '失败', color: '#d94f4f'},
-  {key: 'other', label: '其它', color: '#b3b5c4'},
+  {key: 'succeeded', label: '成功', color: '#5b54c4', colorFrom: '#9d98f0'},
+  {key: 'failed', label: '失败', color: '#8b7fe8', colorFrom: '#c4bffa'},
+  {key: 'other', label: '其它', color: '#b9b3f0', colorFrom: '#e2dffb'},
 ];
 
 /** 概览：关键数字 + 最近工单。 */

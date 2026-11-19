@@ -154,3 +154,14 @@
     @apply pb-3;
   }
 }
+/* 图表悬停列的斜纹高亮（recharts 会覆盖 Cell 的 fill，改用 CSS 背景实现） */
+@layer utilities {
+  .chart-bar-active {
+    background-image: repeating-linear-gradient(
+      35deg,
+      rgba(91, 84, 196, 0.55) 0 3px,
+      rgba(255, 255, 255, 0) 3px 7px
+    );
+    background-blend-mode: overlay;
+  }
+}
