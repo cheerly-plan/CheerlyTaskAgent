@@ -8,7 +8,7 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Switch} from '@/components/ui/switch';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
-import {endpoints, type TapdWorkspace} from '@/lib/api';
+import {endpoints, readGitOrigin, type TapdWorkspace} from '@/lib/api';
 import {cn} from '@/lib/utils';
 
 export function MappingsPage() {
@@ -33,14 +33,18 @@ export function MappingsPage() {
   const pickThenMap = () =>
     pickFolder((path) => {
       const name = path.split('/').filter(Boolean).pop() ?? path;
-      openMappingModal({
-        id: '',
-        name,
-        path,
-        note: '',
-        enabled: true,
-        tapd_workspace_ids: [],
-        tapd_workspace_id: '',
+      // 选完文件夹后异步读取 git origin，预填到「仓库信息 / 备注」。
+      // 读取失败/非 git 目录时保持空，不阻塞弹窗打开。
+      void readGitOrigin(path).then((origin) => {
+        openMappingModal({
+          id: '',
+          name,
+          path,
+          note: origin ? `git: ${origin}` : '',
+          enabled: true,
+          tapd_workspace_ids: [],
+          tapd_workspace_id: '',
+        });
       });
     });
 

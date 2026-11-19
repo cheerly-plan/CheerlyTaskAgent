@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
 import {Field} from '@/components/select-field';
-import type {MappingDraft, ProjectMapping, TapdWorkspace} from '@/lib/api';
+import {readGitOrigin, type MappingDraft, type ProjectMapping, type TapdWorkspace} from '@/lib/api';
 
 interface MappingDialogProps {
   open: boolean;
@@ -102,7 +102,18 @@ export function MappingDialog({
               />
               <Button
                 variant="outline"
-                onClick={() => onPickFolder((path) => patch('path', path))}
+                onClick={() =>
+                  onPickFolder((path) => {
+                    patch('path', path);
+                    // 选完路径后异步读取 git origin，预填备注；仅当用户还没填时覆盖，
+                    // 不覆盖已有手填内容，失败也不阻塞。
+                    void readGitOrigin(path).then((origin) => {
+                      if (origin) {
+                        setForm((prev) => (prev.note.trim() ? prev : {...prev, note: `git: ${origin}`}));
+                      }
+                    });
+                  })
+                }
               >
                 <Folder />
                 选择

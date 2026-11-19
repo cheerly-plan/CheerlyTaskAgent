@@ -314,3 +314,18 @@ export const endpoints = {
   scan: (path: string, depth = 2) =>
     api<ScanResult>('/api/fs/scan', jsonInit('POST', {path, depth})),
 };
+
+/**
+ * 读取某个文件夹自身的 git origin（复用 depth=0 的单目录扫描）。
+ * 非 git 目录、路径为空或请求失败时返回空串，不抛错、不阻塞调用方。
+ */
+export async function readGitOrigin(path: string): Promise<string> {
+  if (!path) return '';
+  try {
+    const result = await endpoints.scan(path, 0);
+    const self = result.candidates?.find((c) => c.path === path) ?? result.candidates?.[0];
+    return self?.origin?.trim() || '';
+  } catch {
+    return '';
+  }
+}
