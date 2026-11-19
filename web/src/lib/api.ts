@@ -211,7 +211,7 @@ export interface MappingDraft {
   tapd_workspace_id?: string;
 }
 
-export type ItemAction = 'map' | 'dry' | 'apply' | 'cancel' | 'delete' | 'report';
+export type ItemAction = 'map' | 'dry' | 'apply' | 'exec' | 'cancel' | 'delete' | 'report';
 
 export class ApiError extends Error {}
 

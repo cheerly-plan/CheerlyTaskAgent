@@ -48,6 +48,8 @@ interface AppContextValue {
   reloadSettings: () => Promise<void>;
   saveSettings: (next: UISettings) => Promise<void>;
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
+  /** 项目列下拉即时映射仓库。 */
+  mapItemNow: (id: string, repo: string) => Promise<void>;
   openNewTask: () => void;
   syncTapd: (force?: boolean) => Promise<void>;
   /** 打开 TAPD 同步预览弹窗；force=true 表示全量重拉。 */
@@ -57,7 +59,6 @@ interface AppContextValue {
   openMappingModal: (mapping: ProjectMapping | null) => void;
   toggleMapping: (id: string) => Promise<void>;
   deleteMapping: (id: string) => Promise<void>;
-  openReport: (id: string) => Promise<void>;
   confirm: (message: string) => Promise<boolean>;
   /** 该后端是否接受按任务指定模型（DSH 之类把模型钉在 profile 里 → false）。 */
   modelSelectionSupported: (executorId?: string) => boolean;
@@ -341,7 +342,21 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       const item = items.find((entry) => entry.id === id);
       const selection = selections[id] ?? {};
       try {
-        if (action === 'map') {
+        if (action === 'exec') {
+          const mode = selection.mode || item?.exec_mode || 'dry-run';
+          const model = modelSelectionSupported(item?.executor)
+            ? selection.model || item?.model || null
+            : null;
+          if (mode === 'apply') {
+            const ok = await confirm(
+              'apply 会在隔离 worktree 中真实执行 codebuddy 改代码（不会提交/推送）。确认继续？',
+            );
+            if (!ok) return;
+            await endpoints.runItem(id, {exec_mode: 'apply', approved: true, model});
+          } else {
+            await endpoints.runItem(id, {exec_mode: 'dry-run', model});
+          }
+        } else if (action === 'map') {
           const repo = selection.map || item?.repo;
           if (!repo) {
             toast.warning('请先选择仓库');
@@ -376,6 +391,20 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       await reloadItems();
     },
     [confirm, items, modelSelectionSupported, openReport, reloadItems, selections],
+  );
+
+  /** 项目列/卡片里的仓库下拉：选中即落库映射。 */
+  const mapItemNow = React.useCallback(
+    async (id: string, repo: string) => {
+      try {
+        await endpoints.mapItem(id, repo);
+        await reloadItems();
+        toast.success('已映射仓库：' + repo);
+      } catch (error) {
+        toast.error('映射失败：' + (error as Error).message);
+      }
+    },
+    [reloadItems],
   );
 
   // ── 新建任务 ──────────────────────────────────────────────────────────────
@@ -634,6 +663,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     reloadSettings,
     saveSettings,
     runItemAction,
+    mapItemNow,
     openNewTask: () => setNewTaskOpen(true),
     syncTapd,
     openTapdSync,
@@ -642,7 +672,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     openMappingModal: (mapping) => setMappingDialog({open: true, editing: mapping}),
     toggleMapping,
     deleteMapping,
-    openReport,
     confirm,
     modelSelectionSupported,
     ensureBackendProbe,

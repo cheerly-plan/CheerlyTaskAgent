@@ -1,4 +1,4 @@
-import {LayoutDashboard, List, FolderGit2, Inbox, Settings2} from 'lucide-react';
+import {LayoutDashboard, List, FolderGit2, History, Inbox, Settings2} from 'lucide-react';
 
 import {cn} from '@/lib/utils';
 
@@ -10,11 +10,12 @@ const CONN_STYLE: Record<ConnState, {className: string; dot: string}> = {
   reconnecting: {className: 'text-warning-foreground bg-warning-muted', dot: '#d98a0b'},
 };
 
-export type PageKey = 'dashboard' | 'tasks' | 'mapping' | 'sources' | 'settings';
+export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' | 'settings';
 
 export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
   {key: 'dashboard', label: '数据看板', icon: LayoutDashboard},
   {key: 'tasks', label: '任务列表', icon: List},
+  {key: 'history', label: '执行历史', icon: History},
   {key: 'mapping', label: '项目映射', icon: FolderGit2},
   {key: 'sources', label: '数据源', icon: Inbox},
   {key: 'settings', label: '系统设置', icon: Settings2},

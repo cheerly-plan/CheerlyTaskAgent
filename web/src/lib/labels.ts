@@ -45,6 +45,11 @@ export const statusDot: Record<Status, string> = {
 export const ACTIVE_STATUSES: Status[] = ['running', 'queued'];
 export const TERMINAL_STATUSES: Status[] = ['succeeded', 'failed', 'skipped', 'cancelled'];
 
+/** 归档到「执行历史」的记录：真实执行（apply）且已结束。dry-run 只是预演，留在任务列表。 */
+export function isArchived(item: {status: Status; exec_mode?: string}): boolean {
+  return item.exec_mode === 'apply' && TERMINAL_STATUSES.includes(item.status);
+}
+
 /** ISO 时间 → `YYYY-MM-DD HH:mm`（后端给的是 UTC ISO 串，沿用原有截断方式）。 */
 export const shortTime = (value?: string) => (value ?? '').slice(0, 16).replace('T', ' ');
 

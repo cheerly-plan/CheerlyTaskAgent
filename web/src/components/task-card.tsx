@@ -1,18 +1,20 @@
 import {FolderGit2, Layers} from 'lucide-react';
 
 import {Badge} from '@/components/ui/badge';
+import {SelectField} from '@/components/select-field';
 import {KindBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
-import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
-import {sourceLabel} from '@/lib/labels';
+import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
+import {ACTIVE_STATUSES, sourceLabel} from '@/lib/labels';
 import {effectiveDefaultModelId, modelMatches, resolvedModelLabel} from '@/lib/utils';
+import {isArchived} from '@/lib/labels';
 
 interface TaskCardProps {
   item: WorkItem;
   selection: ActionSelection;
   onSelect: (id: string, key: keyof ActionSelection, value: string) => void;
   onAction: (action: ItemAction, id: string) => void;
-  onOpen: (id: string) => void;
+  onMap: (id: string, repo: string) => void;
   mappings: ProjectMapping[];
   models: ModelChoice[];
   backends: BackendInfo[];
@@ -24,7 +26,7 @@ export function TaskCard({
   selection,
   onSelect,
   onAction,
-  onOpen,
+  onMap,
   mappings,
   models,
   backends,
@@ -34,19 +36,13 @@ export function TaskCard({
   const backend = backends.find((entry) => entry.id === item.executor);
   const modelLocked = backend?.model_selection === false;
   const pinnedModel = modelLocked ? backend?.models?.find((model) => model.current)?.id : undefined;
+  const repoOptions = mappings
+    .filter((mapping) => mapping.enabled)
+    .map((mapping) => ({value: mapping.name, label: mapping.name}));
+  const mode = (selection.mode || item.exec_mode || 'dry-run') as ExecMode;
+  const running = ACTIVE_STATUSES.includes(item.status);
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(item.id)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onOpen(item.id);
-        }
-      }}
-      className="group flex cursor-pointer flex-col rounded-xl border border-border bg-card p-4 shadow-sm outline-none transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-primary/30 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/40"
-    >
+    <div className="group flex flex-col rounded-xl border border-border bg-card p-4 shadow-sm transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-primary/30 hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="line-clamp-2 text-[13.5px] font-semibold leading-snug text-foreground group-hover:text-primary">
@@ -63,7 +59,26 @@ export function TaskCard({
 
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <KindBadge kind={item.kind} />
-        {item.repo ? (
+        {isArchived(item) ? (
+          item.repo ? (
+            <Badge variant="outline" className="gap-1">
+              <FolderGit2 />
+              {item.repo}
+            </Badge>
+          ) : (
+            <Badge variant="muted">未映射</Badge>
+          )
+        ) : repoOptions.length ? (
+          <SelectField
+            size="sm"
+            className="w-[120px]"
+            value={item.repo ?? ''}
+            placeholder="选择仓库"
+            options={repoOptions}
+            onChange={(value) => onMap(item.id, value)}
+            title="映射仓库"
+          />
+        ) : item.repo ? (
           <Badge variant="outline" className="gap-1">
             <FolderGit2 />
             {item.repo}
@@ -71,9 +86,23 @@ export function TaskCard({
         ) : (
           <Badge variant="muted">未映射</Badge>
         )}
-        <Badge variant="secondary" className="font-mono">
-          {item.exec_mode}
-        </Badge>
+        {running || isArchived(item) ? (
+          <Badge variant="secondary" className="font-mono">
+            {mode}
+          </Badge>
+        ) : (
+          <SelectField
+            size="sm"
+            className="w-[92px]"
+            value={mode}
+            options={[
+              {value: 'dry-run', label: 'dry-run'},
+              {value: 'apply', label: 'apply'},
+            ]}
+            onChange={(value) => onSelect(item.id, 'mode', value)}
+            title="执行方式"
+          />
+        )}
         {modelLocked ? (
           <Badge variant="muted" title={`由 ${backend?.label ?? ''} profile 决定`}>
             profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
@@ -114,7 +143,6 @@ export function TaskCard({
           selection={selection}
           onSelect={(key, value) => onSelect(item.id, key, value)}
           onAction={onAction}
-          mappings={mappings}
           models={models}
           backends={backends}
           onProbe={onProbe}

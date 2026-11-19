@@ -16,7 +16,7 @@ import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {SelectField} from '@/components/select-field';
 import {cn} from '@/lib/utils';
-import {kindLabel, sortFields, statusLabel} from '@/lib/labels';
+import {isArchived, kindLabel, sortFields, statusLabel} from '@/lib/labels';
 import type {WorkItem} from '@/lib/api';
 
 type ViewMode = 'table' | 'card';
@@ -46,7 +46,7 @@ function sortValue(item: WorkItem, field: string): string {
   }
 }
 
-export function TasksPage() {
+export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
   const {
     items,
     itemsTotal,
@@ -58,7 +58,7 @@ export function TasksPage() {
     selections,
     setSelection,
     runItemAction,
-    openReport,
+    mapItemNow,
     openNewTask,
     reloadItems,
     autoMapItems,
@@ -76,8 +76,14 @@ export function TasksPage() {
   const tapd = settings?.data_source?.tapd ?? settings?.tapd;
   const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
 
+  // 只有 apply 的终态会归档到「执行历史」；dry-run 结果留在列表，方便接着 apply。
+  const activeItems = React.useMemo(
+    () => items.filter((item) => !isArchived(item)),
+    [items],
+  );
+
   const visible = React.useMemo(() => {
-    let list = items.slice();
+    let list = activeItems.slice();
     if (filters.source) list = list.filter((item) => item.source === filters.source);
     if (filters.status) list = list.filter((item) => item.status === filters.status);
     if (filters.project) {
@@ -98,7 +104,7 @@ export function TasksPage() {
       return sort.direction === 'asc' ? result : -result;
     });
     return list;
-  }, [items, filters, keyword, sort]);
+  }, [activeItems, filters, keyword, sort]);
 
   // 筛选、搜索、排序或每页数量变化后回到第一页，避免停在越界页。
   React.useEffect(() => {
@@ -128,9 +134,9 @@ export function TasksPage() {
   };
 
   const countText =
-    visible.length === items.length
-      ? `${items.length} 个工作项`
-      : `${visible.length} / ${items.length} 个工作项`;
+    visible.length === activeItems.length
+      ? `${activeItems.length} 个工作项`
+      : `${visible.length} / ${activeItems.length} 个工作项`;
 
   const refresh = async () => {
     setRefreshing(true);
@@ -296,14 +302,24 @@ export function TasksPage() {
           </div>
         </div>
 
-        {items.length === 0 ? (
+        {activeItems.length === 0 ? (
           <EmptyState
-            title="还没有任何工作项"
-            description="点右上角「新建任务」手动录入需求或 Bug；TAPD 工单在「数据源」Tab 自动接入。"
+            title={items.length === 0 ? '还没有任何工作项' : '当前没有待处理的任务'}
+            description={
+              items.length === 0
+                ? '点右上角「新建任务」手动录入需求或 Bug；TAPD 工单在「数据源」Tab 自动接入。'
+                : '所有任务都已执行结束并归档。可在「执行历史」里查看报告或重新执行。'
+            }
             action={
-              <Button className="mt-2" onClick={() => openNewTask()}>
-                新建任务
-              </Button>
+              items.length === 0 ? (
+                <Button className="mt-2" onClick={() => openNewTask()}>
+                  新建任务
+                </Button>
+              ) : onOpenHistory ? (
+                <Button variant="outline" className="mt-2" onClick={onOpenHistory}>
+                  查看执行历史
+                </Button>
+              ) : undefined
             }
           />
         ) : visible.length === 0 ? (
@@ -326,7 +342,7 @@ export function TasksPage() {
             selections={selections}
             onSelect={setSelection}
             onAction={(action, id) => void runItemAction(action, id)}
-            onOpen={(id) => void openReport(id)}
+            onMap={(id, repo) => void mapItemNow(id, repo)}
             mappings={mappings}
             models={models}
             backends={backends}
@@ -341,7 +357,7 @@ export function TasksPage() {
                 selection={selections[item.id] ?? {}}
                 onSelect={setSelection}
                 onAction={(action, id) => void runItemAction(action, id)}
-                onOpen={(id) => void openReport(id)}
+                onMap={(id, repo) => void mapItemNow(id, repo)}
                 mappings={mappings}
                 models={models}
                 backends={backends}
@@ -354,8 +370,8 @@ export function TasksPage() {
         {pageCount > 1 ? (
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
             <span className="text-[11.5px] tabular-nums text-faint">
-              共 {itemsTotal} 条
-              {visible.length !== items.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
+              共 {activeItems.length} 条待处理任务
+              {visible.length !== activeItems.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
               {itemsTotal > items.length ? `（当前已加载最近 ${items.length} 条）` : ''}
             </span>
             <div className="flex items-center gap-2">
@@ -392,7 +408,7 @@ export function TasksPage() {
       </Card>
 
       <p className="mt-3 shrink-0 text-[11.5px] text-faint">
-        提示：点击任意行查看工单详情与执行报告；apply 会在隔离 worktree 中真实改代码，执行前需二次确认。
+        提示：点「报告」查看执行详情；执行结束的任务会自动归档到「执行历史」。apply 会在隔离 worktree 中真实改代码，执行前需二次确认。
       </p>
     </div>
   );

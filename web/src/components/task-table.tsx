@@ -5,8 +5,8 @@ import {Badge} from '@/components/ui/badge';
 import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {SelectField} from '@/components/select-field';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
-import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
-import {ACTIVE_STATUSES, TERMINAL_STATUSES, shortTime, sourceLabel} from '@/lib/labels';
+import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
+import {ACTIVE_STATUSES, TERMINAL_STATUSES, isArchived, shortTime, sourceLabel} from '@/lib/labels';
 import {
   cn,
   effectiveDefaultModelId,
@@ -77,7 +77,7 @@ interface TaskTableProps {
   selections: Record<string, ActionSelection>;
   onSelect: (id: string, key: keyof ActionSelection, value: string) => void;
   onAction: (action: ItemAction, id: string) => void;
-  onOpen: (id: string) => void;
+  onMap: (id: string, repo: string) => void;
   mappings: ProjectMapping[];
   models: ModelChoice[];
   backends: BackendInfo[];
@@ -86,6 +86,72 @@ interface TaskTableProps {
   onSort: (field: SortField) => void;
   /** 滚动容器 class（长列表限制最大高度）。 */
   containerClassName?: string;
+}
+
+/** 项目列：仓库下拉，选中即映射（替代原操作列的「映射」按钮）。 */
+function RepoCell({
+  item,
+  mappings,
+  onMap,
+}: {
+  item: WorkItem;
+  mappings: ProjectMapping[];
+  onMap: (id: string, repo: string) => void;
+}) {
+  const options = mappings
+    .filter((mapping) => mapping.enabled)
+    .map((mapping) => ({value: mapping.name, label: mapping.name}));
+  // 已归档的 apply 记录只读展示，不再给下拉。
+  if (isArchived(item) || !options.length) {
+    return item.repo ? (
+      <Badge variant="outline" className="gap-1">
+        <FolderGit2 />
+        {item.repo}
+      </Badge>
+    ) : (
+      <span className="text-xs text-faint">未映射</span>
+    );
+  }
+  return (
+    <SelectField
+      size="sm"
+      className="w-[120px]"
+      value={item.repo ?? ''}
+      placeholder="选择仓库"
+      options={options}
+      onChange={(value) => onMap(item.id, value)}
+      title="映射仓库"
+    />
+  );
+}
+
+/** 模式列：执行方式下拉，选中写入 selection.mode，供「执行」按钮使用。 */
+function ModeCell({
+  item,
+  value,
+  onSelect,
+}: {
+  item: WorkItem;
+  value?: string;
+  onSelect: (value: string) => void;
+}) {
+  const mode = (value || item.exec_mode || 'dry-run') as ExecMode;
+  const options: {value: ExecMode; label: string}[] = [
+    {value: 'dry-run', label: 'dry-run'},
+    {value: 'apply', label: 'apply'},
+  ];
+  const running = ACTIVE_STATUSES.includes(item.status);
+  if (running || isArchived(item)) return <Mono>{mode}</Mono>;
+  return (
+    <SelectField
+      size="sm"
+      className="w-[92px]"
+      value={mode}
+      options={options}
+      onChange={onSelect}
+      title="执行方式（决定「执行」按钮的动作）"
+    />
+  );
 }
 
 /** 模型单元格：模型名 + 就地选择框（不可选的后端只读展示 profile 钉住的模型）。 */
@@ -182,7 +248,7 @@ export function TaskTable({
   selections,
   onSelect,
   onAction,
-  onOpen,
+  onMap,
   mappings,
   models,
   backends,
@@ -200,19 +266,17 @@ export function TaskTable({
           <SortableHead label="来源" field="source" sort={sort} onSort={onSort} />
           <SortableHead label="项目" field="repo" sort={sort} onSort={onSort} />
           <SortableHead label="状态" field="status" sort={sort} onSort={onSort} />
-          <TableHead>模式</TableHead>
+          <TableHead className="w-[92px]">模式</TableHead>
           <TableHead>模型</TableHead>
           <SortableHead label="创建时间" field="created" sort={sort} onSort={onSort} />
-          <TableHead className="pr-4 text-right">操作</TableHead>
+          <TableHead className="sticky right-0 z-20 border-l border-border/70 bg-[#fafafd] pr-4 text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]">
+            操作
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {items.map((item) => (
-          <TableRow
-            key={item.id}
-            className="group cursor-pointer"
-            onClick={() => onOpen(item.id)}
-          >
+          <TableRow key={item.id} className="group">
             <TableCell className="pl-4">
               <div className="flex items-center gap-2.5">
                 <span className="grid size-7 shrink-0 place-items-center rounded-md bg-secondary text-[#7b7e92]">
@@ -235,20 +299,17 @@ export function TaskTable({
               </span>
             </TableCell>
             <TableCell>
-              {item.repo ? (
-                <Badge variant="outline" className="gap-1">
-                  <FolderGit2 />
-                  {item.repo}
-                </Badge>
-              ) : (
-                <span className="text-xs text-faint">未映射</span>
-              )}
+              <RepoCell item={item} mappings={mappings} onMap={onMap} />
             </TableCell>
             <TableCell>
               <StatusBadge status={item.status} />
             </TableCell>
-            <TableCell>
-              <Mono>{item.exec_mode || '—'}</Mono>
+            <TableCell className="w-[92px]">
+              <ModeCell
+                item={item}
+                value={selections[item.id]?.mode}
+                onSelect={(value) => onSelect(item.id, 'mode', value)}
+              />
             </TableCell>
             <TableCell>
               <ModelCell
@@ -265,13 +326,12 @@ export function TaskTable({
                 {shortTime(item.created_at)}
               </span>
             </TableCell>
-            <TableCell className="pr-4">
+            <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]">
               <TaskActions
                 item={item}
                 selection={selections[item.id] ?? {}}
                 onSelect={(key, value) => onSelect(item.id, key, value)}
                 onAction={onAction}
-                mappings={mappings}
                 models={models}
                 backends={backends}
                 onProbe={onProbe}

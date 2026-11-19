@@ -8,6 +8,7 @@ import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
 import {DashboardPage} from '@/pages/dashboard-page';
 import {DataSourcesPage} from '@/pages/data-sources-page';
+import {HistoryPage} from '@/pages/history-page';
 import {MappingsPage} from '@/pages/mappings-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
@@ -48,7 +49,8 @@ function Shell() {
         <AppSidebar page={page} onPage={setPage} />
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
           {page === 'dashboard' ? <DashboardPage onOpenTasks={() => setPage('tasks')} /> : null}
-          {page === 'tasks' ? <TasksPage /> : null}
+          {page === 'tasks' ? <TasksPage onOpenHistory={() => setPage('history')} /> : null}
+          {page === 'history' ? <HistoryPage onOpenTasks={() => setPage('tasks')} /> : null}
           {page === 'mapping' ? <MappingsPage /> : null}
           {page === 'sources' ? <DataSourcesPage /> : null}
           {page === 'settings' ? <SettingsPage /> : null}

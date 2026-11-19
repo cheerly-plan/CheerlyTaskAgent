@@ -1,14 +1,16 @@
-import {Plus, RotateCcw, Square, Terminal, Trash2, FileText, Play} from 'lucide-react';
+import {Plus, Square, Trash2, FileText, Play} from 'lucide-react';
 
 import {Button} from '@/components/ui/button';
 import {SelectField} from '@/components/select-field';
-import type {BackendInfo, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
+import type {BackendInfo, ItemAction, ModelChoice, WorkItem} from '@/lib/api';
 import {ACTIVE_STATUSES, TERMINAL_STATUSES} from '@/lib/labels';
 import {effectiveDefaultModelId, modelCategory, modelHint, sortModelsByCategory} from '@/lib/utils';
 
 export interface ActionSelection {
   map?: string;
   model?: string;
+  /** 执行模式下拉（模式列）；未选时回退到任务自身的 exec_mode。 */
+  mode?: string;
 }
 
 interface TaskActionsProps {
@@ -16,7 +18,6 @@ interface TaskActionsProps {
   selection: ActionSelection;
   onSelect: (key: keyof ActionSelection, value: string) => void;
   onAction: (action: ItemAction, id: string) => void;
-  mappings: ProjectMapping[];
   models: ModelChoice[];
   backends: BackendInfo[];
   /** 卡片视图里按钮换行更紧凑 */
@@ -28,16 +29,16 @@ interface TaskActionsProps {
 }
 
 /**
- * 状态驱动的动作集合（与原逻辑保持一致）：
- * 未映射 → 选仓库 + 映射；失败/取消 → 重试；其余可执行 → dry-run / apply；
+ * 状态驱动的动作集合：
+ * 可执行 → 单个「执行」按钮（模式由模式列下拉决定）；
  * 执行中 → 取消；已出报告 → 报告；始终可删除。
+ * 仓库映射移到「项目」列下拉、执行模式移到「模式」列下拉。
  */
 export function TaskActions({
   item,
   selection,
   onSelect,
   onAction,
-  mappings,
   models,
   backends,
   compact,
@@ -49,9 +50,6 @@ export function TaskActions({
   const terminal = TERMINAL_STATUSES.includes(item.status) && !dryDone && !retryable;
   const running = ACTIVE_STATUSES.includes(item.status);
 
-  const repoOptions = mappings
-    .filter((mapping) => mapping.enabled)
-    .map((mapping) => ({value: mapping.name, label: mapping.name}));
   // 该任务所属后端能否接受按任务指定模型；不能时只展示它 profile 里钉住的模型。
   const backend = backends.find((entry) => entry.id === item.executor);
   const canPickModel = backend?.model_selection !== false;
@@ -75,38 +73,10 @@ export function TaskActions({
       className="flex flex-wrap items-center justify-end gap-1.5"
       onClick={(event) => event.stopPropagation()}
     >
-      {!item.repo ? (
-        <>
-          <SelectField
-            size="sm"
-            className="w-[116px]"
-            value={selection.map ?? ''}
-            placeholder="请选择仓库"
-            options={repoOptions}
-            onChange={(value) => onSelect('map', value)}
-          />
-          <Button size="sm" variant="outline" onClick={() => onAction('map', item.id)}>
-            映射
-          </Button>
-        </>
-      ) : null}
-
-      {retryable ? (
-        <Button size="sm" variant="outline" onClick={() => onAction('dry', item.id)}>
-          <RotateCcw />
-          重试
-        </Button>
-      ) : !dryDone && !terminal && !running ? (
-        <Button size="sm" variant="outline" onClick={() => onAction('dry', item.id)}>
-          <Terminal />
-          dry-run
-        </Button>
-      ) : null}
-
       {!terminal && !running ? (
-        <Button size="sm" onClick={() => onAction('apply', item.id)} title="在隔离 worktree 中真实执行">
+        <Button size="sm" onClick={() => onAction('exec', item.id)} title="按模式列选择的方式执行">
           <Play />
-          apply
+          执行
         </Button>
       ) : null}
 

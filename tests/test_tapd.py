@@ -355,8 +355,8 @@ def test_preview_classifies_new_changed_unchanged_without_writing(tmp_path, monk
     app = create_app(settings)
     with TestClient(app) as client:
         # Seed the two existing tasks directly in the store (status=DONE-ish data kept).
-        from taskagent.store import TaskStore
         from taskagent.sources import parse_raw
+        from taskagent.store import TaskStore
         store = TaskStore(settings.tasks_dir)
         # Seed with exactly what parse_raw produces so "unchanged" truly matches.
         changed_probe = parse_raw(RawItem.from_tapd(changed_item))

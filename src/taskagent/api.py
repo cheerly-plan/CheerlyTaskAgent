@@ -447,7 +447,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         raw, exec_mode=exec_mode, repo_name=repo_name,
                         executor=sel.executor, model=sel.model,
                         stage_hint=cached["stage_hint"],
-                        auto_map=False if repo_name else True,
+                        auto_map=not repo_name,
                     )
                     created += 1
                 if cached.get("modified"):
