@@ -272,6 +272,9 @@ class TapdClient:
         for row in payload.get("data") or []:
             ws = (row or {}).get("Workspace") or {}
             # 企业自身 category=organization，不是可建单的项目；跳过。
+            # 产品线 category=product 也是中间节点，不可建需求，一并跳过。
+            if str(ws.get("category") or "").strip() in {"organization", "product"}:
+                continue
             if str(ws.get("category") or "").strip() == "organization":
                 continue
             pid = str(ws.get("id") or "").strip()
