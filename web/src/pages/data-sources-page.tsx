@@ -8,10 +8,29 @@ import {toast} from 'sonner';
 export function DataSourcesPage() {
   const {settings, saveSettings, mappings, reloadMappings} = useApp();
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
+  // 项目↔仓库关联也走草稿：只有点主「保存」才写入 projects.json，
+  // 与 settings 草稿保持同一套「保存才生效」的心智。
+  const [mappingDraft, setMappingDraft] = React.useState<Record<string, string[]>>({});
 
   React.useEffect(() => {
     setDraft(settings);
   }, [settings]);
+
+  // UI 与弹窗计算都基于「已落库映射 + 草稿覆盖」的有效视图。
+  const effectiveMappings = React.useMemo(
+    () =>
+      mappings.map((m) => {
+        const ids = mappingDraft[m.id];
+        return ids === undefined
+          ? m
+          : {...m, tapd_workspace_ids: ids, tapd_workspace_id: ids[0] ?? ''};
+      }),
+    [mappings, mappingDraft],
+  );
+
+  const stageMapping = React.useCallback((id: string, ids: string[]) => {
+    setMappingDraft((prev) => ({...prev, [id]: ids}));
+  }, []);
 
   if (!draft) {
     return (
@@ -44,25 +63,32 @@ export function DataSourcesPage() {
         .map((id) => id.trim())
         .filter(Boolean),
     );
-    let unlinked = 0;
+    // 最终期望关联 = 草稿覆盖后的值，再剔除不再拉取的项目。与已落库映射比较，
+    // 只提交真正有差异的项（草稿里改了又改回来的不写）。
+    let changed = 0;
     for (const mapping of mappings) {
-      const ids = mapping.tapd_workspace_ids?.length
+      const staged = mappingDraft[mapping.id];
+      const ids = staged !== undefined
+        ? [...staged]
+        : mapping.tapd_workspace_ids?.length
+          ? [...mapping.tapd_workspace_ids]
+          : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+      const finalIds = ids.filter((id) => selected.has(id));
+      const origIds = mapping.tapd_workspace_ids?.length
         ? mapping.tapd_workspace_ids
-        : mapping.tapd_workspace_id
-          ? [mapping.tapd_workspace_id]
-          : [];
-      const nextIds = ids.filter((id) => selected.has(id));
-      if (nextIds.length === ids.length) continue;
+        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+      if (finalIds.join(',') === origIds.join(',')) continue;
       await endpoints.updateMapping(mapping.id, {
-        tapd_workspace_ids: nextIds,
-        tapd_workspace_id: nextIds[0] ?? '',
+        tapd_workspace_ids: finalIds,
+        tapd_workspace_id: finalIds[0] ?? '',
       });
-      unlinked += 1;
+      changed += 1;
     }
-    if (unlinked) {
+    if (changed) {
       await reloadMappings();
-      toast.info(`已解除 ${unlinked} 个映射中不再拉取的 TAPD 项目关联`);
+      toast.info(`已同步 ${changed} 项仓库关联的变更`);
     }
+    setMappingDraft({});
     await saveSettings(draft);
   };
 
@@ -75,8 +101,8 @@ export function DataSourcesPage() {
             onPatch={patchSource}
             onChangeType={changeType}
             onSave={() => void save()}
-            mappings={mappings}
-            reloadMappings={reloadMappings}
+            mappings={effectiveMappings}
+            onStageMapping={stageMapping}
           />
         ) : (
           <p className="text-sm text-faint">暂不支持该数据源类型。</p>
@@ -85,4 +111,3 @@ export function DataSourcesPage() {
     </div>
   );
 }
-

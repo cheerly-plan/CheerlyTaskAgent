@@ -42,8 +42,10 @@ interface TapdSourceCardProps {
   onPatch: (source: DataSource) => void;
   onChangeType: (type: string) => void;
   onSave: () => void;
+  /** 有效映射（已叠加未保存的映射草稿），用于展示与编辑。 */
   mappings: ProjectMapping[];
-  reloadMappings: () => Promise<void>;
+  /** 暂存某条映射的仓库关联变更，由页面在主「保存」时统一落库。 */
+  onStageMapping: (mappingId: string, workspaceIds: string[]) => void;
 }
 
 /** 数据源本质上是「一个对象、类型不同」；这里列出已支持的类型供切换。 */
@@ -58,7 +60,7 @@ export function TapdSourceCard({
   onChangeType,
   onSave,
   mappings,
-  reloadMappings,
+  onStageMapping,
 }: TapdSourceCardProps) {
   const tapd: TapdSettings = source.tapd ?? TAPD_DEFAULT;
   const [workspaces, setWorkspaces] = React.useState<TapdWorkspace[]>(tapd.projects ?? []);
@@ -210,7 +212,7 @@ export function TapdSourceCard({
     });
   };
 
-  const applyPull = async () => {
+  const applyPull = () => {
     const cid = (pullCompanyId || '').trim();
     if (!cid) {
       toast.warning('请先选择企业 ID');
@@ -226,43 +228,35 @@ export function TapdSourceCard({
       tapd: {
         ...tapd,
         company_id: cid,
-        workspace_id: selectedWorkspaces.join(','),
+        // 合并「外面已勾选」+「本次拉取新勾选」，不能直接覆盖，否则应用后会清掉已有项目。
+        workspace_id: [...new Set([...selectedIds, ...selectedWorkspaces])].join(','),
         projects: workspaces,
       },
     });
-    try {
-      const selectedSet = new Set(selectedWorkspaces);
-      const desiredByMapping = new Map<string, string[]>();
-      for (const wid of selectedWorkspaces) {
-        for (const mid of repoSelection[wid] ?? []) {
-          desiredByMapping.set(mid, [...(desiredByMapping.get(mid) ?? []), wid]);
-        }
+    // 每个项目要归到哪些本地仓库：{mappingId: [workspaceId...]}。
+    const desiredByMapping = new Map<string, string[]>();
+    for (const wid of selectedWorkspaces) {
+      for (const mid of repoSelection[wid] ?? []) {
+        desiredByMapping.set(mid, [...(desiredByMapping.get(mid) ?? []), wid]);
       }
-      let changed = false;
-      for (const mapping of mappings) {
-        const oldIds = mapping.tapd_workspace_ids?.length
-          ? mapping.tapd_workspace_ids
-          : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
-        const nextIds = [...new Set([
-          ...oldIds.filter((id) => !selectedSet.has(id)),
-          ...(desiredByMapping.get(mapping.id) ?? []),
-        ])];
-        if (nextIds.join(',') !== oldIds.join(',')) {
-          await endpoints.updateMapping(mapping.id, {
-            tapd_workspace_ids: nextIds,
-            tapd_workspace_id: nextIds[0] ?? '',
-          });
-          changed = true;
-        }
-      }
-      if (changed) await reloadMappings();
-    } catch (error) {
-      toast.error('关联本地仓库失败：' + (error as Error).message);
+    }
+    // 只重分配「本次明确勾了仓库」的项目。勾了项目但一个仓库都没勾时保持它
+    // 原有的仓库关联，避免把映射里已有的绑定清掉。
+    const selectedWithRepo = new Set([...desiredByMapping.values()].flat());
+    for (const mapping of mappings) {
+      const oldIds = mapping.tapd_workspace_ids?.length
+        ? mapping.tapd_workspace_ids
+        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+      const nextIds = [...new Set([
+        ...oldIds.filter((id) => !selectedWithRepo.has(id)),
+        ...(desiredByMapping.get(mapping.id) ?? []),
+      ])];
+      if (nextIds.join(',') !== oldIds.join(',')) onStageMapping(mapping.id, nextIds);
     }
     setPullOpen(false);
     setSelectedWorkspaces([]);
     setRepoSelection({});
-    toast.success(`已填入 ${selectedWorkspaces.length} 个项目，记得点「保存」写入设置`);
+    toast.success(`已填入 ${selectedWorkspaces.length} 个项目，点「保存」后生效`);
   };
 
   const addNewProject = async (project: {id: string; name: string}, repoIds: string[]) => {
@@ -278,26 +272,16 @@ export function TapdSourceCard({
         ],
       },
     });
-    if (repoIds.length) {
-      try {
-        for (const mid of repoIds) {
-          const mapping = mappings.find((m) => m.id === mid);
-          if (!mapping) continue;
-          const ids = mapping.tapd_workspace_ids?.length
-            ? [...mapping.tapd_workspace_ids]
-            : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
-          const union = [...new Set([...ids, project.id])];
-          await endpoints.updateMapping(mid, {
-            tapd_workspace_ids: union,
-            tapd_workspace_id: union[0] ?? '',
-          });
-        }
-        await reloadMappings();
-      } catch (error) {
-        toast.error('关联本地仓库失败：' + (error as Error).message);
-      }
+    // 只暂存映射关联，点主「保存」时才真正落库（与表单其它字段一致）。
+    for (const mid of repoIds) {
+      const mapping = mappings.find((m) => m.id === mid);
+      if (!mapping) continue;
+      const ids = mapping.tapd_workspace_ids?.length
+        ? [...mapping.tapd_workspace_ids]
+        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
+      onStageMapping(mid, [...new Set([...ids, project.id])]);
     }
-    toast.success(`已新增项目：${project.name}，记得点「保存」`);
+    toast.success(`已新增项目：${project.name}，点「保存」后生效`);
   };
 
   const toggleSelectedProject = (projectId: string) => {
@@ -307,7 +291,7 @@ export function TapdSourceCard({
     patchTapd('workspace_id', next.join(','));
   };
 
-  const updateProject = async (
+  const updateProject = (
     projectId: string,
     patch: {name: string; repoIds: string[]},
   ) => {
@@ -320,28 +304,21 @@ export function TapdSourceCard({
         ),
       },
     });
+    // 只看草稿里的有效映射；仓库关联的改动暂存，点主「保存」时统一落库。
     const desired = new Set(patch.repoIds);
-    let changed = false;
     for (const mapping of mappings) {
       const ids = mapping.tapd_workspace_ids?.length
         ? mapping.tapd_workspace_ids
-        : mapping.tapd_workspace_id
-          ? [mapping.tapd_workspace_id]
-          : [];
+        : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
       const bound = ids.includes(projectId);
       const shouldBind = desired.has(mapping.id);
       if (bound === shouldBind) continue;
       const nextIds = shouldBind
         ? [...ids, projectId]
         : ids.filter((id) => id !== projectId);
-      await endpoints.updateMapping(mapping.id, {
-        tapd_workspace_ids: nextIds,
-        tapd_workspace_id: nextIds[0] ?? '',
-      });
-      changed = true;
+      onStageMapping(mapping.id, nextIds);
     }
-    if (changed) await reloadMappings();
-    toast.success(`已更新项目：${patch.name}，记得点「保存」`);
+    toast.success(`已更新项目：${patch.name}，点「保存」后生效`);
   };
 
   const removeProject = (projectId: string) => {
