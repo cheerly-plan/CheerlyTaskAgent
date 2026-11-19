@@ -255,6 +255,8 @@ export function TapdSourceCard({
       toast.error('关联本地仓库失败：' + (error as Error).message);
     }
     setPullOpen(false);
+    setSelectedWorkspaces([]);
+    setRepoSelection({});
     toast.success(`已填入 ${selectedWorkspaces.length} 个项目，记得点「保存」写入设置`);
   };
 
