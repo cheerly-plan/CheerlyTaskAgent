@@ -73,7 +73,7 @@ export function TaskActions({
 
   return (
     <div
-      className="flex flex-wrap items-center justify-end gap-1.5"
+      className="flex flex-nowrap items-center justify-end gap-1.5 whitespace-nowrap"
       onClick={(event) => event.stopPropagation()}
     >
       {container ? null : dryDone ? (
@@ -131,9 +131,14 @@ export function TaskActions({
       ) : null}
 
       {item.report_path ? (
-        <Button size="sm" variant="ghost" onClick={() => onAction('report', item.id)}>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          onClick={() => onAction('report', item.id)}
+          title="查看执行报告"
+          aria-label="查看执行报告"
+        >
           <FileText />
-          报告
         </Button>
       ) : null}
 
