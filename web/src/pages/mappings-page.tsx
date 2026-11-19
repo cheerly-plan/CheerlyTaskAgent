@@ -116,7 +116,7 @@ export function MappingsPage() {
           description="点右上角「手动新增」直接填写，或用「选择 / 扫描文件夹」从本地目录批量导入。"
         />
       ) : (
-        <Table className="min-w-[860px]" containerClassName="min-h-0 flex-1">
+        <Table className="min-w-[980px]" containerClassName="min-h-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="pl-5">项目名</TableHead>
@@ -133,13 +133,13 @@ export function MappingsPage() {
               <TableRow key={mapping.id}>
                 <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
                 <TableCell>
-                  <Mono className="block max-w-[300px] truncate" title={mapping.path}>
+                  <Mono className="block max-w-[200px] truncate" title={mapping.path}>
                     {mapping.path}
                   </Mono>
                 </TableCell>
                 <TableCell>
                   <span
-                    className="block max-w-[320px] truncate text-[12.5px] text-foreground/70"
+                    className="block max-w-[220px] truncate text-[12.5px] text-foreground/70"
                     title={mapping.note || undefined}
                   >
                     {mapping.note || '—'}

@@ -355,6 +355,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []
         if not bound:
             return "", "", {"repo": "", "method": "none", "reason": "该项目未绑定本地仓库"}
+        # 一对一映射：直接用它，不碰画像/历史/LLM，零额外开销。
+        if len(bound) == 1:
+            return (
+                bound[0].name,
+                f"已按 TAPD 项目绑定映射：{bound[0].name}",
+                {"repo": bound[0].name, "method": "auto", "confidence": 1.0,
+                 "reason": "该项目只绑定了一个本地仓库", "needs_confirm": False},
+            )
         profiles = {p.mapping_id: p for p in profile_store.all()}
         decision = route_item(
             workspace_id=str(wid),

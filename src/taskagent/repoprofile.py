@@ -318,6 +318,46 @@ def _language_mix(repo: Path, max_files: int = 3000, max_depth: int = 3) -> dict
     return dict(counts.most_common(6))
 
 
+def _infer_roles_from_layout(
+    repo: Path, languages: dict[str, int], top: list[str]
+) -> list[str]:
+    """不依赖具体框架的角色推断：看语言构成和目录形态。
+
+    只有信号足够明确才给结论——判错比判不出来代价高。
+    """
+    roles: list[str] = []
+    total = sum(languages.values()) or 0
+    lowered_top = {d.lower() for d in top}
+
+    def ratio(lang: str) -> float:
+        return (languages.get(lang, 0) / total) if total else 0.0
+
+    # 移动端：原生工程目录几乎不会误判
+    if (repo / "ios").is_dir() or (repo / "android").is_dir() or (repo / "lib" / "main.dart").is_file():
+        roles.append("mobile")
+
+    # 后端：服务端语言有实质份额（全栈仓库也算后端）
+    if ratio("Python") + ratio("Go") + ratio("Java") + ratio("Ruby") + ratio("PHP") >= 0.3:
+        roles.append("backend")
+
+    # 前端：前端语言占主导，或存在前端入口（根目录 html / web 子目录有 package.json）
+    frontend_dirs = {"web", "frontend", "pages", "components", "src-web", "ui", "client", "admin"}
+    has_frontend_entry = any(
+        (repo / name).is_file() for name in ("index.html", "vite.config.ts", "vite.config.js")
+    ) or any((repo / name / "package.json").is_file() for name in frontend_dirs if name in lowered_top)
+    if (
+        ratio("TypeScript") + ratio("JavaScript") + ratio("Vue") + ratio("CSS") >= 0.5
+        or has_frontend_entry
+    ):
+        roles.append("frontend")
+
+    # 桌面端
+    if "electron" in lowered_top or "tauri" in lowered_top:
+        roles.append("desktop")
+
+    return list(dict.fromkeys(roles))
+
+
 def build_profile(mapping_id: str, name: str, path: str) -> RepoProfile:
     """Build (or rebuild) the deterministic profile for one local repo."""
     repo = Path(path).expanduser()
@@ -351,6 +391,10 @@ def build_profile(mapping_id: str, name: str, path: str) -> RepoProfile:
 
     profile.readme_title, profile.readme_excerpt = _readme(repo)
     profile.languages = _language_mix(repo)
+
+    # 依赖指纹没命中时，用「语言构成 + 目录结构」兜底推断（不依赖具体框架）。
+    if not profile.roles:
+        profile.roles = _infer_roles_from_layout(repo, profile.languages, top)
     profile.commit_keywords = _commit_keywords(repo)
     profile.head_sha = _head_sha(repo)
     from .models import _now
