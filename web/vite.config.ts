@@ -11,6 +11,16 @@ export default defineConfig({
     alias: {'@': path.resolve(__dirname, './src')},
   },
   build: {
+    // recharts + tanstack 单独成块，首屏只加载主包。
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          charts: ['recharts'],
+          table: ['@tanstack/react-table'],
+        },
+      },
+    },
     outDir: '../src/taskagent/web',
     emptyOutDir: true,
     sourcemap: false,

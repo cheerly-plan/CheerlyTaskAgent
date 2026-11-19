@@ -1,7 +1,15 @@
 import * as React from 'react';
-import {ArrowDown, ArrowUp, ChevronsUpDown, CornerDownRight, FileText, FolderGit2, GitBranch} from 'lucide-react';
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type SortingState,
+} from '@tanstack/react-table';
+import {CornerDownRight, FileText, FolderGit2, GitBranch} from 'lucide-react';
 
-import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
+import {Table, TableBody, TableHeader, TableRow} from '@/components/ui/table';
 import {Badge} from '@/components/ui/badge';
 import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {SelectField} from '@/components/select-field';
@@ -31,48 +39,6 @@ export const DEFAULT_SORT: SortState = {field: 'created', direction: 'desc'};
 /** 首次点击新列时的默认方向：时间列从新到旧，文本列从 A 到 Z。 */
 export const defaultDirection = (field: SortField): 'asc' | 'desc' =>
   field === 'created' ? 'desc' : 'asc';
-
-/** 可排序表头：点击切换升/降序，键盘可达（button + aria-sort）。 */
-function SortableHead({
-  label,
-  field,
-  sort,
-  onSort,
-  className,
-}: {
-  label: string;
-  field: SortField;
-  sort: SortState;
-  onSort: (field: SortField) => void;
-  className?: string;
-}) {
-  const active = sort.field === field;
-  const Icon = active ? (sort.direction === 'asc' ? ArrowUp : ArrowDown) : ChevronsUpDown;
-  return (
-    <TableHead
-      aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
-      className={className}
-    >
-      <button
-        type="button"
-        onClick={() => onSort(field)}
-        title={`按${label}排序`}
-        className={cn(
-          'group/sort -mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40',
-          active && 'text-foreground',
-        )}
-      >
-        {label}
-        <Icon
-          className={cn(
-            'size-3 shrink-0 transition-opacity',
-            active ? 'opacity-100' : 'opacity-0 group-hover/sort:opacity-60',
-          )}
-        />
-      </button>
-    </TableHead>
-  );
-}
 
 interface TaskTableProps {
   items: WorkItem[];
@@ -264,21 +230,208 @@ export function TaskTable({
   // 按父需求合并：同父的子需求聚在一起，父需求行（若本地有）作为分组标题。
   const groups = React.useMemo(() => groupByParent(items), [items]);
 
+  // tanstack 的排序状态与外部 sort 双向同步（外部还负责分组顺序）。
+  const sorting = React.useMemo<SortingState>(
+    () => [{id: sort.field, desc: sort.direction === 'desc'}],
+    [sort],
+  );
+
+  const column = createColumnHelper<WorkItem>();
+
+  const columns = React.useMemo(
+    () => [
+      column.accessor('title', {
+        header: '标题',
+        enableSorting: true,
+        cell: (info) => {
+          const item = info.row.original;
+          const isChild = Boolean(item.parent_ref);
+          const isContainer = Boolean(item.is_container);
+          return (
+            <div className={cn('flex items-center gap-2.5', isChild && 'pl-4')}>
+              {isChild ? (
+                <CornerDownRight className="size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
+              ) : null}
+              <span
+                className={cn(
+                  'grid size-7 shrink-0 place-items-center rounded-md',
+                  isContainer ? 'bg-[#ece5fb] text-[#6d3fc0]' : 'bg-secondary text-[#7b7e92]',
+                )}
+              >
+                {isContainer ? <GitBranch className="size-3.5" /> : <FileText className="size-3.5" />}
+              </span>
+              <span
+                className="min-w-0 truncate font-medium text-foreground group-hover:text-primary"
+                title={item.title}
+              >
+                {item.title}
+              </span>
+            </div>
+          );
+        },
+      }),
+      column.accessor('kind', {
+        header: '类型',
+        enableSorting: true,
+        cell: (info) => <KindBadge kind={info.row.original.kind} />,
+      }),
+      column.accessor('source', {
+        header: '来源',
+        enableSorting: true,
+        cell: (info) => (
+          <span className="text-[12.5px] text-foreground/70">
+            {sourceLabel[info.row.original.source] ?? info.row.original.source ?? '—'}
+          </span>
+        ),
+      }),
+      column.accessor('repo', {
+        header: '项目',
+        enableSorting: true,
+        cell: (info) => {
+          const item = info.row.original;
+          return item.is_container ? (
+            <span className="text-xs text-faint">—</span>
+          ) : (
+            <RepoCell item={item} mappings={mappings} onMap={onMap} />
+          );
+        },
+      }),
+      column.display({
+        id: 'mode',
+        header: '模式',
+        cell: (info) => {
+          const item = info.row.original;
+          return (
+            <ModeCell
+              item={item}
+              value={selections[item.id]?.mode}
+              onSelect={(value) => onSelect(item.id, 'mode', value)}
+            />
+          );
+        },
+        size: 108,
+      }),
+      column.display({
+        id: 'model',
+        header: '模型',
+        cell: (info) => {
+          const item = info.row.original;
+          return item.is_container ? (
+            <span className="text-xs text-faint">—</span>
+          ) : (
+            <ModelCell
+              item={item}
+              backends={backends}
+              models={models}
+              selection={selections[item.id] ?? {}}
+              onSelect={(key, value) => onSelect(item.id, key, value)}
+              onProbe={onProbe}
+            />
+          );
+        },
+        size: 176,
+      }),
+      column.accessor('status', {
+        header: '状态',
+        enableSorting: true,
+        cell: (info) => <StatusBadge status={info.row.original.status} />,
+      }),
+      column.accessor('created_at', {
+        header: '创建时间',
+        enableSorting: true,
+        cell: (info) => (
+          <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
+            {shortTime(info.row.original.created_at)}
+          </span>
+        ),
+      }),
+      column.display({
+        id: 'actions',
+        header: '操作',
+        cell: (info) => {
+          const item = info.row.original;
+          if (item.is_container) return null;
+          return (
+            <TaskActions
+              item={item}
+              selection={selections[item.id] ?? {}}
+              onSelect={(key, value) => onSelect(item.id, key, value)}
+              onAction={onAction}
+              models={models}
+              backends={backends}
+              onProbe={onProbe}
+              showModelSelect={false}
+            />
+          );
+        },
+      }),
+    ],
+    [column, mappings, models, backends, selections, onMap, onSelect, onAction, onProbe],
+  );
+
+  const table = useReactTable({
+    data: items,
+    columns,
+    state: {sorting},
+    getRowId: (row) => row.id,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    manualSorting: true,
+    onSortingChange: (updater) => {
+      const next = typeof updater === 'function' ? updater(sorting) : updater;
+      const first = next[0];
+      if (!first) return;
+      onSort(first.id as SortField);
+    },
+  });
+
+  const headGroups = table.getHeaderGroups();
+  const leafHeaders = headGroups[headGroups.length - 1]?.headers ?? [];
+
+  /** 行 key → 行对象，供分组标题与行内渲染复用同一份视图模型。 */
+  const tableRows = table.getRowModel().rows;
+  const rowById = React.useMemo(() => {
+    const map = new Map(tableRows.map((row) => [row.id, row]));
+    return map;
+  }, [tableRows]);
+
   return (
     <Table className="min-w-[980px]" containerClassName={containerClassName}>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <SortableHead label="标题" field="title" sort={sort} onSort={onSort} className="pl-4" />
-          <SortableHead label="类型" field="kind" sort={sort} onSort={onSort} />
-          <SortableHead label="来源" field="source" sort={sort} onSort={onSort} />
-          <SortableHead label="项目" field="repo" sort={sort} onSort={onSort} />
-          <TableHead className="w-[92px]">模式</TableHead>
-          <TableHead>模型</TableHead>
-          <SortableHead label="状态" field="status" sort={sort} onSort={onSort} />
-          <SortableHead label="创建时间" field="created" sort={sort} onSort={onSort} />
-          <TableHead className="sticky right-0 z-20 border-l border-border/70 bg-[#fafafd] pr-4 text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]">
-            操作
-          </TableHead>
+          {leafHeaders.map((header) => {
+            const canSort = header.column.getCanSort();
+            const sorted = header.column.getIsSorted();
+            return (
+              <th
+                key={header.id}
+                aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none'}
+                style={{width: header.getSize() === 150 ? undefined : header.getSize()}}
+                className={cn(
+                  'h-9 px-2 text-left align-middle text-[11.5px] font-medium text-faint',
+                  header.column.id === 'title' && 'pl-4',
+                  header.column.id === 'actions' &&
+                    'sticky right-0 z-20 border-l border-border/70 bg-[#fafafd] pr-4 text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]',
+                )}
+              >
+                {canSort ? (
+                  <button
+                    type="button"
+                    onClick={header.column.getToggleSortingHandler()}
+                    title={`按${String(header.column.columnDef.header)}排序`}
+                    className="inline-flex items-center gap-1 rounded px-1 py-0.5 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
+                  >
+                    {flexRender(header.column.columnDef.header, header.getContext())}
+                    <span className={cn('text-[9px] leading-none', sorted ? 'opacity-100' : 'opacity-35')}>
+                      {sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : '⇅'}
+                    </span>
+                  </button>
+                ) : (
+                  flexRender(header.column.columnDef.header, header.getContext())
+                )}
+              </th>
+            );
+          })}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -287,11 +440,7 @@ export function TaskTable({
             {group.key ? (
               /* 父需求分组标题：父可能不在本地（只导入了子需求），用快照标题展示。 */
               <TableRow className="group/head bg-[#faf9fd] hover:bg-[#faf9fd]">
-                {/* 分组标题 sticky 在左侧：表格横向滚动时标题不会跟着滚走、也不会被裁成半截。 */}
-                <TableCell
-                  colSpan={9}
-                  className="sticky left-0 z-[2] py-2 pl-4"
-                >
+                <td colSpan={leafHeaders.length} className="sticky left-0 z-[2] py-2 pl-4">
                   <div className="flex w-max max-w-[calc(100vw-360px)] items-center gap-2.5">
                     <span className="grid size-7 shrink-0 place-items-center rounded-md bg-[#ece5fb] text-[#6d3fc0]">
                       <GitBranch className="size-3.5" />
@@ -303,119 +452,33 @@ export function TaskTable({
                       {group.items.length} 个子需求
                     </span>
                   </div>
-                </TableCell>
+                </td>
               </TableRow>
             ) : null}
-            {group.items.map((item) => {
-          const isChild = Boolean(item.parent_ref);
-          const isContainer = Boolean(item.is_container);
-          return (
-          <TableRow key={item.id} className={cn('group', isContainer && 'bg-[#faf9fd]')}>
-            <TableCell className={cn('pl-4', isChild && 'pl-8')}>
-              <div className="flex items-center gap-2.5">
-                {isChild ? (
-                  <CornerDownRight className="size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
-                ) : null}
-                <span
-                  className={cn(
-                    'grid size-7 shrink-0 place-items-center rounded-md',
-                    isContainer ? 'bg-[#ece5fb] text-[#6d3fc0]' : 'bg-secondary text-[#7b7e92]',
-                  )}
+            {group.items.map((groupItem) => {
+              const row = rowById.get(groupItem.id);
+              if (!row) return null;
+              const isContainer = Boolean(row.original.is_container);
+              return (
+                <TableRow
+                  key={row.id}
+                  className={cn('group', isContainer && 'bg-[#faf9fd]')}
                 >
-                  {isContainer ? <GitBranch className="size-3.5" /> : <FileText className="size-3.5" />}
-                </span>
-                <div
-                  className="min-w-0 truncate font-medium text-foreground group-hover:text-primary"
-                  title={item.title}
-                >
-                  {item.title}
-                </div>
-              </div>
-            </TableCell>
-            {isContainer ? (
-              /* 父需求：展示基本信息，但没有仓库/模式/模型/操作（它本身不执行）。 */
-              <>
-                <TableCell>
-                  <KindBadge kind={item.kind} />
-                </TableCell>
-                <TableCell>
-                  <span className="text-[12.5px] text-foreground/70">
-                    {sourceLabel[item.source] ?? item.source ?? '—'}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <span className="text-xs text-faint">—</span>
-                </TableCell>
-                <TableCell className="w-[92px]">
-                  <span className="text-xs text-faint">—</span>
-                </TableCell>
-                <TableCell>
-                  <span className="text-xs text-faint">—</span>
-                </TableCell>
-                <TableCell>
-                  <StatusBadge status={item.status} />
-                </TableCell>
-                <TableCell>
-                  <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
-                    {shortTime(item.created_at)}
-                  </span>
-                </TableCell>
-                <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]" />
-              </>
-            ) : (
-              <>
-                <TableCell>
-                  <KindBadge kind={item.kind} />
-                </TableCell>
-                <TableCell>
-                  <span className="text-[12.5px] text-foreground/70">
-                    {sourceLabel[item.source] ?? item.source ?? '—'}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <RepoCell item={item} mappings={mappings} onMap={onMap} />
-                </TableCell>
-                <TableCell className="w-[92px]">
-                  <ModeCell
-                    item={item}
-                    value={selections[item.id]?.mode}
-                    onSelect={(value) => onSelect(item.id, 'mode', value)}
-                  />
-                </TableCell>
-                <TableCell>
-                  <ModelCell
-                    item={item}
-                    backends={backends}
-                    models={models}
-                    selection={selections[item.id] ?? {}}
-                    onSelect={(key, value) => onSelect(item.id, key, value)}
-                    onProbe={onProbe}
-                  />
-                </TableCell>
-                <TableCell>
-                  <StatusBadge status={item.status} />
-                </TableCell>
-                <TableCell>
-                  <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
-                    {shortTime(item.created_at)}
-                  </span>
-                </TableCell>
-                <TableCell className="sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]">
-                  <TaskActions
-                    item={item}
-                    selection={selections[item.id] ?? {}}
-                    onSelect={(key, value) => onSelect(item.id, key, value)}
-                    onAction={onAction}
-                    models={models}
-                    backends={backends}
-                    onProbe={onProbe}
-                    showModelSelect={false}
-                  />
-                </TableCell>
-              </>
-            )}
-          </TableRow>
-            );
+                  {row.getVisibleCells().map((cell) => (
+                    <td
+                      key={cell.id}
+                      className={cn(
+                        'px-2 py-2 align-middle',
+                        cell.column.id === 'title' && 'pl-4',
+                        cell.column.id === 'actions' &&
+                          'sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]',
+                      )}
+                    >
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </TableRow>
+              );
             })}
           </React.Fragment>
         ))}

@@ -2,7 +2,7 @@ import * as React from 'react';
 import {CalendarDays} from 'lucide-react';
 
 import {useApp} from '@/app-context';
-import {ChartLegend, StackedBarChart, type ChartSeries} from '@/components/charts';
+import {WorkloadChart, type ChartSeries} from '@/components/charts';
 import {KpiCards} from '@/components/kpi-cards';
 import {Card} from '@/components/ui/card';
 import {SelectField} from '@/components/select-field';
@@ -95,7 +95,6 @@ export function DashboardPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <ChartLegend series={SERIES} />
             <SelectField
               size="sm"
               className="w-[122px]"
@@ -113,7 +112,7 @@ export function DashboardPage() {
               该区间内还没有结束执行的工单
             </div>
           ) : (
-            <StackedBarChart data={daily} series={SERIES} height={230} />
+            <WorkloadChart data={daily} series={SERIES} height={260} />
           )}
         </div>
       </Card>
