@@ -64,7 +64,10 @@ export function TaskCard({
       </div>
 
       {isContainer ? (
-        <p className="mt-2 text-[11.5px] text-faint">父需求，本身不执行；执行它的子需求。</p>
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          <KindBadge kind={item.kind} />
+          <Badge variant="secondary">父需求</Badge>
+        </div>
       ) : (
         <>
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
