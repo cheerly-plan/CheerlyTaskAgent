@@ -10,7 +10,7 @@ interface KpiCardsProps {
   mappings: number;
 }
 
-/** 任务列表顶部的概览卡片（纯展示，数值来自 store）。 */
+/** 概览页顶部的指标卡片（纯展示，数值来自 store）。 */
 export function KpiCards({total, running, succeeded, failed, mappings}: KpiCardsProps) {
   const cards = [
     {label: '全部工单', value: total, icon: Layers, tone: 'text-primary bg-primary-muted'},

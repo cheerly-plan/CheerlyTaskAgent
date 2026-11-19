@@ -13,9 +13,9 @@ const CONN_STYLE: Record<ConnState, {className: string; dot: string}> = {
 export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' | 'settings';
 
 export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
-  {key: 'dashboard', label: '数据看板', icon: LayoutDashboard},
-  {key: 'tasks', label: '任务列表', icon: List},
-  {key: 'history', label: '历史任务', icon: History},
+  {key: 'dashboard', label: '概览', icon: LayoutDashboard},
+  {key: 'tasks', label: '任务中心', icon: List},
+  {key: 'history', label: '历史记录', icon: History},
   {key: 'mapping', label: '项目映射', icon: FolderGit2},
   {key: 'sources', label: '数据源', icon: Inbox},
   {key: 'settings', label: '系统设置', icon: Settings2},
@@ -40,7 +40,7 @@ export function AppSidebar({page, onPage}: AppSidebarProps) {
               onClick={() => onPage(item.key)}
               aria-current={active ? 'page' : undefined}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-colors',
+                'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px]',
                 active
                   ? 'bg-primary-muted font-semibold text-primary'
                   : 'text-foreground/70 hover:bg-secondary/60 hover:text-foreground',

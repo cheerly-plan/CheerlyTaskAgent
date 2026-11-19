@@ -5,7 +5,7 @@ import {StatusBadge} from '@/components/status-bits';
 import {Card} from '@/components/ui/card';
 import {ACTIVE_STATUSES, shortTime} from '@/lib/labels';
 
-/** 数据看板：概览数字 + 最近工单。 */
+/** 概览：关键数字 + 最近工单。 */
 export function DashboardPage({onOpenTasks}: {onOpenTasks: () => void}) {
   const {items, mappings} = useApp();
 

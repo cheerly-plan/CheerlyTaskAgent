@@ -218,7 +218,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       .catch(() => undefined);
   }, [settings?.tapd?.company_id, settings?.tapd?.api_user, tapdProjects.length]);
 
-  // SSE：后端有任何变更就只刷新任务列表（与原实现一致）
+  // SSE：后端有任何变更就只刷新任务中心（与原实现一致）
   React.useEffect(() => {
     const source = new EventSource('/api/events');
     // 连接状态只驱动徽标颜色；文案由下面的 connText 统一派生，避免把

@@ -46,7 +46,7 @@ function sortValue(item: WorkItem, field: string): string {
   }
 }
 
-/** 历史任务：只展示 apply 执行结束的任务（成功 / 失败 / 跳过 / 已取消），可看报告、重试、删除。 */
+/** 历史记录：只展示 apply 执行结束的任务（成功 / 失败 / 跳过 / 已取消），可看报告、重试、删除。 */
 export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const {
     items,
@@ -69,7 +69,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
 
-  // 只归档真实执行（apply）的终态记录；dry-run 是预演，留在任务列表。
+  // 只归档真实执行（apply）的终态记录；dry-run 是预演，留在任务中心。
   const finished = React.useMemo(() => items.filter((item) => isArchived(item)), [items]);
 
   const visible = React.useMemo(() => {
@@ -141,7 +141,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
       <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
-            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">历史任务</h3>
+            <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">历史记录</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -263,12 +263,12 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
         {finished.length === 0 ? (
           <EmptyState
             icon={History}
-            title="还没有历史任务"
-            description="apply 执行结束后（成功 / 失败 / 跳过 / 已取消）会自动归档到这里；dry-run 预演留在任务列表。"
+            title="还没有历史记录"
+            description="apply 执行结束后（成功 / 失败 / 跳过 / 已取消）会自动归档到这里；dry-run 预演留在任务中心。"
             action={
               onOpenTasks ? (
                 <Button variant="outline" size="sm" className="mt-2" onClick={onOpenTasks}>
-                  返回任务列表
+                  返回任务中心
                 </Button>
               ) : undefined
             }

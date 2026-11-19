@@ -139,7 +139,7 @@ export function TapdSyncDialog({
           <DialogTitle>同步 TAPD 需求</DialogTitle>
           <DialogDescription>
             {force ? '全量重拉：忽略增量游标，列出全部工单。' : '增量同步：只列出上次同步后修改的工单。'}
-            这里只预览变更，勾选并配置后才会写入任务列表。
+            这里只预览变更，勾选并配置后才会写入任务中心。
           </DialogDescription>
         </DialogHeader>
 
