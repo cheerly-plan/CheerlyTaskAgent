@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {Check, CornerDownRight, ExternalLink, GitBranch, Loader2, RefreshCw} from 'lucide-react';
+import {Check, ExternalLink, GitBranch, Loader2, RefreshCw} from 'lucide-react';
 
 import {Button} from '@/components/ui/button';
 import {
@@ -273,9 +273,6 @@ export function TapdSyncDialog({
                     >
                       {active && <Check className="size-3" />}
                     </span>
-                    {isChild ? (
-                      <CornerDownRight className="mt-0.5 size-3.5 shrink-0 text-[#a9a0c4]" aria-hidden />
-                    ) : null}
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1.5">
                         {isContainer ? (
@@ -286,6 +283,16 @@ export function TapdSyncDialog({
                         {item.status === 'unchanged' && <Badge variant="muted">无变化</Badge>}
                         <Badge variant="outline">{item.kind}</Badge>
                         {item.repo_name && <Badge variant="info">{item.repo_name}</Badge>}
+                        {isChild ? (
+                          <Badge
+                            variant="purple"
+                            className="max-w-[220px]"
+                            title={`父需求：${parentTitle || item.parent_ref}`}
+                          >
+                            <GitBranch className="size-3 shrink-0" />
+                            <span className="truncate">父需求：{parentTitle || item.parent_ref}</span>
+                          </Badge>
+                        ) : null}
                       </span>
                       <span className="mt-1 block truncate text-[13px] text-foreground" title={item.title}>
                         {item.title}
@@ -298,11 +305,6 @@ export function TapdSyncDialog({
                       <span className="mt-0.5 block truncate text-[11px] text-faint">
                         {item.source_ref} · 更新于 {item.modified || '—'}
                       </span>
-                      {isChild ? (
-                        <span className="mt-0.5 block truncate text-[11px] text-[#6d3fc0]">
-                          父需求：{parentTitle || item.parent_ref}
-                        </span>
-                      ) : null}
                     </span>
                     {item.external_url && (
                       <a
