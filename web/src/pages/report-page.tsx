@@ -59,7 +59,7 @@ export function ReportPage() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-[1140px]">
+    <div className="mx-auto w-full max-w-[1000px]">
       <PageHeader
         title={summary?.subject || item?.title || '执行报告'}
         id={item?.id}
@@ -165,12 +165,14 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
       <StatusBand summary={summary} />
       <AttentionRows attention={summary.attention} />
 
-      <div className="grid items-start gap-9 xl:grid-cols-[minmax(0,1fr)_264px]">
-        <section className={SHEET}>
-          <DocSection label="需求描述">
+      {/* 白色画布：正文与右栏共用同一张纸，中间只用一条细线分隔，
+          避免正文白纸浮在灰底上、右栏文字又直接落在灰底里的割裂感 */}
+      <div className="grid items-start gap-10 rounded-2xl border border-border bg-card px-8 py-7 xl:grid-cols-[minmax(0,1fr)_232px]">
+        <section className="min-w-0">
+          <DocSection label="需求描述" className="xl:max-w-[620px]">
             {descriptionHtml ? (
               <div
-                className="report-body text-[13.5px] leading-[1.85]"
+                className="report-body text-[14px] leading-[1.8]"
                 dangerouslySetInnerHTML={{__html: descriptionHtml}}
               />
             ) : (
@@ -178,7 +180,7 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
             )}
           </DocSection>
 
-          <DocSection label="执行报告" meta={reportSections(summary)}>
+          <DocSection label="执行报告" meta={reportSections(summary)} className="xl:max-w-[620px]">
             <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
           </DocSection>
 
@@ -191,7 +193,7 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
         </section>
 
         {/* 信息量已压到一屏内，宽屏下固定，滚动长文时元信息始终可见 */}
-        <aside className="space-y-7 pt-1 xl:sticky xl:top-0">
+        <aside className="space-y-7 xl:sticky xl:top-0 xl:border-l xl:border-border xl:pl-8">
           <SideBlock label="工单信息">
             <MetaRows summary={summary} />
           </SideBlock>
@@ -321,14 +323,22 @@ function reportSections(summary: ReportSummary): string | undefined {
 function DocSection({
   label,
   meta,
+  className,
   children,
 }: {
   label: string;
   meta?: string;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section id={label === '改动明细' ? 'report-changes' : undefined} className="scroll-mt-6 [&+section]:mt-7 [&+section]:border-t [&+section]:border-border [&+section]:pt-6">
+    <section
+      id={label === '改动明细' ? 'report-changes' : undefined}
+      className={cn(
+        'scroll-mt-6 [&+section]:mt-7 [&+section]:border-t [&+section]:border-border [&+section]:pt-6',
+        className,
+      )}
+    >
       <div className="mb-3 flex items-baseline justify-between gap-4">
         <h2 className="text-[12px] font-semibold tracking-[0.08em] text-faint">{label}</h2>
         {meta ? <span className="shrink-0 truncate text-[11.5px] text-faint">{meta}</span> : null}
