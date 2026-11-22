@@ -259,7 +259,7 @@ export function SettingsPage() {
 
       {backendEntries.length > 0 && (
         <Card className="shrink-0 p-5">
-          <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+          <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground mb-5">
             <SlidersHorizontal className="size-4 text-primary" />
             调度策略
           </h3>

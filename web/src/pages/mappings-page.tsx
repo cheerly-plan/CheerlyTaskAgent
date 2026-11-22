@@ -8,8 +8,20 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Switch} from '@/components/ui/switch';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
+import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
 import {endpoints, readGitOrigin, type RepoProfile, type TapdWorkspace} from '@/lib/api';
 import {cn} from '@/lib/utils';
+
+function IconTip({label, children}: {label: string; children: React.ReactNode}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top" className="bg-[#1f1f28] px-2.5 py-1 text-[11px] text-white">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function MappingsPage() {
   const {settings, mappings, pickFolder, openScan, openMappingModal, toggleMapping, deleteMapping} = useApp();
@@ -200,18 +212,26 @@ export function MappingsPage() {
                 </TableCell>
                 <TableCell className="pr-5">
                   <div className="flex items-center justify-end gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => openMappingModal(mapping)}>
-                      <Pencil />
-                      编辑
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      onClick={() => void deleteMapping(mapping.id)}
-                      aria-label={`删除 ${mapping.name}`}
-                    >
-                      <Trash2 />
-                    </Button>
+                    <IconTip label="编辑">
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={() => openMappingModal(mapping)}
+                        aria-label={`编辑 ${mapping.name}`}
+                      >
+                        <Pencil />
+                      </Button>
+                    </IconTip>
+                    <IconTip label="删除">
+                      <Button
+                        size="icon-sm"
+                        variant="danger"
+                        onClick={() => void deleteMapping(mapping.id)}
+                        aria-label={`删除 ${mapping.name}`}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </IconTip>
                   </div>
                 </TableCell>
               </TableRow>

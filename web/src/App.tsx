@@ -14,6 +14,7 @@ import {MappingsPage} from '@/pages/mappings-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
 import {Toaster} from '@/components/ui/sonner';
+import {TooltipProvider} from '@/components/ui/tooltip';
 
 function Shell() {
   const {conn, connText, openNewTask, page, setPage, reportView, closeReport} = useApp();
@@ -53,8 +54,8 @@ function Shell() {
         <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} />
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
           {page === 'dashboard' ? <DashboardPage /> : null}
-          {page === 'tasks' ? <TasksPage onOpenHistory={() => setPage('history')} /> : null}
-          {page === 'history' ? <HistoryPage onOpenTasks={() => setPage('tasks')} /> : null}
+          {page === 'tasks' ? <TasksPage /> : null}
+          {page === 'history' ? <HistoryPage /> : null}
           {page === 'mapping' ? <MappingsPage /> : null}
           {page === 'sources' ? <DataSourcesPage /> : null}
           {page === 'settings' ? <SettingsPage /> : null}
@@ -70,8 +71,10 @@ function Shell() {
 export default function App() {
   const [page, setPage] = React.useState<PageKey>('dashboard');
   return (
-    <AppProvider page={page} setPage={setPage}>
-      <Shell />
-    </AppProvider>
+    <TooltipProvider delayDuration={200}>
+      <AppProvider page={page} setPage={setPage}>
+        <Shell />
+      </AppProvider>
+    </TooltipProvider>
   );
 }

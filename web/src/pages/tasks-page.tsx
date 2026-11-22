@@ -48,7 +48,7 @@ function sortValue(item: WorkItem, field: string): string {
   }
 }
 
-export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
+export function TasksPage() {
   const {
     items,
     itemsTotal,
@@ -302,10 +302,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               items.length === 0 ? (
                 <Button className="mt-2" onClick={() => openNewTask()}>
                   新建任务
-                </Button>
-              ) : onOpenHistory ? (
-                <Button variant="outline" className="mt-2" onClick={onOpenHistory}>
-                  查看历史记录
                 </Button>
               ) : undefined
             }

@@ -20,6 +20,7 @@ import {useApp} from '@/app-context';
 import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
+import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
 import {renderMarkdown} from '@/lib/markdown';
 import {kindLabel, statusLabel} from '@/lib/labels';
 import type {Attention, Fact, ReportSummary, Tone} from '@/lib/report-view';
@@ -66,6 +67,17 @@ const ROW_BORDER: Record<Tone, string> = {
   neutral: 'border-l-border',
 };
 
+function IconTip({label, children}: {label: string; children: React.ReactNode}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top" className="bg-[#1f1f28] px-2.5 py-1 text-[11px] text-white">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function ReportPage() {
   const {reportView, closeReport} = useApp();
   const {loading, error, summary, markdown, item, downloadUrl, downloadName, backLabel} = reportView;
@@ -79,23 +91,17 @@ export function ReportPage() {
     <div className="mx-auto w-full max-w-[1180px]">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2.5">
-          <Button variant="ghost" size="icon-sm" onClick={closeReport} aria-label={`返回${backLabel}`}>
-            <ArrowLeft />
-          </Button>
+          <IconTip label={`返回${backLabel}`}>
+            <Button variant="outline" size="icon-sm" onClick={closeReport} aria-label={`返回${backLabel}`}>
+              <ArrowLeft />
+            </Button>
+          </IconTip>
           <div className="min-w-0">
-            <button
-              type="button"
-              onClick={closeReport}
-              className="mb-1 flex items-center gap-1 text-[11.5px] text-faint hover:text-foreground"
-            >
-              返回{backLabel}
-            </button>
             <h1 className="truncate text-[17px] font-semibold leading-tight tracking-[-0.01em] text-foreground">
               {summary?.subject || item?.title || '执行报告'}
             </h1>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {item ? <Badge variant="outline">{kindLabel[item.kind] ?? item.kind}</Badge> : null}
-              {item ? <Badge variant="purple">{statusLabel[item.status] ?? item.status}</Badge> : null}
               <span className="font-mono text-[11px] text-faint">{item?.id}</span>
             </div>
           </div>
@@ -149,6 +155,13 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
             <CardTitle icon={FileDiff}>需求与报告正文</CardTitle>
             <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
           </Card>
+        </div>
+
+        <div className="min-w-0 space-y-3">
+          <Card className="p-4">
+            <CardTitle icon={FolderGit2}>核心信息</CardTitle>
+            <ReportMeta summary={summary} />
+          </Card>
 
           <Card id="report-changes" className="scroll-mt-4 p-4">
             <CardTitle
@@ -158,14 +171,6 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
               改动明细
             </CardTitle>
             <ReportChanges summary={summary} />
-          </Card>
-
-        </div>
-
-        <div className="min-w-0 space-y-3">
-          <Card className="p-4">
-            <CardTitle icon={FolderGit2}>核心信息</CardTitle>
-            <ReportMeta summary={summary} />
           </Card>
 
           {summary.sync ? (

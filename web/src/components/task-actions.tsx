@@ -1,6 +1,8 @@
+import * as React from 'react';
 import {Plus, Square, Trash2, FileText, Play} from 'lucide-react';
 
 import {Button} from '@/components/ui/button';
+import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
 import {SelectField} from '@/components/select-field';
 import type {BackendInfo, ItemAction, ModelChoice, WorkItem} from '@/lib/api';
 import {ACTIVE_STATUSES, TERMINAL_STATUSES, canEditConfig} from '@/lib/labels';
@@ -23,6 +25,17 @@ interface TaskActionsProps {
   onProbe?: (executorId?: string) => void;
   showModelSelect?: boolean;
   container?: boolean;
+}
+
+function IconTip({label, children}: {label: string; children: React.ReactNode}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top" className="bg-[#1f1f28] px-2.5 py-1 text-[11px] text-white">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 export function TaskActions({
@@ -61,23 +74,29 @@ export function TaskActions({
       onClick={(event) => event.stopPropagation()}
     >
       {container ? null : dryDone ? (
-        <Button
-          size="icon-sm"
-          onClick={() => onAction('apply', item.id)}
-          aria-label="沿用本次 dry-run 的项目与模型执行 apply（会在隔离 worktree 改代码，需二次确认）"
-        >
-          <Play />
-        </Button>
+        <IconTip label="执行 apply">
+          <Button
+            size="icon-sm"
+            onClick={() => onAction('apply', item.id)}
+            aria-label="沿用本次 dry-run 的项目与模型执行 apply（会在隔离 worktree 改代码，需二次确认）"
+          >
+            <Play />
+          </Button>
+        </IconTip>
       ) : !terminal && !running ? (
-        <Button variant="outline" size="icon-sm" onClick={() => onAction('exec', item.id)} aria-label="按模式列选择的方式执行">
-          <Play color="black" />
-        </Button>
+        <IconTip label="执行">
+          <Button variant="outline" size="icon-sm" onClick={() => onAction('exec', item.id)} aria-label="按模式列选择的方式执行">
+            <Play color="black" />
+          </Button>
+        </IconTip>
       ) : null}
 
       {running ? (
-        <Button size="icon-sm" variant="outline" onClick={() => onAction('cancel', item.id)} aria-label="取消执行">
-          <Square />
-        </Button>
+        <IconTip label="取消">
+          <Button size="icon-sm" variant="outline" onClick={() => onAction('cancel', item.id)} aria-label="取消执行">
+            <Square />
+          </Button>
+        </IconTip>
       ) : null}
 
       {showModelSelect && canEditConfig(item) ? (
@@ -104,25 +123,29 @@ export function TaskActions({
       ) : null}
 
       {item.report_path ? (
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          onClick={() => onAction('report', item.id)}
-          aria-label="查看执行报告"
-          className="text-primary hover:bg-accent"
-        >
-          <FileText />
-        </Button>
+        <IconTip label="报告">
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={() => onAction('report', item.id)}
+            aria-label="查看执行报告"
+            className="text-primary hover:bg-accent"
+          >
+            <FileText />
+          </Button>
+        </IconTip>
       ) : null}
 
-      <Button
-        size="icon-sm"
-        variant="danger"
-        onClick={() => onAction('delete', item.id)}
-        aria-label="删除该工单"
-      >
-        <Trash2 />
-      </Button>
+      <IconTip label="删除">
+        <Button
+          size="icon-sm"
+          variant="danger"
+          onClick={() => onAction('delete', item.id)}
+          aria-label="删除该工单"
+        >
+          <Trash2 />
+        </Button>
+      </IconTip>
     </div>
   );
 }

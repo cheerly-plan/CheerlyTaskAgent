@@ -46,7 +46,7 @@ function sortValue(item: WorkItem, field: string): string {
   }
 }
 
-export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
+export function HistoryPage() {
   const {
     historyItems,
     historyHasMore,
@@ -261,17 +261,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
         </div>
 
         {finished.length === 0 ? (
-          <EmptyState
-            icon={History}
-            title="还没有历史记录"
-            action={
-              onOpenTasks ? (
-                <Button variant="outline" size="sm" className="mt-2" onClick={onOpenTasks}>
-                  返回任务中心
-                </Button>
-              ) : undefined
-            }
-          />
+          <EmptyState icon={History} title="还没有历史记录" />
         ) : visible.length === 0 ? (
           <EmptyState
             icon={Search}
