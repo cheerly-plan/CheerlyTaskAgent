@@ -12,10 +12,10 @@ import {
 } from 'lucide-react';
 
 import {useApp} from '@/app-context';
-import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {renderMarkdown} from '@/lib/markdown';
-import {kindLabel, statusLabel} from '@/lib/labels';
+import {kindLabel, sourceLabel, statusLabel} from '@/lib/labels';
+import type {Kind} from '@/lib/api';
 import type {Attention, ReportSummary, Tone} from '@/lib/report-view';
 import {cn} from '@/lib/utils';
 
@@ -36,6 +36,13 @@ const TONE_TEXT: Record<Tone, string> = {
   danger: 'text-destructive',
   info: 'text-info-foreground',
   neutral: 'text-foreground',
+};
+
+/** 类型强调色：缺陷红、需求紫、任务蓝，和列表页保持一致。 */
+const KIND_ACCENT: Record<string, {stripe: string; text: string}> = {
+  bug: {stripe: 'bg-destructive', text: 'text-destructive'},
+  feature: {stripe: 'bg-[#6d3fc0]', text: 'text-[#6d3fc0]'},
+  task: {stripe: 'bg-info', text: 'text-info-foreground'},
 };
 
 const ALERT_BORDER: Record<Tone, string> = {
@@ -76,7 +83,8 @@ export function ReportPage() {
       ) : summary ? (
         <>
           <SummaryCard
-            kind={item ? (kindLabel[item.kind] ?? item.kind) : undefined}
+            kind={item?.kind}
+            source={sourceLabel[item?.source ?? '']}
             title={summary.subject || item?.title || '执行报告'}
             descriptionHtml={descriptionHtml}
           />
@@ -85,7 +93,8 @@ export function ReportPage() {
       ) : (
         <>
           <SummaryCard
-            kind={item ? (kindLabel[item.kind] ?? item.kind) : undefined}
+            kind={item?.kind}
+            source={sourceLabel[item?.source ?? '']}
             title={item?.title || '执行报告'}
             descriptionHtml=""
           />
@@ -140,31 +149,45 @@ function PageNav({
  */
 function SummaryCard({
   kind,
+  source,
   title,
   descriptionHtml,
 }: {
-  kind?: string;
+  kind?: Kind;
+  source?: string;
   title: string;
   descriptionHtml: string;
 }) {
+  const accent = kind ? (KIND_ACCENT[kind] ?? KIND_ACCENT.feature) : null;
+
   return (
-    <section className="mb-5 rounded-2xl border border-border bg-card px-8 py-6">
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-        {kind ? (
-          <Badge variant="outline" className="shrink-0 bg-card font-normal text-muted-foreground">
-            {kind}
-          </Badge>
-        ) : null}
-        <h1 className="min-w-0 text-[21px] font-semibold leading-[1.35] tracking-[-0.02em] text-foreground">
-          {title}
-        </h1>
+    <section className="mb-5 overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="flex">
+        {/* 左侧类型色竖条：给卡片一个视觉锚点，也让类型一眼可辨 */}
+        <div className={cn('w-[3px] shrink-0', accent?.stripe ?? 'bg-border')} />
+
+        <div className="min-w-0 flex-1 px-8 py-6">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {kind ? (
+              <span className={cn('text-[11px] font-semibold tracking-[0.1em]', accent?.text)}>
+                {kindLabel[kind] ?? kind}
+              </span>
+            ) : null}
+            {source ? <span className="text-[11px] text-faint">· {source}</span> : null}
+          </div>
+
+          <h1 className="mt-1 text-[21px] font-semibold leading-[1.35] tracking-[-0.02em] text-foreground">
+            {title}
+          </h1>
+
+          {descriptionHtml ? (
+            <div
+              className="report-body mt-3 border-l-2 border-border pl-3.5 text-[14px] leading-[1.8]"
+              dangerouslySetInnerHTML={{__html: descriptionHtml}}
+            />
+          ) : null}
+        </div>
       </div>
-      {descriptionHtml ? (
-        <div
-          className="report-body mt-2.5 text-[14px] leading-[1.8]"
-          dangerouslySetInnerHTML={{__html: descriptionHtml}}
-        />
-      ) : null}
     </section>
   );
 }
