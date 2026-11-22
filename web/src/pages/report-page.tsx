@@ -30,8 +30,6 @@ import {cn} from '@/lib/utils';
  * 右侧信息不做卡片，只用小标题 + 键值行，视觉上退到背景里。
  */
 
-const SHEET = 'rounded-2xl border border-border bg-card px-7 py-6';
-
 const TONE_TEXT: Record<Tone, string> = {
   success: 'text-success-foreground',
   warning: 'text-warning-foreground',
@@ -52,23 +50,21 @@ export function ReportPage() {
   const {reportView, closeReport} = useApp();
   const {loading, error, summary, markdown, item, downloadUrl, downloadName, backLabel} = reportView;
 
-  // 正文从「需求描述」之后开始：标题与前两张主表已结构化展示在别处。
+  // 正文从「需求描述」之后开始：标题与描述已在概要卡里，正文不再重复。
   const reportHtml = React.useMemo(
     () => renderMarkdown(summary?.rest?.trim() ? summary.rest : (markdown ?? '')),
     [summary, markdown],
   );
 
+  // 描述按行渲染，保留来源系统里的换行。
+  const descriptionHtml = React.useMemo(
+    () => (summary?.description ? renderMarkdown(summary.description, true) : ''),
+    [summary],
+  );
+
   return (
     <div className="mx-auto w-full max-w-[1000px]">
-      <PageHeader
-        title={summary?.subject || item?.title || '执行报告'}
-        id={item?.id}
-        kind={item ? (kindLabel[item.kind] ?? item.kind) : undefined}
-        backLabel={backLabel}
-        onBack={closeReport}
-        downloadUrl={downloadUrl}
-        downloadName={downloadName}
-      />
+      <PageNav backLabel={backLabel} onBack={closeReport} downloadUrl={downloadUrl} downloadName={downloadName} />
 
       {loading ? (
         <ReportSkeleton />
@@ -78,88 +74,102 @@ export function ReportPage() {
           打开报告失败：{error}
         </div>
       ) : summary ? (
-        <ReportView summary={summary} reportHtml={reportHtml} />
+        <>
+          <SummaryCard
+            kind={item ? (kindLabel[item.kind] ?? item.kind) : undefined}
+            title={summary.subject || item?.title || '执行报告'}
+            descriptionHtml={descriptionHtml}
+          />
+          <ReportView summary={summary} reportHtml={reportHtml} />
+        </>
       ) : (
-        <section className={SHEET}>
-          <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
-        </section>
+        <>
+          <SummaryCard
+            kind={item ? (kindLabel[item.kind] ?? item.kind) : undefined}
+            title={item?.title || '执行报告'}
+            descriptionHtml=""
+          />
+          <section className="rounded-2xl border border-border bg-card px-7 py-6">
+            <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
+          </section>
+        </>
       )}
     </div>
   );
 }
 
-/** 页头：返回 + 标题 + 类型/编号 + 下载。 */
-function PageHeader({
-  title,
-  id,
-  kind,
+/** 顶部导航：返回 + 下载。标题等信息已下沉到概要卡。 */
+function PageNav({
   backLabel,
   onBack,
   downloadUrl,
   downloadName,
 }: {
-  title: string;
-  id?: string;
-  kind?: string;
   backLabel: string;
   onBack: () => void;
   downloadUrl: string | null;
   downloadName: string;
 }) {
   return (
-    <header className="mb-5">
-      {/* 第一行：导航与操作。返回做成文字链接，比描边按钮更轻 */}
-      <div className="flex items-center justify-between gap-4">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label={`返回${backLabel}`}
-          className="group flex items-center gap-1.5 rounded-md py-0.5 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
-          返回{backLabel}
-        </button>
+    <div className="mb-4 flex items-center justify-between gap-4">
+      <button
+        type="button"
+        onClick={onBack}
+        aria-label={`返回${backLabel}`}
+        className="group flex items-center gap-1.5 rounded-md py-0.5 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
+        返回{backLabel}
+      </button>
 
-        {downloadUrl ? (
-          <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground hover:text-foreground" asChild>
-            <a href={downloadUrl} download={downloadName}>
-              <Download />
-              下载 .md
-            </a>
-          </Button>
-        ) : null}
-      </div>
+      {downloadUrl ? (
+        <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground hover:text-foreground" asChild>
+          <a href={downloadUrl} download={downloadName}>
+            <Download />
+            下载 .md
+          </a>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
 
-      {/* 第二行：标题 + 类型；编号作为等宽小标签跟在后面 */}
-      <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
-        <h1 className="min-w-0 truncate text-[21px] font-semibold leading-[1.3] tracking-[-0.02em] text-foreground">
-          {title}
-        </h1>
+/**
+ * 工单概要卡：类型标签 + 标题同行，描述紧随其后，不用分隔线。
+ * 编号等细项留在右侧「工单信息」里，卡片只放最需要一眼看到的内容。
+ */
+function SummaryCard({
+  kind,
+  title,
+  descriptionHtml,
+}: {
+  kind?: string;
+  title: string;
+  descriptionHtml: string;
+}) {
+  return (
+    <section className="mb-5 rounded-2xl border border-border bg-card px-8 py-6">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         {kind ? (
           <Badge variant="outline" className="shrink-0 bg-card font-normal text-muted-foreground">
             {kind}
           </Badge>
         ) : null}
-        {id ? (
-          <span
-            className="shrink-0 rounded-md bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-            title={id}
-          >
-            {id}
-          </span>
-        ) : null}
+        <h1 className="min-w-0 text-[21px] font-semibold leading-[1.35] tracking-[-0.02em] text-foreground">
+          {title}
+        </h1>
       </div>
-    </header>
+      {descriptionHtml ? (
+        <div
+          className="report-body mt-2.5 text-[14px] leading-[1.8]"
+          dangerouslySetInnerHTML={{__html: descriptionHtml}}
+        />
+      ) : null}
+    </section>
   );
 }
 
 function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: string}) {
-  // 描述正文按行渲染，保留来源系统的换行（处理人 / 优先级已在右栏）。
-  const descriptionHtml = React.useMemo(
-    () => (summary.description ? renderMarkdown(summary.description, true) : ''),
-    [summary.description],
-  );
-
   return (
     <div>
       <StatusBand summary={summary} />
@@ -169,17 +179,6 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
           避免正文白纸浮在灰底上、右栏文字又直接落在灰底里的割裂感 */}
       <div className="grid gap-10 rounded-2xl border border-border bg-card px-8 py-7 xl:grid-cols-[minmax(0,1fr)_232px]">
         <section className="min-w-0">
-          <DocSection label="需求描述" className="xl:max-w-[620px]">
-            {descriptionHtml ? (
-              <div
-                className="report-body text-[14px] leading-[1.8]"
-                dangerouslySetInnerHTML={{__html: descriptionHtml}}
-              />
-            ) : (
-              <p className="text-[12.5px] text-faint">这个工单没有填写描述。</p>
-            )}
-          </DocSection>
-
           <DocSection label="执行报告" meta={reportSections(summary)} className="xl:max-w-[620px]">
             <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
           </DocSection>
@@ -383,7 +382,6 @@ function MetaRows({summary}: {summary: ReportSummary}) {
 
   return (
     <dl className="space-y-0">
-      <Row label="类型" value={meta.kind ? (kindLabel[meta.kind] ?? meta.kind) : '—'} />
       <Row label="状态" value={meta.status ? (statusLabel[meta.status] ?? meta.status) : '—'} />
       <Row label="执行模式" value={meta.mode || '—'} />
       <Row label="模型" value={meta.model || '—'} />
