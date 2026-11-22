@@ -10,7 +10,6 @@ import {ScanDialog} from '@/components/dialogs/scan-dialog';
 import {TapdSyncDialog} from '@/components/dialogs/tapd-sync-dialog';
 import type {ConnState} from '@/components/app-sidebar';
 import type {ActionSelection} from '@/components/task-actions';
-import {esc, renderReportSections, type ReportSection} from '@/lib/markdown';
 import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
 import {
   endpoints,
@@ -110,12 +109,21 @@ interface FolderPickerState {
 interface ReportState {
   open: boolean;
   title: string;
-  sections: ReportSection[];
+  /** 报告 Markdown 原文；没有生成报告时为空，由 fallbackMarkdown 兜底。 */
+  markdown: string | null;
+  fallbackMarkdown: string | null;
   downloadUrl: string | null;
   downloadName: string;
 }
 
-const EMPTY_REPORT: ReportState = {open: false, title: '', sections: [], downloadUrl: null, downloadName: ''};
+const EMPTY_REPORT: ReportState = {
+  open: false,
+  title: '',
+  markdown: null,
+  fallbackMarkdown: null,
+  downloadUrl: null,
+  downloadName: '',
+};
 
 export function AppProvider({children}: {children: React.ReactNode}) {
   const [items, setItems] = React.useState<WorkItem[]>([]);
@@ -397,7 +405,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           setReport({
             open: true,
             title,
-            sections: renderReportSections(markdown),
+            markdown,
+            fallbackMarkdown: null,
             downloadUrl: endpoints.reportUrl(id),
             downloadName: `${id}.md`,
           });
@@ -433,7 +442,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       setReport({
         open: true,
         title,
-        sections: [{label: '工单信息', html: `<pre class="md-code">${esc(summary)}</pre>`}],
+        markdown: null,
+        fallbackMarkdown: summary,
         downloadUrl: null,
         downloadName: '',
       });
@@ -862,7 +872,8 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         open={report.open}
         onOpenChange={(open) => setReport((prev) => ({...prev, open}))}
         title={report.title}
-        sections={report.sections}
+        markdown={report.markdown}
+        fallbackMarkdown={report.fallbackMarkdown}
         downloadUrl={report.downloadUrl}
         downloadName={report.downloadName}
       />
