@@ -80,8 +80,7 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
           break;
         }
       }
-      // 执行输出摘要（最终结论）是报告的主内容，默认展开；原始输出仍折叠。
-      const opened = /\bopen\b/i.test(block[0]) || /执行输出摘要|提示词/.test(summaryText);
+      const opened = /\bopen\b/i.test(block[0]);
       const innerLines = block.slice(1).filter(
         (current) =>
           !/^\s*<\/details>/i.test(current) &&
@@ -96,6 +95,11 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
       const inner = renderMarkdown(cleaned, breakOnNewline);
       // 「执行命令」「提示词」是排查问题的关键信息，固定展开、不做折叠交互；
       // 原始输出可能几十万字符，保留折叠。
+      // 执行输出摘要（最终结论）就地展开，不折叠
+      if (/执行输出摘要/.test(summaryText)) {
+        out.push(`<div class="md-block"><div class="md-block-label">${inline(summaryText)}</div>${inner}</div>`);
+        continue;
+      }
       if (/执行命令|提示词/.test(summaryText)) {
         appendices.push({label: /提示词/.test(summaryText) ? '提示词' : summaryText, html: inner});
         continue;

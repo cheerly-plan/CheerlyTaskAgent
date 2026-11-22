@@ -202,15 +202,15 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
           避免正文白纸浮在灰底上、右栏文字又直接落在灰底里的割裂感 */}
       <div className="grid gap-10 rounded-2xl border border-border bg-card px-8 py-7 xl:grid-cols-[minmax(0,1fr)_232px]">
         <section className="min-w-0">
-          <DocSection label="执行报告" meta={reportSections(summary)} className="xl:max-w-[620px]">
-            <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
-          </DocSection>
-
           <DocSection
             label="改动明细"
             meta={summary.changedFiles.length ? `${summary.changedFiles.length} 个文件` : undefined}
           >
             <ChangesBlock summary={summary} />
+          </DocSection>
+
+          <DocSection label="执行报告" className="xl:max-w-[620px]">
+            <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
           </DocSection>
         </section>
 
@@ -336,12 +336,6 @@ function AttentionRows({attention}: {attention: Attention[]}) {
       })}
     </ul>
   );
-}
-
-/** 报告正文里出现的章节标题，用于给「执行报告」一个概览。 */
-function reportSections(summary: ReportSummary): string | undefined {
-  const found = [...(summary.rest || '').matchAll(/^##\s+(.+)$/gm)].map((match) => match[1].trim());
-  return found.length ? found.slice(0, 3).join(' · ') : undefined;
 }
 
 /** 纸面内的一节：小标签 + 内容，节与节之间用一条细线分开。 */
