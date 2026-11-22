@@ -93,7 +93,6 @@ export function TaskActions({
       {running ? (
         <Button size="sm" variant="outline" onClick={() => onAction('cancel', item.id)}>
           <Square />
-          取消
         </Button>
       ) : null}
 

@@ -952,3 +952,17 @@ def test_items_api_paginates_with_total(tmp_path):
         assert {item["id"] for item in page["items"]} & {
             item["id"] for item in second["items"]
         } == set()
+
+
+def test_items_api_returns_full_list_for_task_center(tmp_path):
+    """任务中心不分页：按前端使用的上限一次性拿到全部工作项。"""
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        for index in range(5):
+            client.post(
+                "/api/tasks/manual",
+                json={"title": f"t{index}", "description": "d", "repo_name": ""},
+            )
+        data = client.get("/api/items", params={"limit": 2000, "offset": 0}).json()
+        assert data["total"] == 5
+        assert len(data["items"]) == 5

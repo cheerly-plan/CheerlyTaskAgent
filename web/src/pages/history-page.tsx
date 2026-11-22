@@ -49,7 +49,12 @@ function sortValue(item: WorkItem, field: string): string {
 /** 历史记录：只展示 apply 执行结束的任务（成功 / 失败 / 跳过 / 已取消），可看报告、重试、删除。 */
 export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const {
-    items,
+    historyItems,
+    historyTotal,
+    historyHasMore,
+    historyLoading,
+    loadMoreHistory,
+    reloadHistory,
     selections,
     setSelection,
     runItemAction,
@@ -58,7 +63,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
     models,
     backends,
     ensureBackendProbe,
-    reloadItems,
   } = useApp();
 
   const [filters, setFilters] = React.useState<Filters>(DEFAULT_FILTERS);
@@ -70,7 +74,8 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const [pageSize, setPageSize] = React.useState(20);
 
   // 只归档真实执行（apply）的终态记录；dry-run 是预演，留在任务中心。
-  const finished = React.useMemo(() => items.filter((item) => isArchived(item)), [items]);
+  // 数据来自后端分页（context 里按需向后拉取），这里只对已加载的部分做筛选排序。
+  const finished = React.useMemo(() => historyItems.filter((item) => isArchived(item)), [historyItems]);
 
   const visible = React.useMemo(() => {
     let list = finished.slice();
@@ -100,8 +105,15 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
     setPage(1);
   }, [filters, keyword, sort, pageSize]);
 
+  // 翻到已加载数据之外时，再向后端要一段历史（分页拉取）。
   const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
   const safePage = Math.min(page, pageCount);
+  const loadPending = safePage >= pageCount && historyHasMore && !historyLoading;
+
+  React.useEffect(() => {
+    if (loadPending) void loadMoreHistory();
+  }, [loadPending, loadMoreHistory]);
+
   const pageItems = React.useMemo(
     () => visible.slice((safePage - 1) * pageSize, safePage * pageSize),
     [visible, safePage, pageSize],
@@ -110,7 +122,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const toggleSort = (field: SortField) =>
     setSort((prev) =>
       prev.field === field
-        ? {field, direction: prev.direction === 'asc' ? 'desc' : 'asc'}
+        ? {field, direction: prev.direction === 'desc' ? 'asc' : 'desc'}
         : {field, direction: defaultDirection(field)},
     );
 
@@ -122,13 +134,13 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
 
   const countText =
     visible.length === finished.length
-      ? `${finished.length} 条历史记录`
+      ? `${finished.length} 条历史记录${historyHasMore ? `（共 ${historyTotal} 条）` : ''}`
       : `${visible.length} / ${finished.length} 条历史记录`;
 
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await reloadItems();
+      await reloadHistory();
     } finally {
       setRefreshing(false);
     }
@@ -318,10 +330,15 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
           </div>
         )}
 
-        {pageCount > 1 ? (
+        {pageCount > 1 || historyHasMore || historyLoading ? (
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
-            <span className="text-[11.5px] tabular-nums text-faint">
+            <span className="flex items-center gap-1.5 text-[11.5px] tabular-nums text-faint">
+              {historyLoading ? <RefreshCw className="size-3 animate-spin" /> : null}
               共 {finished.length} 条历史记录
+              {historyHasMore ? `（已加载 ${finished.length} / ${historyTotal} 条）` : ''}
+              {!historyHasMore && historyTotal > finished.length
+                ? `（存储共 ${historyTotal} 条，未归档的不计入）`
+                : ''}
               {visible.length !== finished.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
             </span>
             <div className="flex items-center gap-2">
@@ -343,11 +360,12 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
               </Button>
               <span className="tabular-nums text-[11.5px] text-faint">
                 {safePage} / {pageCount}
+                {historyHasMore ? '+' : ''}
               </span>
               <Button
                 size="xs"
                 variant="outline"
-                disabled={safePage >= pageCount}
+                disabled={safePage >= pageCount && (historyLoading || !historyHasMore)}
                 onClick={() => setPage(Math.min(pageCount, safePage + 1))}
               >
                 下一页

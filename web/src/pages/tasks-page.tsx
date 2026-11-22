@@ -72,8 +72,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
   const [keyword, setKeyword] = React.useState('');
   const [view, setView] = React.useState<ViewMode>('table');
   const [refreshing, setRefreshing] = React.useState(false);
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
 
   const tapd = settings?.data_source?.tapd ?? settings?.tapd;
   const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
@@ -114,18 +112,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
     // 树形顺序：子需求紧跟父需求，便于看出层级（父始终是容器）。
     return orderForTreeView(list);
   }, [activeItems, filters, keyword, sort]);
-
-  // 筛选、搜索、排序或每页数量变化后回到第一页，避免停在越界页。
-  React.useEffect(() => {
-    setPage(1);
-  }, [filters, keyword, sort, pageSize]);
-
-  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
-  const safePage = Math.min(page, pageCount);
-  const pageItems = React.useMemo(
-    () => visible.slice((safePage - 1) * pageSize, safePage * pageSize),
-    [visible, safePage, pageSize],
-  );
 
   const toggleSort = (field: SortField) =>
     setSort((prev) =>
@@ -356,7 +342,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
           />
         ) : view === 'table' ? (
           <TaskTable
-            items={pageItems}
+            items={visible}
             containerClassName="min-h-0 flex-1"
             sort={sort}
             onSort={toggleSort}
@@ -371,7 +357,7 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
           />
         ) : (
           <div className="grid min-h-0 flex-1 gap-3 overflow-auto bg-[#fafafd] p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {pageItems.map((item) => (
+            {visible.map((item) => (
               <TaskCard
                 key={item.id}
                 item={item}
@@ -388,42 +374,14 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
           </div>
         )}
 
-        {pageCount > 1 ? (
+        {/* 任务中心不分页：列表直接铺满全部待处理任务，仅在超过后端上限时提示。 */}
+        {itemsTotal > items.length ? (
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
             <span className="text-[11.5px] tabular-nums text-faint">
               共 {activeItems.length} 条待处理任务
               {visible.length !== activeItems.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
-              {itemsTotal > items.length ? `（当前已加载最近 ${items.length} 条）` : ''}
+              {`（当前已加载最近 ${items.length} 条）`}
             </span>
-            <div className="flex items-center gap-2">
-              <span className="text-[11.5px] text-faint">每页</span>
-              <SelectField
-                size="sm"
-                className="w-[76px]"
-                value={String(pageSize)}
-                options={[20, 50, 100].map((size) => ({value: String(size), label: `${size} 条`}))}
-                onChange={(value) => setPageSize(Number(value) || 20)}
-              />
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={safePage <= 1}
-                onClick={() => setPage(Math.max(1, safePage - 1))}
-              >
-                上一页
-              </Button>
-              <span className="tabular-nums text-[11.5px] text-faint">
-                {safePage} / {pageCount}
-              </span>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={safePage >= pageCount}
-                onClick={() => setPage(Math.min(pageCount, safePage + 1))}
-              >
-                下一页
-              </Button>
-            </div>
           </div>
         ) : null}
       </Card>
