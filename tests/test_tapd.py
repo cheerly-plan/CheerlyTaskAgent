@@ -490,3 +490,110 @@ def test_import_applies_new_and_updated_and_advances_cursor(tmp_path, monkeypatc
         items = client.get("/api/items").json()["items"]
         created = next(i for i in items if i["source_ref"] == "tapd:story:100")
         assert created["model"] == "hy4flash"
+
+
+def test_is_closed_status_recognises_en_and_zh():
+    """已关闭状态英文 code 与中文名都要识别，活跃状态不误判。"""
+    from taskagent.tapd import is_closed_status
+
+    for status in ("resolved", "Verified", " DONE ", "closed", "rejected", "suspended",
+                   "已解决", "已关闭", "已拒绝", "挂起"):
+        assert is_closed_status(status), status
+    for status in ("planning", "developing", "testing", "reopened", "new",
+                   "in_progress", "open", "progressing", "", "reviewing"):
+        assert not is_closed_status(status), status
+
+
+def test_import_raw_archived_lands_in_history_not_queue(env):
+    """已关闭条目入库后为归档终态：不映射仓库、不进执行队列、归到历史。"""
+    scheduler, store, _, _, _ = env
+    from taskagent.models import ItemStatus
+    from taskagent.sources import RawItem
+
+    raw = RawItem.from_email(
+        subject="【需求】已关闭的旧需求",
+        body="https://github.com/acme/app-one.git",
+        message_id="closed-1",
+    )
+    item, created = scheduler.import_raw(raw, archived=True)
+    assert created
+    assert item.status == ItemStatus.SKIPPED
+    assert item.exec_mode == "apply"
+    assert item.repo is None
+    assert item.is_terminal()
+    assert store.get(item.id) is not None
+
+
+def test_import_raw_active_still_maps_and_runs(env):
+    """活跃状态仍按原逻辑映射并可进队列，回归保护。"""
+    scheduler, _, _, _, _ = env
+    from taskagent.models import ItemStatus
+    from taskagent.sources import RawItem
+
+    raw = RawItem.from_email(
+        subject="【需求】进行中的需求",
+        body="https://github.com/acme/app-one.git",
+        message_id="active-1",
+    )
+    item, created = scheduler.import_raw(raw, archived=False)
+    assert created
+    assert item.status == ItemStatus.READY
+    assert item.repo is not None
+
+
+def test_sync_closes_status_archives_but_keeps_record(tmp_path, monkeypatch):
+    """sync 端到端：已关闭条目进历史（skipped+apply），活跃条目留任务中心。"""
+    from taskagent import tapd as tapd_module
+    from taskagent.store import TaskStore
+
+    settings = _make_tapd_app(tmp_path)
+    active = tapd_module.TapdItem(
+        entity_type="story", id="300", workspace_id="32312011",
+        title="进行中需求", description="d", status="developing", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-02 10:00:00",
+    )
+    closed = tapd_module.TapdItem(
+        entity_type="bug", id="400", workspace_id="32312011",
+        title="已关闭缺陷", description="d", status="closed", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-02 10:00:00",
+    )
+
+    def fake_fetch_all(self, *, modified_since="", limit=200, max_pages=5):
+        result = tapd_module.TapdResult()
+        result.items = [active, closed]
+        return result
+
+    monkeypatch.setattr(tapd_module.TapdClient, "fetch_all", fake_fetch_all)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        r = client.post("/api/tapd/sync", json={"force": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 2
+
+        items = client.get("/api/items?limit=100").json()["items"]
+        active_item = next(i for i in items if i["source_ref"] == "tapd:story:300")
+        closed_item = next(i for i in items if i["source_ref"] == "tapd:bug:400")
+        assert active_item["status"] in ("discovered", "ready")
+        assert closed_item["status"] == "skipped"
+        assert closed_item["exec_mode"] == "apply"
+        assert TaskStore(settings.tasks_dir).get(closed_item["id"]) is not None
+
+
+def test_archived_item_revives_when_source_reopens(env):
+    """已归档条目来源变活跃（reopened）后复活，回到任务中心而非留在历史。"""
+    scheduler, store, _, _, _ = env
+    from taskagent.models import ARCHIVED_SOURCE_STAGE, ItemStatus
+    from taskagent.sources import RawItem
+
+    raw = RawItem.from_email(subject="【缺陷】回归", body="x", message_id="reopen-1")
+    archived, _ = scheduler.import_raw(raw, archived=True)
+    assert archived.status == ItemStatus.SKIPPED
+    assert store.get(archived.id).stage == ARCHIVED_SOURCE_STAGE
+
+    # 同一来源重新活跃
+    revived, created = scheduler.import_raw(raw, archived=False, auto_map=False)
+    assert not created
+    assert revived.id == archived.id
+    assert revived.status == ItemStatus.DISCOVERED
+    assert revived.exec_mode == "dry-run"
+    assert revived.stage == ""

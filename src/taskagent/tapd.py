@@ -36,6 +36,18 @@ _ENTITIES = {
     "task": ("tasks", "Task"),
 }
 
+# 已收尾状态：这些条目不再派给 Agent 执行，但仍入库供历史查看。
+# TAPD 的 status 字段在部分项目返回英文 code，在另一些项目返回中文名
+# （normalise 时优先 status、回退 v_status），因此两种写法都要识别。
+CLOSED_STATUSES = frozenset({
+    "resolved", "verified", "done", "closed", "rejected", "suspended",
+    "已解决", "已实现", "已验证", "已完成", "已关闭", "已拒绝", "挂起",
+})
+
+
+def is_closed_status(status: str) -> bool:
+    return (status or "").strip().lower() in CLOSED_STATUSES
+
 
 @dataclass
 class TapdConfig:

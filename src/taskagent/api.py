@@ -27,7 +27,7 @@ from .route import RouteHistory, route_item
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
-from .tapd import TapdClient, TapdConfig, TapdError, TapdItem
+from .tapd import TapdClient, TapdConfig, TapdError, TapdItem, is_closed_status
 
 logger = logging.getLogger("taskagent")
 
@@ -320,6 +320,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 _, was_created = scheduler.import_raw(
                     raw, exec_mode=exec_mode, repo_name=repo_name,
                     auto_map=len(bound) != 1, stage_hint=stage_hint,
+                    archived=is_closed_status(item.status),
                 )
                 if was_created:
                     created += 1
@@ -440,6 +441,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "route": route_info,
                 "modified": item.modified,
                 "existing_id": old.id if old is not None else "",
+                "source_status": item.status,
             }
             previews.append({
                 "source_ref": raw.source_ref,
@@ -473,6 +475,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"created": 0, "updated": 0, "skipped": 0, "error": None}
         if not _tapd_preview["nonce"]:
             return {"created": 0, "updated": 0, "skipped": 0, "error": "预览已失效，请重新同步"}
+        from .models import ARCHIVED_SOURCE_STAGE, ItemStatus
+
         created = updated = skipped = 0
         imported_stamps: list[str] = []
         for sel in body.items:
@@ -485,6 +489,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if exec_mode not in {"dry-run", "apply"}:
                 exec_mode = "dry-run"
             repo_name = sel.repo_name if sel.repo_name is not None else cached["repo_name"]
+            closed = is_closed_status(cached.get("source_status", ""))
             try:
                 if cached["status"] == "changed" and cached["existing_id"]:
                     # Update in place: keep status/results/history, refresh content only.
@@ -503,6 +508,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         resolved = scheduler.projects.resolve_name(repo_name) if scheduler.projects else None
                         if resolved:
                             old.repo = resolved
+                    if closed:
+                        old.status = ItemStatus.SKIPPED
+                        old.exec_mode = "apply"
+                        old.stage = ARCHIVED_SOURCE_STAGE
+                    elif old.status == ItemStatus.SKIPPED and old.stage == ARCHIVED_SOURCE_STAGE:
+                        # 来源从已关闭回到活跃：复活到任务中心。
+                        old.status = ItemStatus.DISCOVERED
+                        old.exec_mode = exec_mode
+                        old.stage = ""
+                        if repo_name:
+                            resolved = scheduler.projects.resolve_name(repo_name) if scheduler.projects else None
+                            if resolved:
+                                old.repo = resolved
+                                old.status = ItemStatus.READY
                     old.touch()
                     scheduler.store.save(old)
                     updated += 1
@@ -511,7 +530,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         raw, exec_mode=exec_mode, repo_name=repo_name,
                         executor=sel.executor, model=sel.model,
                         stage_hint=cached["stage_hint"],
-                        auto_map=not repo_name,
+                        auto_map=not repo_name, archived=closed,
                     )
                     created += 1
                 if cached.get("modified"):
@@ -554,6 +573,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _, was_created = scheduler.import_raw(
                 raw, exec_mode=cfg.get("exec_mode", "dry-run"),
                 repo_name=repo_name, auto_map=len(bound) != 1, stage_hint=stage_hint,
+                archived=is_closed_status(item.status),
             )
         except ValueError as error:
             return {"created": 0, "skipped": 0, "error": str(error)}

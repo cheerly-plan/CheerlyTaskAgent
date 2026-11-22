@@ -47,6 +47,9 @@ TERMINAL_STATUSES = {
     ItemStatus.CANCELLED,
 }
 
+# 标记「来源已关闭而自动归档」的工单，用于来源重新活跃（如 reopened）时识别并复活。
+ARCHIVED_SOURCE_STAGE = "来源已关闭，仅归档供历史查看"
+
 
 class SourceType(str, Enum):
     EMAIL = "email"

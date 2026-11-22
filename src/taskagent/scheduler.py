@@ -20,7 +20,14 @@ from .commitfilter import CommitFileFilter, load_extra_patterns
 from .events import Event, EventBus
 from .executor import Executor, ExecutorRegistry
 from .gitmap import GitProjectRegistry
-from .models import CommitResult, ItemKind, ItemStatus, SourceType, WorkItem
+from .models import (
+    ARCHIVED_SOURCE_STAGE,
+    CommitResult,
+    ItemKind,
+    ItemStatus,
+    SourceType,
+    WorkItem,
+)
 from .projectmap import ProjectRegistry
 from .report import parent_title_of, write_report
 from .sources import RawItem, parse_raw
@@ -99,18 +106,24 @@ class Scheduler:
         self, raw: RawItem, *, exec_mode: str = "dry-run",
         auto_map: bool = True, model: str | None = None,
         executor: str | None = None, repo_name: str = "",
-        stage_hint: str = "",
+        stage_hint: str = "", archived: bool = False,
     ) -> tuple[WorkItem, bool]:
         """Create a WorkItem from a RawItem. Returns (item, created).
 
         Duplicate dedupe_keys are skipped (idempotent import): returns the
         existing item with created=False. When ``repo_name`` is given (e.g. the
         local project bound to this TAPD workspace), it is resolved first.
+        ``archived`` marks an already-closed source item: it is kept for history
+        but lands in a terminal state so it never enters the execution queue.
         """
         probe = parse_raw(raw, exec_mode=exec_mode)
         probe.model = model or None
         if executor:
             probe.executor = executor
+        if archived:
+            probe.status = ItemStatus.SKIPPED
+            probe.exec_mode = "apply"
+            probe.stage = stage_hint or ARCHIVED_SOURCE_STAGE
         existing_id = self._seen_keys.get(probe.dedupe_key)
         if existing_id:
             existing = self.store.get(existing_id)
@@ -122,13 +135,39 @@ class Scheduler:
                     existing.parent_ref = probe.parent_ref
                     self.store.save(existing)
                     self.events.publish(Event("item_updated", existing.id, {"item": existing.summary()}))
+                # 来源从已关闭回到活跃（如 reopened）：复活到任务中心，重新映射。
+                if (
+                    not archived
+                    and existing.status == ItemStatus.SKIPPED
+                    and existing.stage == ARCHIVED_SOURCE_STAGE
+                ):
+                    existing.status = ItemStatus.DISCOVERED
+                    existing.exec_mode = exec_mode
+                    existing.stage = ""
+                    item = existing
+                    item.tapd_workspace_id = raw.tapd_workspace_id
+                    item.parent_title = raw.parent_title
+                    if repo_name:
+                        repo = self.projects.resolve_name(repo_name) if self.projects else None
+                        repo = repo or self.gitmap.resolve(name=repo_name)
+                        if repo:
+                            item.repo = repo
+                            item.status = ItemStatus.READY
+                            item.stage = f"已按 TAPD 项目绑定映射：{repo.name}"
+                    elif auto_map:
+                        self._map(item)
+                    item.touch()
+                    self.store.save(item)
+                    self.events.publish(Event("item_updated", item.id, {"item": item.summary()}))
                 return existing, False
         item = probe
         item.tapd_workspace_id = raw.tapd_workspace_id
         item.parent_title = raw.parent_title
-        if stage_hint:
+        if stage_hint and not archived:
             item.stage = stage_hint
-        if repo_name:
+        if archived:
+            pass  # 已归档条目不映射、不进执行队列
+        elif repo_name:
             # 显式指定（来自 TAPD workspace 绑定的本地项目），优先于文本匹配
             repo = self.projects.resolve_name(repo_name) if self.projects else None
             repo = repo or self.gitmap.resolve(name=repo_name)
