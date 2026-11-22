@@ -5,15 +5,14 @@ import {
   ExternalLink,
   CircleCheck,
   CircleSlash,
-  ChevronRight,
   Download,
   FileDiff,
   Files,
   FolderGit2,
   FolderTree,
+  Timer,
   ListChecks,
   Loader2,
-  Timer,
   TriangleAlert,
   type LucideIcon,
 } from 'lucide-react';
@@ -203,10 +202,6 @@ function PageHeader({
 }
 
 function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: string}) {
-  const jump = (ref: string) => {
-    document.getElementById(ref)?.scrollIntoView({behavior: 'smooth', block: 'start'});
-  };
-
   // 描述正文按行渲染，保留来源系统里的换行（处理人 / 优先级这类信息已在侧栏）。
   const descriptionHtml = React.useMemo(
     () => (summary.description ? renderMarkdown(summary.description, true) : ''),
@@ -215,9 +210,8 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
 
   return (
     <div className="space-y-6">
-      {/* 结论层 */}
-      <ReportOutcomeBanner summary={summary} onJump={jump} />
-      <ReportStats stats={summary.stats} />
+      {/* 结论层：执行结果与耗时 / 改动 / 同步并排成一行 */}
+      <ReportStats summary={summary} />
       <ReportAttentionList attention={summary.attention} />
 
       {/* 证据层：左侧一张纸面承载长文，右侧一张信息卡随时可查 */}
@@ -372,103 +366,76 @@ function MetaFields({fields}: {fields: ReportSummary['metaFields']}) {
   );
 }
 
-/** 结论横幅：成败 + 一句话结论 + 试运行/警示标签。 */
-function ReportOutcomeBanner({summary, onJump}: {summary: ReportSummary; onJump: (ref: string) => void}) {
+/**
+ * 指标行：执行结果 / 耗时 / 改动文件 / 同步主仓库。
+ *
+ * 执行结果原本是通栏大横幅，占掉近一屏；并进这一行后既保留醒目度，
+ * 又把首屏让给正文。
+ */
+function ReportStats({summary}: {summary: ReportSummary}) {
   const tone: Tone = summary.outcome === 'success' ? 'success' : summary.outcome === 'failure' ? 'danger' : 'neutral';
   const Icon = tone === 'success' ? CircleCheck : tone === 'danger' ? AlertTriangle : CircleSlash;
   const conflicts = summary.conflicted.length;
-  // 结论横幅的标题已经写明结果，副标题只保留细节，避免「执行成功」重复两次。
-  const detail = summary.verdict.includes(' · ') ? summary.verdict.slice(summary.verdict.indexOf(' · ') + 3) : '';
+
+  const cells: {label: string; value: string; hint?: string; tone: Tone; icon: LucideIcon}[] = [
+    {
+      label: '执行结果',
+      value: summary.outcome === 'success' ? '执行成功' : summary.outcome === 'failure' ? '执行未通过' : '尚未执行',
+      hint: summary.dryRun === null ? undefined : summary.dryRun ? 'dry-run 试运行' : 'apply 已落地',
+      tone,
+      icon: Icon,
+    },
+    {label: '耗时', value: summary.duration ?? '—', hint: '执行器总耗时', tone: 'neutral', icon: Timer},
+    {
+      label: '改动文件',
+      value: String(summary.changedFiles.length),
+      hint: summary.modules.length ? `分布在 ${summary.modules.length} 个模块` : undefined,
+      tone: summary.changedFiles.length ? 'info' : 'neutral',
+      icon: Files,
+    },
+    {
+      label: '同步主仓库',
+      value: String(summary.syncedCount),
+      hint: conflicts ? `${conflicts} 个冲突待处理` : summary.syncedCount ? '已全部写入' : undefined,
+      tone: conflicts ? 'warning' : summary.syncedCount ? 'success' : 'neutral',
+      icon: FolderTree,
+    },
+  ];
 
   return (
-    <div
-      className={cn(
-        'flex items-center gap-4 rounded-2xl border px-6 py-5',
-        tone === 'success' && 'border-success/25 bg-gradient-to-r from-success-muted to-success-muted/30',
-        tone === 'danger' && 'border-destructive/25 bg-gradient-to-r from-destructive-muted to-destructive-muted/30',
-        tone === 'neutral' && 'border-border bg-secondary/60',
-      )}
-    >
-      <span className={cn('grid size-12 shrink-0 place-items-center rounded-2xl shadow-sm', TONE_SOLID[tone])}>
-        <Icon className="size-6" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <span className={cn('text-[17px] font-semibold tracking-[-0.01em]', TONE_TEXT[tone])}>
-            {summary.outcome === 'success' ? '执行成功' : summary.outcome === 'failure' ? '执行未通过' : '尚未执行'}
-          </span>
-          {summary.meta.mode ? (
-            <Badge
-              variant={summary.dryRun ? 'info' : 'purple'}
-              className="bg-white/80"
-            >
-              {summary.dryRun ? 'dry-run 试运行' : 'apply 已落地'}
-            </Badge>
-          ) : null}
-        </div>
-        {detail ? <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{detail}</p> : null}
-      </div>
-      {conflicts || summary.sync?.error ? (
-        <button
-          type="button"
-          onClick={() => onJump('report-attention')}
+    <div className="grid grid-cols-2 divide-border overflow-hidden rounded-2xl border border-border bg-card shadow-sm sm:grid-cols-4 sm:divide-x">
+      {cells.map((cell, index) => (
+        <div
+          key={cell.label}
           className={cn(
-            'flex shrink-0 items-center gap-0.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors',
-            conflicts
-              ? 'bg-warning-muted text-warning-foreground hover:bg-warning-muted/70'
-              : 'bg-destructive-muted text-destructive hover:bg-destructive-muted/70',
+            'px-5 py-4',
+            index >= 2 && 'border-t border-border sm:border-t-0',
+            index % 2 === 1 && 'border-l border-border',
+            index === 2 && 'sm:border-l',
           )}
         >
-          {conflicts ? `${conflicts} 个文件冲突` : '同步出错'}
-          <ChevronRight className="size-3.5" />
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * 关键数字：一条横向数据带。
- * 四张独立卡片在视觉上过于抢眼（大片留白 + 厚重描边），合并成一组更收敛。
- */
-function ReportStats({stats}: {stats: ReportSummary['stats']}) {
-  const icons: LucideIcon[] = [Timer, Files, FolderTree];
-  const items = stats.filter((stat) => stat.label !== '执行结果');
-  return (
-    <div className="grid grid-cols-2 divide-border overflow-hidden rounded-2xl border border-border bg-card shadow-sm sm:grid-cols-3">
-      {items.map((stat, index) => {
-        const Icon = icons[index] ?? CircleCheck;
-        return (
+          <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+            <span className={cn('grid shrink-0 place-items-center rounded-md', index === 0 ? 'size-[18px]' : 'size-4', index === 0 && TONE_SOLID[cell.tone])}>
+              <cell.icon className={cn(index === 0 ? 'size-3 text-white' : 'size-4', index !== 0 && TONE_TEXT[cell.tone])} />
+            </span>
+            {cell.label}
+          </div>
           <div
-            key={stat.label}
             className={cn(
-              'px-5 py-4',
-              index >= 2 && 'border-t border-border sm:border-t-0',
-              index % 2 === 1 && 'border-l border-border',
-              index === 2 && 'sm:border-l',
+              'mt-2 truncate font-semibold leading-none tracking-[-0.03em]',
+              index === 0 ? 'text-[22px]' : 'text-[27px]',
+              TONE_TEXT[cell.tone],
             )}
           >
-            <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
-              <Icon className={cn('size-4', TONE_TEXT[stat.tone])} />
-              {stat.label}
-            </div>
-            <div
-              className={cn(
-                'mt-2 truncate text-[27px] font-semibold leading-none tracking-[-0.03em]',
-                TONE_TEXT[stat.tone],
-              )}
-            >
-              {stat.value}
-            </div>
-            {stat.hint ? <div className="mt-2 truncate text-[11.5px] text-faint">{stat.hint}</div> : null}
+            {cell.value}
           </div>
-        );
-      })}
+          {cell.hint ? <div className="mt-2 truncate text-[11.5px] text-faint">{cell.hint}</div> : null}
+        </div>
+      ))}
     </div>
   );
 }
 
-/** 需要关注：全宽分段。正常时收成一行，不占版面。 */
 function ReportAttentionList({attention}: {attention: Attention[]}) {
   if (!attention.length) {
     return (
@@ -479,12 +446,9 @@ function ReportAttentionList({attention}: {attention: Attention[]}) {
     );
   }
 
+  // 作为 tab 内容渲染，标题由 tab 本身承担，这里只列条目。
   return (
-    <section id="report-attention" className="scroll-mt-6">
-      <div className="mb-2.5 flex items-center gap-2 px-0.5 text-[12.5px] font-semibold text-foreground">
-        <ListChecks className="size-4 text-faint" />
-        需要关注
-      </div>
+    <section>
       <ul className="grid gap-3 md:grid-cols-2">
         {attention.map((entry) => {
           const Icon = ATTENTION_ICON[entry.kind];
