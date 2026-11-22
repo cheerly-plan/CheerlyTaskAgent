@@ -5,10 +5,20 @@ const esc = (value: unknown) =>
     return map[c];
   });
 
-export function renderMarkdown(markdown: string): string {
+/**
+ * @param breakOnNewline 段落内换行是否输出 `<br>`。来源系统的描述是自由文本
+ *   （「处理人：x⏎优先级：y」），不换行会挤成一行；报告正文按 Markdown 规范
+ *   保持软换行。
+ *
+ * 段落里出现来源系统的 HTML（`<p>`、`<br/>`）时会转成安全的行内内容，
+ * 其余标签一律剥离，不会执行。
+ */
+export function renderMarkdown(markdown: string, breakOnNewline = false): string {
   const lines = String(markdown || '').split('\n');
   const out: string[] = [];
   let i = 0;
+
+  const withBreaks = (html: string) => (breakOnNewline ? html.replace(/\n/g, '<br>') : html);
 
   const inline = (text: string) =>
     esc(text)
@@ -75,7 +85,12 @@ export function renderMarkdown(markdown: string): string {
           !/<summary[^>]*>/i.test(current) &&
           !/^\s*<details\b/i.test(current),
       );
-      const inner = renderMarkdown(innerLines.join('\n'));
+      // 提示词 / 原始输出是原样下发的文本：保持代码块（保留缩进与换行）语义。
+      // 「提示词」里嵌着需求描述，会带上 <p> 之类的标签，这里也走一遍清理；
+      // 原始输出保持逐字不变，方便排查。
+      const isPrompt = /提示词/.test(summaryText);
+      const cleaned = isPrompt ? stripHtml(innerLines.join('\n')) : innerLines.join('\n');
+      const inner = renderMarkdown(cleaned, breakOnNewline);
       out.push(`<details${opened ? ' open' : ''}><summary>${inline(summaryText)}</summary>${inner}</details>`);
       continue;
     }
@@ -143,12 +158,12 @@ export function renderMarkdown(markdown: string): string {
     // 来源系统（TAPD 等）的富文本会以裸 HTML 出现在正文里，
     // 例如「<p>可以调整成 tab</p>」，直接转义会把标签当文字显示。
     if (looksLikeHtml(line)) {
-      out.push(`<p>${inlineTagged(sanitizeInline(line))}</p>`);
+      out.push(...htmlBlock(line, withBreaks, (text) => inlineTagged(text)));
       i++;
       continue;
     }
 
-    out.push(`<p>${inline(line)}</p>`);
+    out.push(`<p>${withBreaks(inline(line))}</p>`);
     i++;
   }
 
@@ -179,21 +194,54 @@ function looksLikeHtml(line: string): boolean {
 }
 
 /**
- * 把来源系统的一行 HTML 收敛成安全的行内内容：
- * 块级标签变成空格，`<br>` 变成换行，其余不认识的标签直接丢掉。
- * 输出未转义的纯文本（由调用方负责转义）。
+ * 代码块里的来源系统 HTML → 纯文本段落（保留空行）。
+ * 与 :func:`htmlBlock` 的区别：这里不生成 `<p>`，只做换行与去标签，
+ * 因为外层已经是代码块，需要保留原始排版。
  */
-function sanitizeInline(raw: string): string {
-  let text = raw;
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n');
-  text = text.replace(/<\/t[dh]>/gi, ' ');
-  text = text.replace(/<li\b[^>]*>/gi, '• ');
-  text = text.replace(/<[^>]*>/g, '');
-  return decodeEntities(text)
+function stripHtml(raw: string): string {
+  const normalized = raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/t[dh]>/gi, ' ')
+    .replace(/<li\b[^>]*>/gi, '• ')
+    .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')
+    .replace(/<(p|div|li|tr|h[1-6]|blockquote)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+  return decodeEntities(normalized)
     .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * 把来源系统的一段 HTML 拆成若干「干净的纯文本段落」。
+ *
+ * `<br>` 保留为换行（由 `breaks` 决定是否转成 `<br>`），块级标签
+ * （`<p>`、`<li>`…）落在段落边界上，其余标签（`<span style=…>` 等）直接去掉。
+ * 返回的文本未转义，由调用方负责转义。
+ */
+function htmlBlock(
+  raw: string,
+  breaks: (html: string) => string,
+  inline: (text: string) => string,
+): string[] {
+  const normalized = raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/t[dh]>/gi, ' ')
+    .replace(/<li\b[^>]*>/gi, '\n• ')
+    .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n\n')
+    .replace(/<(p|div|li|tr|h[1-6]|blockquote)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, '');
+
+  return decodeEntities(normalized)
+    .split(/\n{2,}/)
+    .map((chunk) =>
+      chunk
+        .split('\n')
+        .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .filter(Boolean)
+    .map((chunk) => `<p>${breaks(inline(chunk))}</p>`);
 }
 
 export {esc};

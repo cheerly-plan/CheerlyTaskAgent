@@ -2,6 +2,7 @@ import * as React from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
+  ExternalLink,
   CircleCheck,
   CircleSlash,
   ChevronRight,
@@ -162,15 +163,15 @@ function PageHeader({
   downloadName: string;
 }) {
   return (
-    <header className="mb-6 flex items-start justify-between gap-4">
-      <div className="flex min-w-0 items-start gap-3.5">
+    <header className="mb-5 flex items-center justify-between gap-4">
+      <div className="flex min-w-0 items-center gap-3.5">
         <IconTip label={`返回${backLabel}`}>
           <Button
             variant="outline"
             size="icon-sm"
             onClick={onBack}
             aria-label={`返回${backLabel}`}
-            className="mt-0.5 shrink-0 bg-card"
+            className="shrink-0 bg-card"
           >
             <ArrowLeft />
           </Button>
@@ -179,7 +180,7 @@ function PageHeader({
           <h1 className="truncate text-[21px] font-semibold leading-[1.3] tracking-[-0.02em] text-foreground">
             {title}
           </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-faint">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-faint">
             {kind ? <Badge variant="outline" className="bg-card">{kind}</Badge> : null}
             {id ? <span className="font-mono text-[11.5px]">{id}</span> : null}
             <span className="text-faint/70">·</span>
@@ -206,47 +207,153 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
     document.getElementById(ref)?.scrollIntoView({behavior: 'smooth', block: 'start'});
   };
 
+  // 描述正文按行渲染，保留来源系统里的换行（处理人 / 优先级这类信息已在侧栏）。
+  const descriptionHtml = React.useMemo(
+    () => (summary.description ? renderMarkdown(summary.description, true) : ''),
+    [summary.description],
+  );
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* 结论层 */}
       <ReportOutcomeBanner summary={summary} onJump={jump} />
       <ReportStats stats={summary.stats} />
       <ReportAttentionList attention={summary.attention} />
 
-      {/* 证据层 */}
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
-        <div className="min-w-0 space-y-5">
-          <Panel>
-            <PanelHeading icon={FileDiff}>需求与报告正文</PanelHeading>
-            <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
-          </Panel>
+      {/* 证据层：左侧阅读，右侧随时可查 */}
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="min-w-0">
+          <Section index={1} title="需求描述">
+            {descriptionHtml ? (
+              <div className="report-body text-[13.5px] leading-[1.85]" dangerouslySetInnerHTML={{__html: descriptionHtml}} />
+            ) : (
+              <p className="text-[12.5px] text-faint">这个工单没有填写描述。</p>
+            )}
+          </Section>
 
-          <Panel id="report-changes" className="scroll-mt-6">
-            <PanelHeading
-              icon={FolderTree}
-              extra={<span className="text-[11.5px] text-faint">共 {summary.changedFiles.length} 个文件</span>}
-            >
-              改动明细
-            </PanelHeading>
+          <Section index={2} title="执行报告" meta={reportSections(summary)}>
+            <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
+          </Section>
+
+          <Section
+            id="report-changes"
+            index={3}
+            title="改动明细"
+            meta={summary.changedFiles.length ? `${summary.changedFiles.length} 个文件` : undefined}
+          >
             <ReportChanges summary={summary} />
-          </Panel>
+          </Section>
         </div>
 
-        <aside className="space-y-5 xl:sticky xl:top-0">
-          <Panel>
-            <PanelHeading icon={FolderGit2}>工单信息</PanelHeading>
+        <aside className="space-y-4 xl:sticky xl:top-0">
+          <SideCard title="工单信息" icon={FolderGit2}>
             <ReportMeta summary={summary} />
-          </Panel>
+          </SideCard>
+
+          {summary.metaFields.length ? (
+            <SideCard title="来源信息" icon={ListChecks}>
+              <MetaFields fields={summary.metaFields} />
+            </SideCard>
+          ) : null}
 
           {summary.sync ? (
-            <Panel>
-              <PanelHeading icon={Files}>同步到主仓库</PanelHeading>
+            <SideCard title="同步到主仓库" icon={Files}>
               <ReportSync summary={summary} />
-            </Panel>
+            </SideCard>
           ) : null}
         </aside>
       </div>
     </div>
+  );
+}
+
+/** 报告正文里出现的章节标题，用于给「执行报告」一个概览。 */
+function reportSections(summary: ReportSummary): string | undefined {
+  const body = summary.rest || '';
+  const found = [...body.matchAll(/^##\s+(.+)$/gm)].map((match) => match[1].trim());
+  return found.length ? found.slice(0, 3).join(' · ') : undefined;
+}
+
+/**
+ * 正文分区：序号徽标 + 标题 + 细分隔线。
+ * 比卡片更轻，长文阅读区不再套一层又一层边框。
+ */
+function Section({
+  id,
+  index,
+  title,
+  meta,
+  children,
+}: {
+  id?: string;
+  index: number;
+  title: string;
+  meta?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section id={id} className="scroll-mt-6 border-t border-border pt-5 first:border-t-0 first:pt-0 [&+section]:mt-6">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <span className="grid size-5 shrink-0 place-items-center rounded-md bg-secondary text-[10.5px] font-semibold text-muted-foreground">
+            {index}
+          </span>
+          <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-foreground">{title}</h2>
+        </div>
+        {meta ? <span className="shrink-0 truncate text-[11.5px] text-faint">{meta}</span> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** 侧栏卡片：标题小、内容紧凑。 */
+function SideCard({
+  title,
+  icon: Icon,
+  children,
+}: {
+  title: string;
+  icon: LucideIcon;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-border bg-card px-4 py-3.5">
+      <div className="mb-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+        <Icon className="size-3.5 text-faint" />
+        {title}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** 来源描述里提取出的元信息：标签在上、值在下，链接可点。 */
+function MetaFields({fields}: {fields: ReportSummary['metaFields']}) {
+  return (
+    <dl className="space-y-2.5">
+      {fields.map((field) => (
+        <div key={`${field.label}-${field.value}`} className="min-w-0">
+          <dt className="text-[11px] text-faint">{field.label}</dt>
+          <dd className="mt-0.5 break-all text-[12px] leading-[1.5] text-foreground/85">
+            {field.url ? (
+              <a
+                href={field.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-baseline gap-1 text-primary hover:underline"
+                title={field.url}
+              >
+                打开链接
+                <ExternalLink className="size-3 self-center" />
+              </a>
+            ) : (
+              field.value
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -281,11 +388,6 @@ function ReportOutcomeBanner({summary, onJump}: {summary: ReportSummary; onJump:
               {summary.dryRun ? 'dry-run 试运行' : 'apply 已落地'}
             </Badge>
           ) : null}
-          {summary.diagnostics.map((label) => (
-            <Badge key={label} variant="warning" className="bg-white/70 backdrop-blur-sm">
-              {label}
-            </Badge>
-          ))}
         </div>
         <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">{summary.verdict}</p>
       </div>
@@ -313,10 +415,11 @@ function ReportOutcomeBanner({summary, onJump}: {summary: ReportSummary; onJump:
  * 四张独立卡片在视觉上过于抢眼（大片留白 + 厚重描边），合并成一组更收敛。
  */
 function ReportStats({stats}: {stats: ReportSummary['stats']}) {
-  const icons: LucideIcon[] = [CircleCheck, Timer, Files, FolderTree];
+  const icons: LucideIcon[] = [Timer, Files, FolderTree];
+  const items = stats.filter((stat) => stat.label !== '执行结果');
   return (
-    <div className="grid grid-cols-2 divide-border overflow-hidden rounded-2xl border border-border bg-card shadow-sm sm:grid-cols-4 sm:divide-x">
-      {stats.map((stat, index) => {
+    <div className="grid grid-cols-2 divide-border overflow-hidden rounded-2xl border border-border bg-card shadow-sm sm:grid-cols-3">
+      {items.map((stat, index) => {
         const Icon = icons[index] ?? CircleCheck;
         return (
           <div
@@ -324,7 +427,8 @@ function ReportStats({stats}: {stats: ReportSummary['stats']}) {
             className={cn(
               'px-5 py-4',
               index >= 2 && 'border-t border-border sm:border-t-0',
-              index % 2 === 1 && 'border-l border-border sm:border-l-0',
+              index % 2 === 1 && 'border-l border-border',
+              index === 2 && 'sm:border-l',
             )}
           >
             <div className="flex items-center gap-1.5 text-[11.5px] text-faint">
@@ -585,26 +689,6 @@ function Panel({
     >
       {children}
     </section>
-  );
-}
-
-function PanelHeading({
-  icon: Icon,
-  children,
-  extra,
-}: {
-  icon: LucideIcon;
-  children: React.ReactNode;
-  extra?: React.ReactNode;
-}) {
-  return (
-    <div className="mb-4 flex items-center justify-between gap-3">
-      <div className="flex items-center gap-2 text-[13.5px] font-semibold text-foreground">
-        <Icon className="size-4 text-faint" />
-        {children}
-      </div>
-      {extra}
-    </div>
   );
 }
 

@@ -59,6 +59,10 @@ export interface ReportSummary {
     repo: string;
     worktree: string;
   };
+  /** 来源描述里的元信息行（处理人 / 优先级 / 原始链接…），从正文中剥离。 */
+  metaFields: {label: string; value: string; url?: string}[];
+  /** 描述正文：已去掉元信息行；逐行渲染以便保留换行。 */
+  description: string;
   rest: string;
   diagnostics: string[];
 }
@@ -107,6 +111,52 @@ function listUnderHeading(lines: string[], pattern: RegExp, consumed: Set<number
     if (hit) consumed.add(i);
   }
   return files;
+}
+
+/** 「标签：值」形式的元信息行，标签最多 6 个汉字（处理人 / 优先级 / 原始链接）。 */
+const META_LINE = /^([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9 ]{0,5})[：:]\s*(\S.*)$/;
+/** 链接类标签，值渲染成可点链接。 */
+const LINK_LABEL = /链接|地址|URL|url/;
+
+/**
+ * 把「## 需求描述」拆成元信息 + 正文。
+ *
+ * 来源系统（TAPD）把处理人 / 优先级 / 原始链接直接拼在描述开头，逐行堆叠在
+ * 正文里既占空间、又和工单信息重复。这里把这些行提成结构化字段，正文只剩
+ * 真正的需求内容；正文里的普通句子（标签超过 6 字、或值过长）不会被误收。
+ */
+function describeBody(
+  lines: string[],
+  consumed: Set<number>,
+): {metaFields: {label: string; value: string; url?: string}[]; description: string; sectionEnd: number} {
+  const start = lines.findIndex((line) => /^#{1,6}\s/.test(line) && /需求描述|描述/.test(line));
+  if (start < 0) return {metaFields: [], description: '', sectionEnd: -1};
+
+  const body: string[] = [];
+  const metaFields: {label: string; value: string; url?: string}[] = [];
+
+  // `i` 在循环外声明：循环结束后它就是下一个标题的位置（小节结束处）。
+  let i = start + 1;
+  for (; i < lines.length && !/^#{1,6}\s/.test(lines[i]); i++) {
+    const line = lines[i].trim();
+    if (!line) {
+      body.push('');
+      continue;
+    }
+    const match = line.match(META_LINE);
+    // 只收开头连续出现的元信息；正文中间的「注意：…」类句子保持原样。
+    const inPreamble = body.every((entry) => !entry.trim());
+    if (match && inPreamble && match[2].length <= 200) {
+      const url = LINK_LABEL.test(match[1]) && /^https?:\/\//.test(match[2]) ? match[2] : undefined;
+      metaFields.push({label: match[1].trim(), value: match[2].trim(), url});
+      consumed.add(i);
+      continue;
+    }
+    body.push(lines[i]);
+  }
+
+  // 正文里已单独展示，报告正文（rest）不再重复这一段。
+  return {metaFields, description: body.join('\n').trim(), sectionEnd: i};
 }
 
 function factsUnderHeading(lines: string[], pattern: RegExp): [string, string][] {
@@ -353,6 +403,14 @@ export function analyzeReport(markdown: string): ReportSummary {
     attention,
     modules,
     groups,
+    ...(() => {
+      const described = describeBody(lines, consumed);
+      // 需求描述已由「需求描述」分区单独展示，正文里跳过整节（标题 + 内容）。
+      if (described.sectionEnd < 0) return described;
+      const start = lines.findIndex((line) => /^#{1,6}\s/.test(line) && /需求描述|描述/.test(line));
+      for (let i = start; i <= described.sectionEnd && i < lines.length; i++) consumed.add(i);
+      return described;
+    })(),
     rest: lines.filter((_, index) => !consumed.has(index)).join('\n'),
     diagnostics: [truncated ? '原始输出被截断' : '', noFinal ? '无明确最终结论' : ''].filter(Boolean),
   };
