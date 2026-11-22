@@ -9,14 +9,20 @@ import {SelectField} from '@/components/select-field';
 import {DashboardPage} from '@/pages/dashboard-page';
 import {DataSourcesPage} from '@/pages/data-sources-page';
 import {HistoryPage} from '@/pages/history-page';
+import {ReportPage} from '@/pages/report-page';
 import {MappingsPage} from '@/pages/mappings-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
 import {Toaster} from '@/components/ui/sonner';
 
 function Shell() {
-  const {conn, connText, openNewTask} = useApp();
-  const [page, setPage] = React.useState<PageKey>('dashboard');
+  const {conn, connText, openNewTask, page, setPage, reportView, closeReport} = useApp();
+
+  // 从侧栏 / 下拉切换到别的页面时，顺带清空报告状态（下次打开重新加载）。
+  const goPage = (next: PageKey) => {
+    if (next !== 'report') closeReport();
+    setPage(next);
+  };
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -36,7 +42,7 @@ function Shell() {
               className="w-[116px]"
               value={page}
               options={NAV_ITEMS.map((item) => ({value: item.key, label: item.label}))}
-              onChange={(value) => setPage(value as PageKey)}
+              onChange={(value) => goPage(value as PageKey)}
             />
             <Button size="icon-sm" onClick={openNewTask} aria-label="新建任务" title="新建任务">
               <Plus />
@@ -46,7 +52,7 @@ function Shell() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <AppSidebar page={page} onPage={setPage} />
+        <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} />
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
           {page === 'dashboard' ? <DashboardPage /> : null}
           {page === 'tasks' ? <TasksPage onOpenHistory={() => setPage('history')} /> : null}
@@ -54,6 +60,7 @@ function Shell() {
           {page === 'mapping' ? <MappingsPage /> : null}
           {page === 'sources' ? <DataSourcesPage /> : null}
           {page === 'settings' ? <SettingsPage /> : null}
+          {page === 'report' ? <ReportPage /> : null}
         </main>
       </div>
 
@@ -63,8 +70,10 @@ function Shell() {
 }
 
 export default function App() {
+  // 页面状态放在 Provider 之上：侧栏、页面、报告详情页共用同一套导航。
+  const [page, setPage] = React.useState<PageKey>('dashboard');
   return (
-    <AppProvider>
+    <AppProvider page={page} setPage={setPage}>
       <Shell />
     </AppProvider>
   );

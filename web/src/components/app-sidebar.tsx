@@ -10,7 +10,12 @@ const CONN_STYLE: Record<ConnState, {className: string; dot: string}> = {
   reconnecting: {className: 'text-warning-foreground bg-warning-muted', dot: '#d98a0b'},
 };
 
-export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' | 'settings';
+export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' | 'settings' | 'report';
+
+/** 报告详情页不是主菜单项；它借用来源列表的 key 保持导航高亮。 */
+export function navKeyOf(page: PageKey, reportFrom?: PageKey): PageKey {
+  return page === 'report' && reportFrom && reportFrom !== 'report' ? reportFrom : page;
+}
 
 export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
   {key: 'dashboard', label: '概览', icon: LayoutDashboard},
@@ -24,15 +29,18 @@ export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
 interface AppSidebarProps {
   page: PageKey;
   onPage: (page: PageKey) => void;
+  /** 报告详情页高亮它来自的列表（任务中心 / 历史记录）。 */
+  reportFrom?: PageKey;
 }
 
 /** 左侧导航：品牌 + 主操作（新建任务）+ 页面菜单 + 连接状态。 */
-export function AppSidebar({page, onPage}: AppSidebarProps) {
+export function AppSidebar({page, onPage, reportFrom}: AppSidebarProps) {
+  const activeKey = navKeyOf(page, reportFrom);
   return (
     <aside className="hidden w-[220px] shrink-0 flex-col border-r border-border bg-card lg:flex">
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
         {NAV_ITEMS.map((item) => {
-          const active = item.key === page;
+          const active = item.key === activeKey;
           return (
             <button
               key={item.key}

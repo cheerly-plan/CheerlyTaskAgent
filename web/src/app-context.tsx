@@ -1,16 +1,16 @@
 import * as React from 'react';
 import {toast} from 'sonner';
 
+
 import {ConfirmDialog} from '@/components/dialogs/confirm-dialog';
 import {FolderPickerDialog} from '@/components/dialogs/folder-picker-dialog';
 import {NewTaskDialog, type ManualTaskDraft} from '@/components/dialogs/new-task-dialog';
 import {MappingDialog} from '@/components/dialogs/mapping-dialog';
-import {ReportDialog} from '@/components/dialogs/report-dialog';
 import {ScanDialog} from '@/components/dialogs/scan-dialog';
 import {TapdSyncDialog} from '@/components/dialogs/tapd-sync-dialog';
-import type {ConnState} from '@/components/app-sidebar';
+import type {ConnState, PageKey} from '@/components/app-sidebar';
 import type {ActionSelection} from '@/components/task-actions';
-import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
+import {analyzeReport, type ReportSummary} from '@/lib/report-view';
 import {
   endpoints,
   type BackendInfo,
@@ -63,6 +63,21 @@ interface AppContextValue {
   conn: ConnState;
   connText: string;
   loading: boolean;
+  /** 当前页面；报告详情页也参与这套导航（由 App 维护）。 */
+  page: PageKey;
+  setPage: (page: PageKey) => void;
+  /** 报告详情页数据（可见性由 page 是否为 'report' 决定）。 */
+  reportView: ReportViewState & {
+    /** 已解析的报告摘要；没有生成报告时为 null。 */
+    summary: ReportSummary | null;
+    /** 来源页面的中文名，用于「返回」按钮。 */
+    backLabel: string;
+    /** 来源页面，供侧栏高亮。 */
+    backFrom: PageKey;
+  };
+  /** 打开某工单的报告详情页（没有报告时展示工单当前信息）。 */
+  openReport: (id: string) => Promise<void>;
+  closeReport: () => void;
   selections: Record<string, ActionSelection>;
   setSelection: (id: string, key: keyof ActionSelection, value: string) => void;
   reloadItems: () => Promise<void>;
@@ -106,26 +121,54 @@ interface FolderPickerState {
   apply: ((path: string) => void) | null;
 }
 
-interface ReportState {
-  open: boolean;
-  title: string;
-  /** 报告 Markdown 原文；没有生成报告时为空，由 fallbackMarkdown 兜底。 */
+/**
+ * 报告详情页的状态（整页视图，不是弹窗）。
+ * 可见性由 App 维护的 `page === 'report'` 决定；`from` 记录来源列表，
+ * 「返回」时据此跳回原来的页面。
+ */
+export interface ReportViewState {
+  loading: boolean;
+  error: string | null;
+  /** 被查看的工单（来自列表缓存，可能为空，比如列表已刷新）。 */
+  item: WorkItem | null;
+  /** 报告 Markdown 原文；没有生成报告时为 null。 */
   markdown: string | null;
-  fallbackMarkdown: string | null;
   downloadUrl: string | null;
   downloadName: string;
+  /** 打开报告前所在的页面，用于「返回」。 */
+  from: PageKey;
 }
 
-const EMPTY_REPORT: ReportState = {
-  open: false,
-  title: '',
+const EMPTY_REPORT: ReportViewState = {
+  loading: false,
+  error: null,
+  item: null,
   markdown: null,
-  fallbackMarkdown: null,
   downloadUrl: null,
   downloadName: '',
+  from: 'history',
 };
 
-export function AppProvider({children}: {children: React.ReactNode}) {
+/** 报告页在导航里借用来源列表的 key（报告页本身不是独立主菜单项）。 */
+const PAGE_LABEL: Record<PageKey, string> = {
+  dashboard: '概览',
+  tasks: '任务中心',
+  history: '历史记录',
+  mapping: '项目映射',
+  sources: '数据源',
+  settings: '系统设置',
+  report: '报告',
+};
+
+export function AppProvider({
+  children,
+  page,
+  setPage,
+}: {
+  children: React.ReactNode;
+  page: PageKey;
+  setPage: (page: PageKey) => void;
+}) {
   const [items, setItems] = React.useState<WorkItem[]>([]);
   const [itemsTotal, setItemsTotal] = React.useState(0);
   // 历史记录页用独立的分页状态：按页向后端要数据，不随全局全量列表增长。
@@ -152,7 +195,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
     open: false,
     editing: null,
   });
-  const [report, setReport] = React.useState<ReportState>(EMPTY_REPORT);
+  const [report, setReport] = React.useState<ReportViewState>(EMPTY_REPORT);
   const [tapdProjects, setTapdProjects] = React.useState<TapdWorkspace[]>([]);
   const [confirmState, setConfirmState] = React.useState({open: false, message: ''});
   const confirmResolver = React.useRef<((value: boolean) => void) | null>(null);
@@ -397,59 +440,37 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   // ── 任务动作 ──────────────────────────────────────────────────────────────
   const openReport = React.useCallback(
     async (id: string) => {
-      const item = items.find((entry) => entry.id === id);
-      const title = '工单详情 / 报告 · ' + id.slice(-8);
-      if (item?.report_path) {
-        try {
-          const markdown = await endpoints.report(id);
-          setReport({
-            open: true,
-            title,
-            markdown,
-            fallbackMarkdown: null,
-            downloadUrl: endpoints.reportUrl(id),
-            downloadName: `${id}.md`,
-          });
-        } catch (error) {
-          toast.error('打开报告失败：' + (error as Error).message);
-        }
-        return;
-      }
-
-      const summary = item
-        ? (() => {
-            const backend = item.executor
-              ? backends.find((entry) => entry.id === item.executor)
-              : undefined;
-            const backendModels = backend?.models?.length ? backend.models : models;
-            const modelId = item.model || effectiveDefaultModelId(backendModels, backend?.default_model);
-            const modelLine = '模型：' + resolvedModelLabel(backendModels, modelId);
-            return [
-              '标题：' + item.title,
-              '状态：' + item.status,
-              '类型：' + item.kind + '　来源：' + item.source,
-              '项目：' + (item.repo || '未映射') + '　模式：' + item.exec_mode,
-              modelLine,
-              item.stage ? '阶段：' + item.stage : '',
-              item.error ? '错误：' + item.error : '',
-              '',
-              '该工单还没有生成报告。执行 dry-run 或 apply 后即可查看完整报告。',
-            ]
-              .filter((line) => line !== '')
-              .join('\n');
-          })()
-        : '工单不存在或已被删除。';
-      setReport({
-        open: true,
-        title,
+      const item = items.find((entry) => entry.id === id) ?? null;
+      // 先切页再取数：报告页自己渲染加载态，避免点击后界面毫无反应。
+      setPage('report');
+      setReport((prev) => ({
+        ...prev,
+        item,
+        loading: Boolean(item?.report_path),
+        error: null,
         markdown: null,
-        fallbackMarkdown: summary,
-        downloadUrl: null,
-        downloadName: '',
-      });
+        downloadUrl: item?.report_path ? endpoints.reportUrl(id) : null,
+        downloadName: `${id}.md`,
+        from: page,
+      }));
+      if (!item?.report_path) return;
+
+      try {
+        const markdown = await endpoints.report(id);
+        setReport((prev) => ({...prev, loading: false, error: null, markdown}));
+      } catch (error) {
+        const message = (error as Error).message;
+        setReport((prev) => ({...prev, loading: false, error: message}));
+        toast.error('打开报告失败：' + message);
+      }
     },
-    [items, backends, models],
+    [items, page, setPage],
   );
+
+  const closeReport = React.useCallback(() => {
+    setReport((prev) => ({...prev, loading: false, error: null}));
+    setPage(report.from);
+  }, [report.from, setPage]);
 
   const runItemAction = React.useCallback(
     async (action: ItemAction, id: string) => {
@@ -764,7 +785,23 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         ? '重连中…'
         : '连接中…';
 
+  // 解析一次报告，页面里多处共用；没有报告时为 null（走工单信息降级视图）。
+  const reportView = React.useMemo(
+    () => ({
+      ...report,
+      summary: report.markdown ? analyzeReport(report.markdown) : null,
+      backLabel: PAGE_LABEL[report.from],
+      backFrom: report.from,
+    }),
+    [report],
+  );
+
   const value: AppContextValue = {
+    page,
+    setPage,
+    reportView,
+    openReport,
+    closeReport,
     items,
     itemsTotal,
     historyItems: historyPage.items,
@@ -868,15 +905,6 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         onPickFolder={(apply) => setFolderPicker({open: true, apply})}
       />
 
-      <ReportDialog
-        open={report.open}
-        onOpenChange={(open) => setReport((prev) => ({...prev, open}))}
-        title={report.title}
-        markdown={report.markdown}
-        fallbackMarkdown={report.fallbackMarkdown}
-        downloadUrl={report.downloadUrl}
-        downloadName={report.downloadName}
-      />
 
       <ConfirmDialog
         open={confirmState.open}

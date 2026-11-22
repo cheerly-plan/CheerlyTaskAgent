@@ -127,15 +127,19 @@ export function TaskActions({
         )
       ) : null}
 
+      {/* 用 xs 尺寸而不是 28px 的图标按钮：带文字的按钮整体可点，
+          不会再出现「点在图标的空白处没反应」的情况。 */}
       {item.report_path ? (
         <Button
-          size="icon-sm"
+          size="xs"
           variant="ghost"
           onClick={() => onAction('report', item.id)}
           title="查看执行报告"
           aria-label="查看执行报告"
+          className="px-2 text-primary hover:bg-accent"
         >
           <FileText />
+          报告
         </Button>
       ) : null}
 

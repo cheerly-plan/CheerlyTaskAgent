@@ -3,7 +3,7 @@
  *
  * 只覆盖后端 `report.py` 生成的结构：标题、表格、围栏代码、引用、列表，
  * 以及报告里自定义的 <details><summary> 折叠块。输出为 HTML 字符串，
- * 由 ReportDialog 通过 dangerouslySetInnerHTML 注入 `.report-body`。
+ * 由报告详情页（pages/report-page.tsx）通过 dangerouslySetInnerHTML 注入 `.report-body`。
  */
 
 const esc = (value: unknown) =>
@@ -35,14 +35,27 @@ export function renderMarkdown(markdown: string): string {
   while (i < lines.length) {
     const line = lines[i];
 
+    // 落单的 </details>（没有对应的开启标签）：跳过，避免当成正文文本显示。
+    // 报告可能被按行切过（比如只保留正文段落），此时闭合标签会单独出现。
+    if (/^\s*<\/details>/i.test(line)) {
+      i++;
+      continue;
+    }
+
     // 后端报告里可能带 <details> 折叠块：原样解析，避免被 inline() 二次转义
     if (/^\s*<details\b/i.test(line)) {
       const block: string[] = [];
+      let depth = 0;
       while (i < lines.length) {
-        block.push(lines[i]);
-        if (/^\s*<\/details>/i.test(lines[i])) {
-          i++;
-          break;
+        const current = lines[i];
+        block.push(current);
+        if (/^\s*<details\b/i.test(current)) depth += 1;
+        if (/^\s*<\/details>/i.test(current)) {
+          depth -= 1;
+          if (depth === 0) {
+            i++;
+            break;
+          }
         }
         i++;
       }
@@ -56,9 +69,12 @@ export function renderMarkdown(markdown: string): string {
       }
       // 折叠块内部可能是最终结论的 Markdown（标题/列表/加粗），也可能是原始
       // 事件流的 ```text 代码块。交给同一个渲染器递归处理，避免把 Markdown
-      // 标记当成纯文本显示。
+      // 标记当成纯文本显示。没等到闭合标签时内容照样渲染，结构由外层补齐。
       const innerLines = block.slice(1).filter(
-        (current) => !/^\s*<\/details>/i.test(current) && !/<summary[^>]*>/i.test(current),
+        (current) =>
+          !/^\s*<\/details>/i.test(current) &&
+          !/<summary[^>]*>/i.test(current) &&
+          !/^\s*<details\b/i.test(current),
       );
       const inner = renderMarkdown(innerLines.join('\n'));
       out.push(`<details><summary>${inline(summaryText)}</summary>${inner}</details>`);
