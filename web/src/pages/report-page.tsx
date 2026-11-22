@@ -211,7 +211,7 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
       {/* 结论层 */}
       <ReportOutcomeBanner summary={summary} onJump={jump} />
       <ReportStats stats={summary.stats} />
-      <ReportAttentionList attention={summary.attention} onJump={jump} />
+      <ReportAttentionList attention={summary.attention} />
 
       {/* 证据层 */}
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_310px]">
@@ -348,7 +348,7 @@ function ReportStats({stats}: {stats: ReportSummary['stats']}) {
 }
 
 /** 需要关注：全宽分段。正常时收成一行，不占版面。 */
-function ReportAttentionList({attention, onJump}: {attention: Attention[]; onJump: (ref: string) => void}) {
+function ReportAttentionList({attention}: {attention: Attention[]}) {
   if (!attention.length) {
     return (
       <p className="flex items-center gap-1.5 px-1 text-[11.5px] text-faint">
@@ -367,7 +367,6 @@ function ReportAttentionList({attention, onJump}: {attention: Attention[]; onJum
       <ul className="grid gap-2.5 md:grid-cols-2">
         {attention.map((entry) => {
           const Icon = ATTENTION_ICON[entry.kind];
-          const target = entry.kind === 'files' ? 'report-changes' : entry.kind === 'warning' ? 'report-body' : null;
           return (
             <li
               key={`${entry.kind}-${entry.title}`}
@@ -396,16 +395,6 @@ function ReportAttentionList({attention, onJump}: {attention: Attention[]; onJum
                       ))}
                       {entry.more ? <span className="self-center text-[10.5px] text-faint">等 {entry.more} 个</span> : null}
                     </div>
-                  ) : null}
-                  {target ? (
-                    <button
-                      type="button"
-                      onClick={() => onJump(target)}
-                      className="mt-2 flex items-center gap-0.5 text-[11px] font-medium text-primary hover:underline"
-                    >
-                      查看详情
-                      <ChevronRight className="size-3" />
-                    </button>
                   ) : null}
                 </div>
               </div>
@@ -451,17 +440,17 @@ function ReportMeta({summary}: {summary: ReportSummary}) {
             </dd>
           </div>
         ))}
-        {/* 编号 / ID 这类长串独占一行，避免在 60px 标签列后被挤成两截 */}
+        {/* 编号 / ID 这类长串：标签在上、值独占整行，避免在 60px 标签列后被挤成一截 */}
         {sourceRef ? (
-          <div key="ref" className={rowClass}>
+          <div key="ref" className="border-b border-border/60 pb-2">
             <dt className={labelClass}>单号</dt>
-            <dd className={cn(valueClass, 'break-all font-mono text-[11px]')}>{sourceRef}</dd>
+            <dd className="mt-1 break-all font-mono text-[11px] leading-[1.6] text-foreground/85">{sourceRef}</dd>
           </div>
         ) : null}
         {meta.id ? (
-          <div key="id" className={rowClass}>
+          <div key="id">
             <dt className={labelClass}>ID</dt>
-            <dd className={cn(valueClass, 'break-all font-mono text-[11px]')}>{meta.id}</dd>
+            <dd className="mt-1 break-all font-mono text-[11px] leading-[1.6] text-foreground/85">{meta.id}</dd>
           </div>
         ) : null}
       </dl>
