@@ -50,11 +50,11 @@ const TONE_TEXT: Record<Tone, string> = {
   neutral: 'text-foreground',
 };
 
-const TONE_ICON_BG: Record<Tone, string> = {
-  success: 'bg-success-muted text-success-foreground',
-  warning: 'bg-warning-muted text-warning-foreground',
-  danger: 'bg-destructive-muted text-destructive',
-  info: 'bg-info-muted text-info-foreground',
+const TONE_SOLID: Record<Tone, string> = {
+  success: 'bg-success text-white',
+  warning: 'bg-warning text-white',
+  danger: 'bg-destructive text-white',
+  info: 'bg-info text-white',
   neutral: 'bg-secondary text-muted-foreground',
 };
 
@@ -177,12 +177,12 @@ function PageHeader({
           </Button>
         </IconTip>
         <div className="min-w-0">
-          <h1 className="truncate text-[21px] font-semibold leading-[1.3] tracking-[-0.02em] text-foreground">
+          <h1 className="truncate text-[23px] font-semibold leading-[1.3] tracking-[-0.02em] text-foreground">
             {title}
           </h1>
-          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-faint">
+          <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[12.5px] text-faint">
             {kind ? <Badge variant="outline" className="bg-card">{kind}</Badge> : null}
-            {id ? <span className="font-mono text-[11.5px]">{id}</span> : null}
+            {id ? <span className="font-mono text-[12px]">{id}</span> : null}
             <span className="text-faint/70">·</span>
             <button type="button" onClick={onBack} className="hover:text-foreground hover:underline">
               {backLabel}
@@ -220,47 +220,52 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
       <ReportStats stats={summary.stats} />
       <ReportAttentionList attention={summary.attention} />
 
-      {/* 证据层：左侧阅读，右侧随时可查 */}
-      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="min-w-0">
-          <Section index={1} title="需求描述">
+      {/* 证据层：左侧一张纸面承载长文，右侧一张信息卡随时可查 */}
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <Sheet>
+          <SheetSection title="需求描述">
             {descriptionHtml ? (
-              <div className="report-body text-[13.5px] leading-[1.85]" dangerouslySetInnerHTML={{__html: descriptionHtml}} />
+              <div
+                className="report-body text-[13.5px] leading-[1.85]"
+                dangerouslySetInnerHTML={{__html: descriptionHtml}}
+              />
             ) : (
               <p className="text-[12.5px] text-faint">这个工单没有填写描述。</p>
             )}
-          </Section>
+          </SheetSection>
 
-          <Section index={2} title="执行报告" meta={reportSections(summary)}>
+          <SheetSection title="执行报告" meta={reportSections(summary)}>
             <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
-          </Section>
+          </SheetSection>
 
-          <Section
+          <SheetSection
             id="report-changes"
-            index={3}
             title="改动明细"
             meta={summary.changedFiles.length ? `${summary.changedFiles.length} 个文件` : undefined}
           >
             <ReportChanges summary={summary} />
-          </Section>
-        </div>
+          </SheetSection>
+        </Sheet>
 
-        <aside className="space-y-4 xl:sticky xl:top-0">
-          <SideCard title="工单信息" icon={FolderGit2}>
-            <ReportMeta summary={summary} />
-          </SideCard>
+        {/* 不做 sticky：信息卡比视口高，固定后顶部会被裁掉，反而不好读。 */}
+        <aside>
+          <SidePanel>
+            <SideGroup title="工单信息" icon={FolderGit2}>
+              <ReportMeta summary={summary} />
+            </SideGroup>
 
-          {summary.metaFields.length ? (
-            <SideCard title="来源信息" icon={ListChecks}>
-              <MetaFields fields={summary.metaFields} />
-            </SideCard>
-          ) : null}
+            {summary.metaFields.length ? (
+              <SideGroup title="来源信息" icon={ListChecks}>
+                <MetaFields fields={summary.metaFields} />
+              </SideGroup>
+            ) : null}
 
-          {summary.sync ? (
-            <SideCard title="同步到主仓库" icon={Files}>
-              <ReportSync summary={summary} />
-            </SideCard>
-          ) : null}
+            {summary.sync ? (
+              <SideGroup title="同步到主仓库" icon={Files} last>
+                <ReportSync summary={summary} />
+              </SideGroup>
+            ) : null}
+          </SidePanel>
         </aside>
       </div>
     </div>
@@ -275,31 +280,33 @@ function reportSections(summary: ReportSummary): string | undefined {
 }
 
 /**
- * 正文分区：序号徽标 + 标题 + 细分隔线。
- * 比卡片更轻，长文阅读区不再套一层又一层边框。
+ * 纸面：整个正文区共用一张白色底，内部用细分隔线分区。
+ *
+ * 之前正文直接铺在灰色页底上、只有几根细线，右栏却是白卡片，
+ * 左右两种视觉语言并存，看起来像左半边没做完。
  */
-function Section({
+function Sheet({children}: {children: React.ReactNode}) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">{children}</div>
+  );
+}
+
+/** 纸面内的一节：标题 + 可选的右侧摘要，节与节之间用分隔线隔开。 */
+function SheetSection({
   id,
-  index,
   title,
   meta,
   children,
 }: {
   id?: string;
-  index: number;
   title: string;
   meta?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="scroll-mt-6 border-t border-border pt-5 first:border-t-0 first:pt-0 [&+section]:mt-6">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <span className="grid size-5 shrink-0 place-items-center rounded-md bg-secondary text-[10.5px] font-semibold text-muted-foreground">
-            {index}
-          </span>
-          <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-foreground">{title}</h2>
-        </div>
+    <section id={id} className="scroll-mt-6 px-6 py-5 [&+section]:border-t [&+section]:border-border/70 sm:px-7">
+      <div className="mb-3.5 flex items-baseline justify-between gap-4">
+        <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">{title}</h2>
         {meta ? <span className="shrink-0 truncate text-[11.5px] text-faint">{meta}</span> : null}
       </div>
       {children}
@@ -307,20 +314,28 @@ function Section({
   );
 }
 
-/** 侧栏卡片：标题小、内容紧凑。 */
-function SideCard({
+/** 信息卡：一整张卡片里分三组，比三张独立小卡更安静、更好扫读。 */
+function SidePanel({children}: {children: React.ReactNode}) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">{children}</div>
+  );
+}
+
+function SideGroup({
   title,
   icon: Icon,
+  last,
   children,
 }: {
   title: string;
   icon: LucideIcon;
+  last?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-4 py-3.5">
-      <div className="mb-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-        <Icon className="size-3.5 text-faint" />
+    <section className={cn('px-5 py-4', !last && 'border-b border-border/70')}>
+      <div className="mb-3 flex items-center gap-2 text-[12.5px] font-semibold text-foreground">
+        <Icon className="size-4 text-faint" />
         {title}
       </div>
       {children}
@@ -334,8 +349,8 @@ function MetaFields({fields}: {fields: ReportSummary['metaFields']}) {
     <dl className="space-y-2.5">
       {fields.map((field) => (
         <div key={`${field.label}-${field.value}`} className="min-w-0">
-          <dt className="text-[11px] text-faint">{field.label}</dt>
-          <dd className="mt-0.5 break-all text-[12px] leading-[1.5] text-foreground/85">
+          <dt className="text-[11.5px] text-faint">{field.label}</dt>
+          <dd className="mt-1 break-all text-[12.5px] leading-[1.55] text-foreground/85">
             {field.url ? (
               <a
                 href={field.url}
@@ -362,34 +377,36 @@ function ReportOutcomeBanner({summary, onJump}: {summary: ReportSummary; onJump:
   const tone: Tone = summary.outcome === 'success' ? 'success' : summary.outcome === 'failure' ? 'danger' : 'neutral';
   const Icon = tone === 'success' ? CircleCheck : tone === 'danger' ? AlertTriangle : CircleSlash;
   const conflicts = summary.conflicted.length;
+  // 结论横幅的标题已经写明结果，副标题只保留细节，避免「执行成功」重复两次。
+  const detail = summary.verdict.includes(' · ') ? summary.verdict.slice(summary.verdict.indexOf(' · ') + 3) : '';
 
   return (
     <div
       className={cn(
-        'flex items-center gap-4 rounded-2xl border px-5 py-4',
-        tone === 'success' && 'border-success/20 bg-gradient-to-r from-success-muted/80 to-success-muted/30',
-        tone === 'danger' && 'border-destructive/20 bg-gradient-to-r from-destructive-muted/80 to-destructive-muted/30',
-        tone === 'neutral' && 'border-border bg-secondary/50',
+        'flex items-center gap-4 rounded-2xl border px-6 py-5',
+        tone === 'success' && 'border-success/25 bg-gradient-to-r from-success-muted to-success-muted/30',
+        tone === 'danger' && 'border-destructive/25 bg-gradient-to-r from-destructive-muted to-destructive-muted/30',
+        tone === 'neutral' && 'border-border bg-secondary/60',
       )}
     >
-      <span className={cn('grid size-11 shrink-0 place-items-center rounded-xl', TONE_ICON_BG[tone])}>
-        <Icon className="size-5" />
+      <span className={cn('grid size-12 shrink-0 place-items-center rounded-2xl shadow-sm', TONE_SOLID[tone])}>
+        <Icon className="size-6" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className={cn('text-[15px] font-semibold', TONE_TEXT[tone])}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span className={cn('text-[17px] font-semibold tracking-[-0.01em]', TONE_TEXT[tone])}>
             {summary.outcome === 'success' ? '执行成功' : summary.outcome === 'failure' ? '执行未通过' : '尚未执行'}
           </span>
           {summary.meta.mode ? (
             <Badge
               variant={summary.dryRun ? 'info' : 'purple'}
-              className="bg-white/70 backdrop-blur-sm"
+              className="bg-white/80"
             >
               {summary.dryRun ? 'dry-run 试运行' : 'apply 已落地'}
             </Badge>
           ) : null}
         </div>
-        <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">{summary.verdict}</p>
+        {detail ? <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{detail}</p> : null}
       </div>
       {conflicts || summary.sync?.error ? (
         <button
@@ -431,19 +448,19 @@ function ReportStats({stats}: {stats: ReportSummary['stats']}) {
               index === 2 && 'sm:border-l',
             )}
           >
-            <div className="flex items-center gap-1.5 text-[11.5px] text-faint">
-              <Icon className={cn('size-3.5', TONE_TEXT[stat.tone])} />
+            <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+              <Icon className={cn('size-4', TONE_TEXT[stat.tone])} />
               {stat.label}
             </div>
             <div
               className={cn(
-                'mt-1.5 truncate text-[23px] font-semibold leading-none tracking-[-0.03em]',
+                'mt-2 truncate text-[27px] font-semibold leading-none tracking-[-0.03em]',
                 TONE_TEXT[stat.tone],
               )}
             >
               {stat.value}
             </div>
-            {stat.hint ? <div className="mt-1.5 truncate text-[11px] text-faint">{stat.hint}</div> : null}
+            {stat.hint ? <div className="mt-2 truncate text-[11.5px] text-faint">{stat.hint}</div> : null}
           </div>
         );
       })}
@@ -455,8 +472,8 @@ function ReportStats({stats}: {stats: ReportSummary['stats']}) {
 function ReportAttentionList({attention}: {attention: Attention[]}) {
   if (!attention.length) {
     return (
-      <p className="flex items-center gap-1.5 px-1 text-[11.5px] text-faint">
-        <CircleCheck className="size-3.5 text-success/80" />
+      <p className="flex items-center gap-2 px-1 text-[12.5px] text-faint">
+        <CircleCheck className="size-4 text-success/80" />
         没有需要特别处理的事项
       </p>
     );
@@ -464,28 +481,28 @@ function ReportAttentionList({attention}: {attention: Attention[]}) {
 
   return (
     <section id="report-attention" className="scroll-mt-6">
-      <div className="mb-2 flex items-center gap-1.5 px-0.5 text-[12px] font-semibold text-foreground">
-        <ListChecks className="size-3.5 text-faint" />
+      <div className="mb-2.5 flex items-center gap-2 px-0.5 text-[12.5px] font-semibold text-foreground">
+        <ListChecks className="size-4 text-faint" />
         需要关注
       </div>
-      <ul className="grid gap-2.5 md:grid-cols-2">
+      <ul className="grid gap-3 md:grid-cols-2">
         {attention.map((entry) => {
           const Icon = ATTENTION_ICON[entry.kind];
           return (
             <li
               key={`${entry.kind}-${entry.title}`}
               className={cn(
-                'rounded-xl border border-border/70 border-l-[3px] px-4 py-3',
+                'rounded-xl border border-border/70 border-l-[3px] px-4 py-3.5',
                 ALERT_ACCENT[entry.tone],
                 ALERT_BG[entry.tone],
               )}
             >
-              <div className="flex items-start gap-2.5">
-                <Icon className={cn('mt-0.5 size-4 shrink-0', TONE_TEXT[entry.tone])} />
+              <div className="flex items-start gap-3">
+                <Icon className={cn('mt-0.5 size-[18px] shrink-0', TONE_TEXT[entry.tone])} />
                 <div className="min-w-0 flex-1">
-                  <div className={cn('text-[12.5px] font-semibold', TONE_TEXT[entry.tone])}>{entry.title}</div>
+                  <div className={cn('text-[13px] font-semibold', TONE_TEXT[entry.tone])}>{entry.title}</div>
                   {entry.detail ? (
-                    <p className="mt-1 break-words text-[11.5px] leading-relaxed text-muted-foreground">{entry.detail}</p>
+                    <p className="mt-1.5 break-words text-[12px] leading-relaxed text-muted-foreground">{entry.detail}</p>
                   ) : null}
                   {entry.items?.length ? (
                     <div className="mt-2 flex flex-wrap gap-1">
@@ -529,9 +546,9 @@ function ReportMeta({summary}: {summary: ReportSummary}) {
   ].filter((row) => row.value);
 
   const rowClass =
-    'grid grid-cols-[60px_minmax(0,1fr)] items-start gap-2 border-b border-border/60 py-2 first:pt-0';
-  const labelClass = 'pt-px text-[11.5px] text-faint';
-  const valueClass = 'min-w-0 break-words text-[12px] leading-[1.55] text-foreground/85';
+    'grid grid-cols-[62px_minmax(0,1fr)] items-start gap-2 border-b border-border/60 py-2.5 first:pt-0';
+  const labelClass = 'pt-px text-[12px] text-faint';
+  const valueClass = 'min-w-0 break-words text-[12.5px] leading-[1.55] text-foreground/85';
 
   return (
     <div className="space-y-4">
@@ -539,7 +556,7 @@ function ReportMeta({summary}: {summary: ReportSummary}) {
         {rows.map((row) => (
           <div key={row.label} className={rowClass}>
             <dt className={labelClass}>{row.label}</dt>
-            <dd className={cn(valueClass, row.label === '仓库' && 'font-mono text-[11px]')} title={row.label === '仓库' ? meta.repo : row.value}>
+            <dd className={cn(valueClass, row.label === '仓库' && 'font-mono text-[11.5px]')} title={row.label === '仓库' ? meta.repo : row.value}>
               {row.value}
             </dd>
           </div>
@@ -548,13 +565,13 @@ function ReportMeta({summary}: {summary: ReportSummary}) {
         {sourceRef ? (
           <div key="ref" className="border-b border-border/60 pb-2">
             <dt className={labelClass}>单号</dt>
-            <dd className="mt-1 break-all font-mono text-[11px] leading-[1.6] text-foreground/85">{sourceRef}</dd>
+            <dd className="mt-1.5 break-all font-mono text-[11.5px] leading-[1.6] text-foreground/85">{sourceRef}</dd>
           </div>
         ) : null}
         {meta.id ? (
           <div key="id">
             <dt className={labelClass}>ID</dt>
-            <dd className="mt-1 break-all font-mono text-[11px] leading-[1.6] text-foreground/85">{meta.id}</dd>
+            <dd className="mt-1.5 break-all font-mono text-[11.5px] leading-[1.6] text-foreground/85">{meta.id}</dd>
           </div>
         ) : null}
       </dl>
@@ -605,11 +622,11 @@ function ReportSync({summary}: {summary: ReportSummary}) {
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2">
         {rows.map((row) => (
-          <div key={row.label} className="rounded-lg bg-secondary/50 px-3 py-2">
-            <div className={cn('text-[17px] font-semibold leading-none tracking-[-0.02em]', TONE_TEXT[row.tone])}>
+          <div key={row.label} className="rounded-lg bg-secondary/60 px-3 py-2.5">
+            <div className={cn('text-[19px] font-semibold leading-none tracking-[-0.02em]', TONE_TEXT[row.tone])}>
               {row.value}
             </div>
-            <div className="mt-1 text-[11px] text-faint">{row.label}</div>
+            <div className="mt-1.5 text-[11.5px] text-faint">{row.label}</div>
           </div>
         ))}
       </div>
@@ -620,8 +637,8 @@ function ReportSync({summary}: {summary: ReportSummary}) {
       ) : null}
       {sync.backupDir ? (
         <div>
-          <div className="mb-1 text-[11.5px] text-faint">备份目录</div>
-          <div className="break-all rounded-lg bg-secondary/70 px-2.5 py-2 font-mono text-[10.5px] leading-[1.6] text-foreground/70">
+          <div className="mb-1.5 text-[12px] text-faint">备份目录</div>
+          <div className="break-all rounded-lg bg-secondary/70 px-2.5 py-2 font-mono text-[11px] leading-[1.6] text-foreground/70">
             {sync.backupDir}
           </div>
         </div>
@@ -643,10 +660,10 @@ function ReportChanges({summary}: {summary: ReportSummary}) {
         {modules.map((slice) => (
           <div key={slice.name}>
             <div className="mb-1.5 flex items-baseline justify-between gap-3">
-              <span className="truncate font-mono text-[11.5px] text-foreground/80" title={slice.name}>
+              <span className="truncate font-mono text-[12px] text-foreground/80" title={slice.name}>
                 {slice.name}
               </span>
-              <span className="shrink-0 text-[11px] text-faint">{slice.count} 个</span>
+              <span className="shrink-0 text-[11.5px] text-faint">{slice.count} 个</span>
             </div>
             <div className="h-2 overflow-hidden rounded-full bg-secondary">
               <div
