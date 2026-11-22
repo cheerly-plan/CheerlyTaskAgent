@@ -49,14 +49,6 @@ const TONE_TEXT: Record<Tone, string> = {
   neutral: 'text-foreground',
 };
 
-const TONE_SOLID: Record<Tone, string> = {
-  success: 'bg-success text-white',
-  warning: 'bg-warning text-white',
-  danger: 'bg-destructive text-white',
-  info: 'bg-info text-white',
-  neutral: 'bg-secondary text-muted-foreground',
-};
-
 const TONE_BAR: Record<Tone, string> = {
   success: 'bg-gradient-to-r from-success/45 to-success',
   warning: 'bg-warning',
@@ -414,10 +406,11 @@ function ReportStats({summary}: {summary: ReportSummary}) {
             index === 2 && 'sm:border-l',
           )}
         >
+          {/* 四个格子统一用线条图标 + 语义色，执行结果不再单独用实心色块 */}
           <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
-            <span className={cn('grid shrink-0 place-items-center rounded-md', index === 0 ? 'size-[18px]' : 'size-4', index === 0 && TONE_SOLID[cell.tone])}>
-              <cell.icon className={cn(index === 0 ? 'size-3 text-white' : 'size-4', index !== 0 && TONE_TEXT[cell.tone])} />
-            </span>
+            <cell.icon
+              className={cn('size-4 shrink-0', cell.tone === 'neutral' ? 'text-muted-foreground' : TONE_TEXT[cell.tone])}
+            />
             {cell.label}
           </div>
           <div
@@ -446,7 +439,6 @@ function ReportAttentionList({attention}: {attention: Attention[]}) {
     );
   }
 
-  // 作为 tab 内容渲染，标题由 tab 本身承担，这里只列条目。
   return (
     <section>
       <ul className="grid gap-3 md:grid-cols-2">
