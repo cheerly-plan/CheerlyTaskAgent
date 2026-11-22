@@ -176,7 +176,7 @@ function SummaryCard({
             {source ? <span className="text-[11px] text-faint">· {source}</span> : null}
           </div>
 
-          <h1 className="mt-1 text-[21px] font-semibold leading-[1.35] tracking-[-0.02em] text-foreground">
+          <h1 className="mt-1 text-[18px] font-semibold leading-[1.4] tracking-[-0.02em] text-foreground">
             {title}
           </h1>
 
