@@ -16,6 +16,8 @@ const esc = (value: unknown) =>
 export function renderMarkdown(markdown: string, breakOnNewline = false): string {
   const lines = String(markdown || '').split('\n');
   const out: string[] = [];
+  // 附加块（执行命令 / 提示词）先收集，循环结束后按固定顺序追加
+  const appendices: {label: string; html: string}[] = [];
   let i = 0;
 
   const withBreaks = (html: string) => (breakOnNewline ? html.replace(/\n/g, '<br>') : html);
@@ -41,7 +43,7 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
     if (full.length > 2000) {
       const shown = full.slice(0, 6000);
       const tail = full.length > 6000 ? '\n\n…（已截断，完整内容请下载 .md）' : '';
-      return `<details><summary>原始输出（${full.length} 字符，点击展开）</summary><pre class="md-code">${esc(shown)}${tail}</pre></details>`;
+      return `<details><summary>原始输出（${full.length} 字符，点击展开）</summary><pre class="md-code md-code-scroll">${esc(shown)}${tail}</pre></details>`;
     }
     return `<pre class="md-code">${esc(full)}</pre>`;
   };
@@ -95,7 +97,7 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
       // 「执行命令」「提示词」是排查问题的关键信息，固定展开、不做折叠交互；
       // 原始输出可能几十万字符，保留折叠。
       if (/执行命令|提示词/.test(summaryText)) {
-        out.push(`<div class="md-block"><div class="md-block-label">${inline(summaryText)}</div>${inner}</div>`);
+        appendices.push({label: /提示词/.test(summaryText) ? '提示词' : summaryText, html: inner});
         continue;
       }
       out.push(`<details${opened ? ' open' : ''}><summary>${inline(summaryText)}</summary>${inner}</details>`);
@@ -173,6 +175,14 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
     out.push(`<p>${withBreaks(inline(line))}</p>`);
     i++;
   }
+
+  // 顺序固定为「提示词 → 执行命令」，与源码里的书写顺序无关。
+  const ORDER = ['提示词', '执行命令'];
+  appendices
+    .sort((a, b) => ORDER.indexOf(a.label) - ORDER.indexOf(b.label))
+    .forEach((item) => {
+      out.push(`<div class="md-block"><div class="md-block-label">${inline(item.label)}</div>${item.html}</div>`);
+    });
 
   return out.join('\n');
 }
