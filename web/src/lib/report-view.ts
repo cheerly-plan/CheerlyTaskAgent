@@ -50,6 +50,7 @@ export interface ReportSummary {
   modules: ModuleSlice[];
   groups: FactGroup[];
   meta: {
+    id: string;
     kind: string;
     status: string;
     mode: string;
@@ -329,6 +330,7 @@ export function analyzeReport(markdown: string): ReportSummary {
     subject: headline.replace(/^工作项报告[：:]\s*/, ''),
     outcome,
     meta: {
+      id: facts.get('ID') ?? '',
       kind: facts.get('类型') ?? '',
       status: facts.get('状态') ?? '',
       mode: facts.get('执行模式') ?? '',

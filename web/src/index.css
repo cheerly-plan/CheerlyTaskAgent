@@ -82,32 +82,44 @@
 
 /* ── 报告正文（后端生成的 Markdown 渲染结果，标签结构固定） ────────────── */
 @layer components {
+  /* 报告正文是长文阅读区：字号 13.5px、行高 1.9，段落与列表之间留足呼吸。 */
   .report-body {
-    @apply text-[13px] leading-[1.75] text-[#4b4e61];
+    @apply text-[13.5px] leading-[1.9] text-[#4b4e61];
   }
   .report-body h2 {
-    @apply mb-3 mt-0 text-[17px] font-semibold tracking-[-0.2px] text-foreground;
+    @apply mb-3 mt-8 text-[17px] font-semibold leading-[1.5] tracking-[-0.2px] text-foreground first:mt-0;
   }
   .report-body h3 {
-    @apply mb-2.5 mt-6 border-b border-border pb-2 text-sm font-semibold text-foreground;
+    @apply mb-3 mt-8 border-b border-border pb-2 text-[14px] font-semibold leading-[1.5] text-foreground first:mt-0;
   }
   .report-body h4 {
-    @apply mb-1.5 mt-4 text-[13px] font-semibold text-foreground;
+    @apply mb-2 mt-5 text-[13px] font-semibold leading-[1.6] text-foreground;
   }
   .report-body p {
-    @apply my-1.5;
+    @apply my-2.5;
   }
   .report-body strong {
     @apply font-semibold text-foreground;
   }
   .report-body ul {
-    @apply my-1.5 list-disc pl-5;
+    @apply my-2.5 list-disc pl-5;
   }
+  .report-body ol {
+    @apply my-2.5 list-decimal pl-5;
+  }
+  /* 列表项之间留 7px：长列表（比如「改动文件与原因」）不再挤成一片。 */
   .report-body li {
-    @apply my-[3px];
+    @apply my-0 pl-0.5;
+  }
+  .report-body li + li {
+    @apply mt-[7px];
+  }
+  .report-body li > ul,
+  .report-body li > ol {
+    @apply my-1.5;
   }
   .report-body code {
-    @apply rounded-[5px] bg-primary-muted px-1.5 py-px font-mono text-xs text-[#4b44ad];
+    @apply rounded-md bg-primary-muted px-1.5 py-0.5 font-mono text-[11.5px] text-[#4b44ad];
   }
   .report-body blockquote {
     @apply my-2.5 rounded-r-lg border-l-[3px] border-warning bg-warning-muted px-3 py-2 text-[12.5px] text-warning-foreground;
@@ -132,13 +144,13 @@
     @apply break-words;
   }
   .report-body .md-code {
-    @apply my-2 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-[9px] border border-[#ededf3] bg-[#f7f7fb] px-3 py-2.5 font-mono text-xs leading-[1.65] text-[#3b3e52];
+    @apply my-3 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-[#ededf3] bg-[#f7f7fb] px-4 py-3 font-mono text-[11.5px] leading-[1.75] text-[#3b3e52];
   }
   .report-body details {
-    @apply my-3 rounded-lg border border-border bg-[#fcfcfe] px-3;
+    @apply my-4 rounded-xl border border-border bg-[#fcfcfe] px-4;
   }
   .report-body details > summary {
-    @apply cursor-pointer list-none py-2.5 text-xs font-semibold text-primary;
+    @apply cursor-pointer list-none py-3 text-[12px] font-semibold text-primary transition-colors hover:text-accent-foreground;
   }
   .report-body details > summary::-webkit-details-marker {
     @apply hidden;
