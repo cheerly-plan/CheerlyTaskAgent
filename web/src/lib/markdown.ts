@@ -57,6 +57,7 @@ export function renderMarkdown(markdown: string): string {
           break;
         }
       }
+      const opened = /\bopen\b/i.test(block[0]) || /提示词/.test(summaryText);
       const innerLines = block.slice(1).filter(
         (current) =>
           !/^\s*<\/details>/i.test(current) &&
@@ -64,7 +65,7 @@ export function renderMarkdown(markdown: string): string {
           !/^\s*<details\b/i.test(current),
       );
       const inner = renderMarkdown(innerLines.join('\n'));
-      out.push(`<details><summary>${inline(summaryText)}</summary>${inner}</details>`);
+      out.push(`<details${opened ? ' open' : ''}><summary>${inline(summaryText)}</summary>${inner}</details>`);
       continue;
     }
 

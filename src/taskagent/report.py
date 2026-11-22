@@ -152,15 +152,17 @@ def _command_skeleton(command: str) -> str:
     return command
 
 
-def _collapsed(title: str, body: str, *, fenced: bool = True) -> list[str]:
+def _collapsed(title: str, body: str, *, fenced: bool = True, opened: bool = False) -> list[str]:
     """Emit an HTML <details> block (renders collapsed in most Markdown viewers).
 
     Real conclusions keep their Markdown structure (headings/lists/bold); raw
-    event streams and process notes stay in a plain-text fence.
+    event streams and process notes stay in a plain-text fence. Pass ``opened``
+    for blocks that should be visible without a click (e.g. the prompt).
     """
     inner = ["```text", body.rstrip(), "```"] if fenced else [body.rstrip()]
+    attrs = " open" if opened else ""
     return [
-        f"<details><summary>{title}</summary>",
+        f"<details{attrs}><summary>{title}</summary>",
         "",
         *inner,
         "",
@@ -257,11 +259,11 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             lines += _collapsed(title, conclusion.text, fenced=not conclusion.is_final)
         if result.command:
             lines += _collapsed("执行命令", _command_skeleton(result.command))
-        lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item))
+        lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item), opened=True)
         if result.stderr:
             lines += _collapsed("stderr", result.stderr)
     else:
-        lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item))
+        lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item), opened=True)
 
     if item.error:
         lines += ["## 错误", "", f"`{item.error}`", ""]

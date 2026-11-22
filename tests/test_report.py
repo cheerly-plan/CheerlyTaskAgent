@@ -142,6 +142,13 @@ def test_report_without_result_has_no_execution_section():
     assert "下发给 codebuddy 的提示词" in report
 
 
+def test_report_prompt_block_is_open():
+    item = _item()
+    report = render_report(item)
+    assert "<details open><summary>下发给 codebuddy 的提示词</summary>" in report
+    assert "<details><summary>执行命令</summary>" in report
+
+
 def test_child_report_shows_parent():
     child = WorkItem.create(title="登录页", description="", parent_ref="tapd:story:p1")
     # 有父标题时用标题。
