@@ -167,7 +167,7 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
 
       {/* 白色画布：正文与右栏共用同一张纸，中间只用一条细线分隔，
           避免正文白纸浮在灰底上、右栏文字又直接落在灰底里的割裂感 */}
-      <div className="grid items-start gap-10 rounded-2xl border border-border bg-card px-8 py-7 xl:grid-cols-[minmax(0,1fr)_232px]">
+      <div className="grid gap-10 rounded-2xl border border-border bg-card px-8 py-7 xl:grid-cols-[minmax(0,1fr)_232px]">
         <section className="min-w-0">
           <DocSection label="需求描述" className="xl:max-w-[620px]">
             {descriptionHtml ? (
@@ -193,7 +193,9 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
         </section>
 
         {/* 信息量已压到一屏内，宽屏下固定，滚动长文时元信息始终可见 */}
-        <aside className="space-y-7 xl:sticky xl:top-0 xl:border-l xl:border-border xl:pl-8">
+        {/* 外层撑满整行：竖线才能从顶部一直画到底；内层负责滚动时粘住 */}
+        <div className="min-w-0 xl:border-l xl:border-border xl:pl-8">
+          <aside className="space-y-7 xl:sticky xl:top-0">
           <SideBlock label="工单信息">
             <MetaRows summary={summary} />
           </SideBlock>
@@ -209,7 +211,8 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
               <SyncRows summary={summary} />
             </SideBlock>
           ) : null}
-        </aside>
+          </aside>
+        </div>
       </div>
     </div>
   );
