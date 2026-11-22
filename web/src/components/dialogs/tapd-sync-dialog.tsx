@@ -118,9 +118,10 @@ export function TapdSyncDialog({
   const effectiveModel = effectiveDefaultModelId(activeModels, model);
 
   const counts = React.useMemo(() => ({
-    new: items.filter((i) => i.status === 'new').length,
+    new: items.filter((i) => i.status === 'new' && !i.archived).length,
     changed: items.filter((i) => i.status === 'changed').length,
     unchanged: items.filter((i) => i.status === 'unchanged').length,
+    archived: items.filter((i) => i.archived).length,
   }), [items]);
 
   const confirm = async () => {
@@ -186,6 +187,7 @@ export function TapdSyncDialog({
             <div className="flex items-center gap-1.5 text-[12px]">
               <Badge variant="success">新增 {counts.new}</Badge>
               <Badge variant="warning">更新 {counts.changed}</Badge>
+              {counts.archived > 0 && <Badge variant="muted">归档 {counts.archived}</Badge>}
               {counts.unchanged > 0 && <Badge variant="muted">无变化 {counts.unchanged}</Badge>}
             </div>
             <div className="ml-auto flex items-center gap-2 text-[11px]">
@@ -255,7 +257,11 @@ export function TapdSyncDialog({
                         {isContainer ? (
                           <GitBranch className="size-3.5 shrink-0 text-[#6d3fc0]" aria-hidden />
                         ) : null}
-                        {item.status === 'new' && <Badge variant="success">新增</Badge>}
+                        {item.status === 'new' && (item.archived ? (
+                          <Badge variant="muted">归档</Badge>
+                        ) : (
+                          <Badge variant="success">新增</Badge>
+                        ))}
                         {item.status === 'changed' && <Badge variant="warning">更新</Badge>}
                         {item.status === 'unchanged' && <Badge variant="muted">无变化</Badge>}
                         <Badge variant="outline">{item.kind}</Badge>

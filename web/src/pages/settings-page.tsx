@@ -3,7 +3,6 @@ import {Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Sparkles, Trash2
 
 import {useApp} from '@/app-context';
 import {Field, SelectField} from '@/components/select-field';
-import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
@@ -12,6 +11,7 @@ import type {BackendConfig, ModelChoice, UISettings} from '@/lib/api';
 import {
   canonicalModelId,
   cliDefaultLabel,
+  cn,
   modelCategory,
   modelMatches,
   sortModelsByCategory,
@@ -231,11 +231,11 @@ export function SettingsPage() {
                             <Switch
                               checked={current.enabled}
                               onCheckedChange={(checked) => patchBackend(id, 'enabled', checked)}
-                              aria-label={`启用 ${displayName}`}
+                              aria-label={`${current.enabled ? '停用' : '启用'} ${displayName}`}
                             />
-                            <Badge variant={current.enabled ? 'success' : 'warning'}>
-                              {current.enabled ? '已启用' : '未启用'}
-                            </Badge>
+                            <span className={cn('whitespace-nowrap text-xs', current.enabled ? 'text-foreground/80' : 'text-faint')}>
+                              {current.enabled ? '启用' : '停用'}
+                            </span>
                           </div>
                         </td>
                         <td className="px-4 py-3 text-right">

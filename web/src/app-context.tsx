@@ -540,8 +540,13 @@ export function AppProvider({
     try {
       const result = await endpoints.syncTapd({force});
       await reloadItems();
-      if (result.created > 0) {
-        toast.success(`已从 TAPD 同步 ${result.created} 条${result.skipped ? `，跳过 ${result.skipped} 条重复` : ''}`);
+      if (result.created || result.archived) {
+        const parts = [
+          result.created ? `新增 ${result.created}` : '',
+          result.archived ? `归档 ${result.archived}` : '',
+          result.skipped ? `跳过 ${result.skipped} 条重复` : '',
+        ].filter(Boolean);
+        toast.success(`已从 TAPD 同步：${parts.join('，')}`);
       } else {
         toast.info(`TAPD 暂无新工单${result.skipped ? `（跳过 ${result.skipped} 条重复）` : ''}`);
       }
@@ -572,6 +577,7 @@ export function AppProvider({
       const result = await endpoints.tapdImport({items: selections, cursor});
       const parts = [
         result.created ? `新增 ${result.created}` : '',
+        result.archived ? `归档 ${result.archived}` : '',
         result.updated ? `更新 ${result.updated}` : '',
         result.skipped ? `跳过 ${result.skipped}` : '',
       ].filter(Boolean);

@@ -296,14 +296,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client, cfg = make_tapd_client()
         if not client.config.is_configured():
             return {
-                "created": 0, "skipped": 0, "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing()),
+                "created": 0, "skipped": 0, "archived": 0,
+                "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing()),
             }
         cursor = "" if force else (modified_since or _tapd_last_sync["modified"])
         result = client.fetch_all(modified_since=cursor)
         if result.error:
-            return {"created": 0, "skipped": 0, "error": result.error}
+            return {"created": 0, "skipped": 0, "archived": 0, "error": result.error}
         exec_mode = cfg.get("exec_mode", "dry-run")
-        created = skipped = 0
+        created = skipped = archived = 0
         for item in result.items:
             raw = RawItem.from_tapd(item)
             # TAPD workspace 绑定的本地项目优先（两处配置统一维护）
@@ -317,13 +318,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if len(bound) > 1 else ""
             )
             try:
+                closed = is_closed_status(item.status)
                 _, was_created = scheduler.import_raw(
                     raw, exec_mode=exec_mode, repo_name=repo_name,
                     auto_map=len(bound) != 1, stage_hint=stage_hint,
-                    archived=is_closed_status(item.status),
+                    archived=closed,
                 )
                 if was_created:
-                    created += 1
+                    if closed:
+                        archived += 1
+                    else:
+                        created += 1
                 else:
                     skipped += 1
             except ValueError as error:
@@ -335,7 +340,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         stamps = [i.modified for i in result.items if i.modified]
         if stamps:
             _tapd_last_sync["modified"] = max(stamps)
-        return {"created": created, "skipped": skipped, "error": None}
+        return {"created": created, "skipped": skipped, "archived": archived, "error": None}
 
     def _relink_parents() -> None:
         """同步/导入后重算父子关系（标记父容器 + 回填子列表），失败不影响主流程。"""
@@ -446,6 +451,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             previews.append({
                 "source_ref": raw.source_ref,
                 "status": status,
+                "archived": is_closed_status(item.status),
                 "title": probe.title,
                 "description": probe.description,
                 "kind": probe.kind.value if hasattr(probe.kind, "value") else str(probe.kind),
@@ -472,12 +478,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         among the items actually imported, so nothing is silently dropped.
         """
         if not body.items:
-            return {"created": 0, "updated": 0, "skipped": 0, "error": None}
+            return {"created": 0, "updated": 0, "skipped": 0, "archived": 0, "error": None}
         if not _tapd_preview["nonce"]:
-            return {"created": 0, "updated": 0, "skipped": 0, "error": "预览已失效，请重新同步"}
+            return {
+                "created": 0, "updated": 0, "skipped": 0, "archived": 0,
+                "error": "预览已失效，请重新同步",
+            }
         from .models import ARCHIVED_SOURCE_STAGE, ItemStatus
 
-        created = updated = skipped = 0
+        created = updated = skipped = archived = 0
         imported_stamps: list[str] = []
         for sel in body.items:
             cached = _tapd_preview["raw"].get(sel.source_ref)
@@ -526,13 +535,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     scheduler.store.save(old)
                     updated += 1
                 else:
-                    scheduler.import_raw(
+                    _, was_created = scheduler.import_raw(
                         raw, exec_mode=exec_mode, repo_name=repo_name,
                         executor=sel.executor, model=sel.model,
                         stage_hint=cached["stage_hint"],
                         auto_map=not repo_name, archived=closed,
                     )
-                    created += 1
+                    if was_created:
+                        if closed:
+                            archived += 1
+                        else:
+                            created += 1
                 if cached.get("modified"):
                     imported_stamps.append(cached["modified"])
             except ValueError as error:
@@ -545,21 +558,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _tapd_last_sync["modified"] = max(_tapd_last_sync["modified"], final_cursor)
         _relink_parents()
         _tapd_preview.update({"nonce": "", "raw": {}, "cursor": ""})
-        return {"created": created, "updated": updated, "skipped": skipped, "error": None}
+        return {
+            "created": created, "updated": updated, "skipped": skipped,
+            "archived": archived, "error": None,
+        }
 
     def tapd_webhook_sync(event: str, object_id: str) -> dict[str, Any]:
         """A webhook carries only an id — always pull full details from TAPD."""
         # Determine entity type from the webhook event name (story::create, bug::status_change…)
         entity_type = event.split("::", 1)[0] if "::" in event else ""
         if entity_type not in {"story", "bug", "task"}:
-            return {"created": 0, "skipped": 0, "error": f"无法识别的 Webhook 事件：{event}"}
+            return {"created": 0, "skipped": 0, "archived": 0, "error": f"无法识别的 Webhook 事件：{event}"}
         client, cfg = make_tapd_client()
         if not client.config.is_configured():
-            return {"created": 0, "skipped": 0, "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing())}
+            return {
+                "created": 0, "skipped": 0, "archived": 0,
+                "error": "TAPD 未配置，缺少：" + ", ".join(client.config.missing()),
+            }
         try:
             item = client.fetch_one(entity_type, object_id)
         except TapdError as error:
-            return {"created": 0, "skipped": 0, "error": str(error)}
+            return {"created": 0, "skipped": 0, "archived": 0, "error": str(error)}
         raw = RawItem.from_tapd(item)
         wid = item.workspace_id or client.config.primary_workspace_id
         bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []
@@ -569,16 +588,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             + "、".join(m.name for m in bound)
             if len(bound) > 1 else ""
         )
+        closed = is_closed_status(item.status)
         try:
             _, was_created = scheduler.import_raw(
                 raw, exec_mode=cfg.get("exec_mode", "dry-run"),
                 repo_name=repo_name, auto_map=len(bound) != 1, stage_hint=stage_hint,
-                archived=is_closed_status(item.status),
+                archived=closed,
             )
         except ValueError as error:
-            return {"created": 0, "skipped": 0, "error": str(error)}
+            return {"created": 0, "skipped": 0, "archived": 0, "error": str(error)}
         _relink_parents()
-        return {"created": 1 if was_created else 0, "skipped": 0 if was_created else 1, "error": None}
+        return {
+            "created": 0 if closed else (1 if was_created else 0),
+            "skipped": 0 if was_created else 1,
+            "archived": 1 if (was_created and closed) else 0,
+            "error": None,
+        }
 
     async def tapd_poll_loop() -> None:
         """Periodically pull from TAPD while auto_pull is on; re-reads settings each tick."""
@@ -589,8 +614,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result = await asyncio.to_thread(sync_tapd_now)
                 if result.get("error"):
                     logger.warning("定时同步 TAPD 失败：%s", result["error"])
-                elif result.get("created"):
-                    logger.info("定时同步 TAPD：新建 %d 条", result["created"])
+                elif result.get("created") or result.get("archived"):
+                    logger.info(
+                        "定时同步 TAPD：新建 %d 条，归档 %d 条",
+                        result["created"], result.get("archived", 0),
+                    )
             await asyncio.sleep(interval_s)
 
     @asynccontextmanager
@@ -858,7 +886,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         if result.get("error"):
             raise HTTPException(400, result["error"])
-        return {"created": result["created"], "skipped": result["skipped"]}
+        return {
+            "created": result["created"], "skipped": result["skipped"],
+            "archived": result.get("archived", 0),
+        }
 
     @app.post("/api/tapd/preview")
     async def api_tapd_preview(body: TapdSyncBody | None = None) -> dict[str, Any]:
@@ -882,7 +913,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         result = await asyncio.to_thread(import_tapd_now, body)
         if result.get("error"):
             raise HTTPException(400, result["error"])
-        return {"created": result["created"], "updated": result["updated"], "skipped": result["skipped"]}
+        return {
+            "created": result["created"], "updated": result["updated"],
+            "skipped": result["skipped"], "archived": result.get("archived", 0),
+        }
 
     @app.post("/api/tapd/webhook")
     async def api_tapd_webhook(request: Request) -> dict[str, Any]:
@@ -915,11 +949,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "Webhook 缺少 event 或 id")
         # Ignore delete events; there is no work item to sync.
         if "::delete" in event:
-            return {"created": 0, "skipped": 0, "ignored": True}
+            return {"created": 0, "skipped": 0, "archived": 0, "ignored": True}
         result = await asyncio.to_thread(tapd_webhook_sync, event, object_id)
         if result.get("error"):
             raise HTTPException(400, result["error"])
-        return {"created": result["created"], "skipped": result["skipped"]}
+        return {
+            "created": result["created"], "skipped": result["skipped"],
+            "archived": result.get("archived", 0),
+        }
 
     @app.get("/api/repo-profiles")
     def api_repo_profiles() -> dict[str, Any]:

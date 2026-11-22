@@ -67,6 +67,7 @@ export interface RepoProfile {
 export interface TapdPreviewItem {
   source_ref: string;
   status: 'new' | 'changed' | 'unchanged';
+  archived?: boolean;
   title: string;
   description: string;
   kind: Kind;
@@ -322,13 +323,13 @@ export const endpoints = {
   }) => api<WorkItem>('/api/tasks/manual', jsonInit('POST', body)),
 
   syncTapd: (body?: {modified_since?: string; exec_mode?: string; force?: boolean}) =>
-    api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
+    api<{created: number; skipped: number; archived?: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
 
   tapdPreview: (body?: {modified_since?: string; force?: boolean}) =>
     api<TapdPreviewResult>('/api/tapd/preview', jsonInit('POST', body ?? {})),
 
   tapdImport: (body: {items: TapdImportSelection[]; cursor: string}) =>
-    api<{created: number; updated: number; skipped: number}>(
+    api<{created: number; updated: number; skipped: number; archived?: number}>(
       '/api/tapd/import', jsonInit('POST', body),
     ),
 

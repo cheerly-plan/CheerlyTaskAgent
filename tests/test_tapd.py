@@ -568,7 +568,9 @@ def test_sync_closes_status_archives_but_keeps_record(tmp_path, monkeypatch):
     with TestClient(app) as client:
         r = client.post("/api/tapd/sync", json={"force": True})
         assert r.status_code == 200, r.text
-        assert r.json()["created"] == 2
+        data = r.json()
+        assert data["created"] == 1
+        assert data["archived"] == 1
 
         items = client.get("/api/items?limit=100").json()["items"]
         active_item = next(i for i in items if i["source_ref"] == "tapd:story:300")
@@ -597,3 +599,48 @@ def test_archived_item_revives_when_source_reopens(env):
     assert revived.status == ItemStatus.DISCOVERED
     assert revived.exec_mode == "dry-run"
     assert revived.stage == ""
+
+
+def test_preview_and_import_split_archived_from_created(tmp_path, monkeypatch):
+    """已关闭条目在预览/导入结果中单独计入 archived，不再算作新增。"""
+    from taskagent import tapd as tapd_module
+
+    settings = _make_tapd_app(tmp_path)
+    active = tapd_module.TapdItem(
+        entity_type="story", id="500", workspace_id="32312011",
+        title="新需求", description="d", status="developing", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-03 10:00:00",
+    )
+    closed = tapd_module.TapdItem(
+        entity_type="bug", id="600", workspace_id="32312011",
+        title="已关闭缺陷", description="d", status="closed", owner="", priority="",
+        iteration_id="", created="2026-01-01 09:00:00", modified="2026-01-03 10:00:00",
+    )
+
+    def fake_fetch_all(self, *, modified_since="", limit=200, max_pages=5):
+        result = tapd_module.TapdResult()
+        result.items = [active, closed]
+        return result
+
+    monkeypatch.setattr(tapd_module.TapdClient, "fetch_all", fake_fetch_all)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        pv = client.post("/api/tapd/preview", json={}).json()
+        by_ref = {i["source_ref"]: i for i in pv["items"]}
+        assert by_ref["tapd:story:500"]["status"] == "new"
+        assert by_ref["tapd:story:500"]["archived"] is False
+        assert by_ref["tapd:bug:600"]["status"] == "new"
+        assert by_ref["tapd:bug:600"]["archived"] is True
+
+        r = client.post("/api/tapd/import", json={
+            "items": [
+                {"source_ref": "tapd:story:500", "exec_mode": "dry-run"},
+                {"source_ref": "tapd:bug:600", "exec_mode": "dry-run"},
+            ],
+            "cursor": pv["cursor"],
+        })
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["created"] == 1
+        assert result["archived"] == 1
+        assert result["updated"] == 0
