@@ -12,8 +12,8 @@ import {
 } from 'lucide-react';
 
 import {useApp} from '@/app-context';
+import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
-import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
 import {renderMarkdown} from '@/lib/markdown';
 import {kindLabel, statusLabel} from '@/lib/labels';
 import type {Attention, ReportSummary, Tone} from '@/lib/report-view';
@@ -47,17 +47,6 @@ const ALERT_BORDER: Record<Tone, string> = {
   info: 'border-l-info',
   neutral: 'border-l-border',
 };
-
-function IconTip({label, children}: {label: string; children: React.ReactNode}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side="top" className="bg-[#1f1f28] px-2.5 py-1 text-[11px] text-white">
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 export function ReportPage() {
   const {reportView, closeReport} = useApp();
@@ -118,42 +107,48 @@ function PageHeader({
   downloadName: string;
 }) {
   return (
-    <header className="mb-5 flex items-center gap-3">
-      <IconTip label={`返回${backLabel}`}>
-        <Button
-          variant="outline"
-          size="icon-sm"
+    <header className="mb-5">
+      {/* 第一行：导航与操作。返回做成文字链接，比描边按钮更轻 */}
+      <div className="flex items-center justify-between gap-4">
+        <button
+          type="button"
           onClick={onBack}
           aria-label={`返回${backLabel}`}
-          className="shrink-0 bg-card"
+          className="group flex items-center gap-1.5 rounded-md py-0.5 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
         >
-          <ArrowLeft />
-        </Button>
-      </IconTip>
+          <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-0.5" />
+          返回{backLabel}
+        </button>
 
-      <div className="min-w-0">
-        <h1 className="truncate text-[24px] font-semibold leading-[1.25] tracking-[-0.02em] text-foreground">
-          {title}
-        </h1>
-        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-faint">
-          {kind ? <span>{kind}</span> : null}
-          {kind ? <span className="text-border">·</span> : null}
-          {id ? <span className="font-mono text-[11.5px]">{id}</span> : null}
-          <span className="text-border">·</span>
-          <button type="button" onClick={onBack} className="hover:text-foreground hover:underline">
-            {backLabel}
-          </button>
-        </div>
+        {downloadUrl ? (
+          <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground hover:text-foreground" asChild>
+            <a href={downloadUrl} download={downloadName}>
+              <Download />
+              下载 .md
+            </a>
+          </Button>
+        ) : null}
       </div>
 
-      {downloadUrl ? (
-        <Button variant="outline" size="sm" className="ml-auto shrink-0 bg-card" asChild>
-          <a href={downloadUrl} download={downloadName}>
-            <Download />
-            下载 .md
-          </a>
-        </Button>
-      ) : null}
+      {/* 第二行：标题 + 类型；编号作为等宽小标签跟在后面 */}
+      <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <h1 className="min-w-0 truncate text-[21px] font-semibold leading-[1.3] tracking-[-0.02em] text-foreground">
+          {title}
+        </h1>
+        {kind ? (
+          <Badge variant="outline" className="shrink-0 bg-card font-normal text-muted-foreground">
+            {kind}
+          </Badge>
+        ) : null}
+        {id ? (
+          <span
+            className="shrink-0 rounded-md bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+            title={id}
+          >
+            {id}
+          </span>
+        ) : null}
+      </div>
     </header>
   );
 }
