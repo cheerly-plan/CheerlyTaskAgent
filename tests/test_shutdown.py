@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
-from taskagent.events import Event, EventBus
+from taskagent.events import Event, EventBus, sse_frame
+
+
+def test_sse_frame_marks_replayed_events_only():
+    """Replayed frames carry a flag the UI uses to skip redundant reloads."""
+    event = Event("item_updated", "w1", {"title": "x"})
+    live = json.loads(sse_frame(event).removeprefix("data: ").strip())
+    replayed = json.loads(sse_frame(event, replay=True).removeprefix("data: ").strip())
+    assert "replay" not in live
+    assert replayed["replay"] is True
+    assert replayed["type"] == "item_updated"
+    assert replayed["title"] == "x"
 
 
 @pytest.mark.asyncio

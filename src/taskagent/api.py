@@ -1089,7 +1089,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def stream():
             try:
                 for event in events.replay():
-                    yield sse_frame(event)
+                    yield sse_frame(event, replay=True)
                 while not events.closed:
                     if await request.is_disconnected():
                         break

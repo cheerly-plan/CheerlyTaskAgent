@@ -270,7 +270,14 @@ export async function fetchText(path: string): Promise<string> {
   return res.text();
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * 同一 GET 在飞时复用同一个 Promise：首屏多个组件可能同时触发 reloadItems /
+ * reloadSettings 等，去重后只发一次真实请求。写请求（POST/PUT/DELETE）不入表，
+ * 避免误合并「执行/删除」这类有副作用的动作。
+ */
+const inflightGets = new Map<string, Promise<unknown>>();
+
+async function doApi<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
     let message = res.statusText;
@@ -284,6 +291,24 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+export function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const cacheable = method === 'GET' && !init?.signal;  // 带 signal 的请求由调用方控制生命周期，不去重
+  if (!cacheable) return doApi<T>(path, init);
+
+  const key = path;
+  const existing = inflightGets.get(key);
+  if (existing) return existing as Promise<T>;
+
+  const pending = doApi<T>(path, init);
+  inflightGets.set(key, pending);
+  void pending.finally(() => {
+    // 仅当表里仍是本次 promise 才删除，避免误删后来重建的同 key 请求。
+    if (inflightGets.get(key) === pending) inflightGets.delete(key);
+  });
+  return pending;
 }
 
 const jsonInit = (method: string, body: unknown): RequestInit => ({

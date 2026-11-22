@@ -10,7 +10,7 @@ import {ScanDialog} from '@/components/dialogs/scan-dialog';
 import {TapdSyncDialog} from '@/components/dialogs/tapd-sync-dialog';
 import type {ConnState} from '@/components/app-sidebar';
 import type {ActionSelection} from '@/components/task-actions';
-import {esc, renderMarkdown} from '@/lib/markdown';
+import {esc, renderReportSections, type ReportSection} from '@/lib/markdown';
 import {effectiveDefaultModelId, resolvedModelLabel} from '@/lib/utils';
 import {
   endpoints,
@@ -27,10 +27,35 @@ import {
   type WorkItem,
 } from '@/lib/api';
 
+/** 后端 /api/items 的 limit 上限；任务中心一次拉全量，分页只在前端做。 */
+const ITEMS_FULL_LIMIT = 2000;
+
+/** 历史记录分页一次取多少条（后端单次最多 2000 条）。 */
+const HISTORY_PAGE_SIZE = 200;
+
+interface HistoryPageState {
+  items: WorkItem[];
+  total: number;
+  /** 后端还有未加载的历史页时为 true，后端时间排序即偏移。 */
+  hasMore: boolean;
+  loading: boolean;
+}
+
+const EMPTY_HISTORY_PAGE: HistoryPageState = {items: [], total: 0, hasMore: false, loading: false};
+
 interface AppContextValue {
   items: WorkItem[];
   /** 存储里的工作项总数（可能多于已加载的 items）。 */
   itemsTotal: number;
+  /** 历史记录：后端分页拉到的最新一段归档记录，前端再按页切片。 */
+  historyItems: WorkItem[];
+  historyTotal: number;
+  historyHasMore: boolean;
+  historyLoading: boolean;
+  /** 再向后端取一段历史记录（拉取中会忽略重复调用）。 */
+  loadMoreHistory: () => Promise<void>;
+  /** 回到第一页重新拉取历史记录（刷新 / 列表有变更时用）。 */
+  reloadHistory: () => Promise<void>;
   mappings: ProjectMapping[];
   models: ModelChoice[];
   defaultModel: string;
@@ -85,16 +110,18 @@ interface FolderPickerState {
 interface ReportState {
   open: boolean;
   title: string;
-  html: string;
+  sections: ReportSection[];
   downloadUrl: string | null;
   downloadName: string;
 }
 
-const EMPTY_REPORT: ReportState = {open: false, title: '', html: '', downloadUrl: null, downloadName: ''};
+const EMPTY_REPORT: ReportState = {open: false, title: '', sections: [], downloadUrl: null, downloadName: ''};
 
 export function AppProvider({children}: {children: React.ReactNode}) {
   const [items, setItems] = React.useState<WorkItem[]>([]);
   const [itemsTotal, setItemsTotal] = React.useState(0);
+  // 历史记录页用独立的分页状态：按页向后端要数据，不随全局全量列表增长。
+  const [historyPage, setHistoryPage] = React.useState<HistoryPageState>(EMPTY_HISTORY_PAGE);
   const [mappings, setMappings] = React.useState<ProjectMapping[]>([]);
   const [models, setModels] = React.useState<ModelChoice[]>([]);
   const [defaultModel, setDefaultModel] = React.useState('');
@@ -138,15 +165,77 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   }, []);
 
   // ── 数据加载 ──────────────────────────────────────────────────────────────
+  // 任务中心不分页：一次拉全部工作项（受后端 2000 条上限约束）。
   const reloadItems = React.useCallback(async () => {
     try {
-      const data = await endpoints.items({limit: 1000});
+      const data = await endpoints.items({limit: ITEMS_FULL_LIMIT});
       setItems(data.items ?? []);
       setItemsTotal(data.total ?? data.items?.length ?? 0);
     } catch (error) {
       toast.error('加载任务失败：' + (error as Error).message);
     }
   }, []);
+
+  const fetchHistoryPage = React.useCallback(async (offset: number) => {
+    const data = await endpoints.items({limit: HISTORY_PAGE_SIZE, offset});
+    return {items: data.items ?? [], total: data.total ?? 0};
+  }, []);
+
+  const historyLoadingRef = React.useRef(false);
+  // 回调里读最新已加载条数，避免把 historyItems 放进依赖导致反复重建。
+  const historyItemsRef = React.useRef<WorkItem[]>([]);
+  React.useEffect(() => {
+    historyItemsRef.current = historyPage.items;
+  }, [historyPage.items]);
+
+  // 历史记录：从后端分页拉取，首次加载 / 刷新都只取最新一页。
+  const reloadHistory = React.useCallback(async () => {
+    if (historyLoadingRef.current) return;
+    historyLoadingRef.current = true;
+    setHistoryPage((prev) => ({...prev, loading: true}));
+    try {
+      const page = await fetchHistoryPage(0);
+      setHistoryPage({
+        items: page.items,
+        total: page.total,
+        hasMore: page.items.length > 0 && page.items.length < page.total,
+        loading: false,
+      });
+    } catch (error) {
+      setHistoryPage((prev) => ({...prev, loading: false}));
+      toast.error('加载历史记录失败：' + (error as Error).message);
+    } finally {
+      historyLoadingRef.current = false;
+    }
+  }, [fetchHistoryPage]);
+
+  // 拉取下一段历史（按已加载条数做 offset），追加到已有列表。
+  const loadMoreHistory = React.useCallback(async () => {
+    if (historyLoadingRef.current) return;
+    historyLoadingRef.current = true;
+    setHistoryPage((prev) => ({...prev, loading: true}));
+    try {
+      const loaded = historyItemsRef.current;
+      const page = await fetchHistoryPage(loaded.length);
+      // offset 已越过后端总量（期间有删除）时拉不到数据，直接结束，避免卡在加载态。
+      if (loaded.length > 0 && page.items.length === 0) {
+        setHistoryPage({items: loaded, total: page.total, hasMore: false, loading: false});
+        return;
+      }
+      const merged = [...loaded, ...page.items];
+      setHistoryPage({
+        items: merged,
+        total: page.total,
+        hasMore: page.items.length >= HISTORY_PAGE_SIZE && merged.length < page.total,
+        loading: false,
+      });
+    } catch (error) {
+      setHistoryPage((prev) => ({...prev, loading: false}));
+      toast.error('加载更多历史记录失败：' + (error as Error).message);
+    } finally {
+      historyLoadingRef.current = false;
+    }
+  }, [fetchHistoryPage]);
 
   const autoMapItems = React.useCallback(async () => {
     try {
@@ -205,9 +294,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   React.useEffect(() => {
     (async () => {
       await reloadConfig();
-      await Promise.all([reloadMappings(), reloadItems(), reloadSettings()]);
+      await Promise.all([reloadMappings(), reloadItems(), reloadHistory(), reloadSettings()]);
     })().finally(() => setLoading(false));
-  }, [reloadConfig, reloadItems, reloadMappings, reloadSettings]);
+  }, [reloadConfig, reloadItems, reloadHistory, reloadMappings, reloadSettings]);
 
   // 项目名缓存：设置里没存过时静默拉一次，供映射弹窗显示名称而不是裸 ID。
   React.useEffect(() => {
@@ -218,18 +307,38 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       .catch(() => undefined);
   }, [settings?.tapd?.company_id, settings?.tapd?.api_user, tapdProjects.length]);
 
-  // SSE：后端有任何变更就只刷新任务中心（与原实现一致）
+  // SSE：后端有任何变更就刷新任务中心；历史记录只重拉第一页（其余页按需拉取）。
+  // 注意：连接建立时后端会回放历史事件（最多 200 条），前端首屏已全量拉取过，
+  // 这些回放事件不带新信息——跳过它们，否则每条都会触发一次 reloadItems +
+  // reloadHistory，首屏就能打出几十次 /api/items。真正的新事件做 120ms 防抖，
+  // 一次任务状态推进常连发数条（queued/started/progress/…），合并成一次刷新。
   React.useEffect(() => {
     const source = new EventSource('/api/events');
     // 连接状态只驱动徽标颜色；文案由下面的 connText 统一派生，避免把
     // 顶栏的「执行端 XXX」覆盖成「实时同步中」。
     source.onopen = () => setConn('live');
     source.onerror = () => setConn('reconnecting');
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     source.onmessage = (event) => {
-      if (event.data !== '[DONE]') void reloadItems();
+      if (event.data === '[DONE]') return;
+      try {
+        const payload = JSON.parse(event.data) as {replay?: boolean};
+        if (payload?.replay) return;  // 历史回放事件：首屏已全量加载，无需逐条刷新
+      } catch {
+        /* 非 JSON 消息按新事件处理 */
+      }
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void reloadItems();
+        void reloadHistory();
+      }, 120);
     };
-    return () => source.close();
-  }, [reloadItems]);
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      source.close();
+    };
+  }, [reloadItems, reloadHistory]);
 
   const probedBackends = React.useRef(new Set<string>());
   const ensureBackendProbe = React.useCallback(
@@ -288,7 +397,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
           setReport({
             open: true,
             title,
-            html: renderMarkdown(markdown),
+            sections: renderReportSections(markdown),
             downloadUrl: endpoints.reportUrl(id),
             downloadName: `${id}.md`,
           });
@@ -324,7 +433,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
       setReport({
         open: true,
         title,
-        html: `<pre class="md-code">${esc(summary)}</pre>`,
+        sections: [{label: '工单信息', html: `<pre class="md-code">${esc(summary)}</pre>`}],
         downloadUrl: null,
         downloadName: '',
       });
@@ -389,8 +498,9 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         return;
       }
       await reloadItems();
+      await reloadHistory();
     },
-    [confirm, items, modelSelectionSupported, openReport, reloadItems, selections],
+    [confirm, items, modelSelectionSupported, openReport, reloadItems, reloadHistory, selections],
   );
 
   /** 项目列/卡片里的仓库下拉：选中即落库映射。 */
@@ -647,6 +757,12 @@ export function AppProvider({children}: {children: React.ReactNode}) {
   const value: AppContextValue = {
     items,
     itemsTotal,
+    historyItems: historyPage.items,
+    historyTotal: historyPage.total,
+    historyHasMore: historyPage.hasMore,
+    historyLoading: historyPage.loading,
+    loadMoreHistory,
+    reloadHistory,
     mappings,
     models,
     defaultModel,
@@ -746,7 +862,7 @@ export function AppProvider({children}: {children: React.ReactNode}) {
         open={report.open}
         onOpenChange={(open) => setReport((prev) => ({...prev, open}))}
         title={report.title}
-        html={report.html}
+        sections={report.sections}
         downloadUrl={report.downloadUrl}
         downloadName={report.downloadName}
       />

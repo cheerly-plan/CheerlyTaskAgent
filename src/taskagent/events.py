@@ -58,6 +58,15 @@ class EventBus:
         return list(self._history)
 
 
-def sse_frame(event: Event) -> str:
-    payload = {"type": event.type, "task_id": event.task_id, **event.data}
+def sse_frame(event: Event, *, replay: bool = False) -> str:
+    """Serialise one SSE frame.
+
+    ``replay`` marks events replayed from history when a client connects.
+    The UI already does a full reload on mount/onopen, so replayed events
+    carry no new information — flagging them lets the client skip refreshing
+    once per historical event (which used to cause a reload storm).
+    """
+    payload: dict[str, Any] = {"type": event.type, "task_id": event.task_id, **event.data}
+    if replay:
+        payload["replay"] = True
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
