@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from taskagent.models import ItemStatus, RunResult, WorkItem
-from taskagent.report import parent_title_of, render_report, summarize_stdout
+from taskagent.report import extract_conclusion, parent_title_of, render_report, summarize_stdout
 
 
 def _item(stdout: str = "", description: str = "改点东西") -> WorkItem:
@@ -41,6 +41,48 @@ def test_summarize_stdout_extracts_final_conclusions():
     # Raw event scaffolding must not leak.
     assert "output_text" not in out
     assert '"role"' not in out
+
+
+def test_extract_conclusion_from_dsh_jsonl_uses_final_event():
+    lines = [
+        {"type": "session", "sessionId": "s1"},
+        {"type": "text", "text": "我先看一下仓库"},
+        {"type": "tool_call", "tool": "bash", "input": {"command": "ls"}},
+        {"type": "text", "text": "接下来改代码"},
+        {"type": "final", "text": "所有修改已完成并通过验证。\n\n## 改动文件\n- a.py", "reason": {"kind": "completed"}},
+    ]
+    raw = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines)
+    conclusion = extract_conclusion(raw)
+    assert conclusion.is_final is True
+    assert conclusion.text.startswith("所有修改已完成并通过验证。")
+    assert "我先看一下仓库" not in conclusion.text
+    assert '"type"' not in conclusion.text
+    assert '"tool_call"' not in conclusion.text
+
+
+def test_extract_conclusion_marks_process_notes_as_not_final():
+    # Real codebuddy stdout is truncated mid-stream and contains only narration.
+    notes = [
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "我先读代码"}]},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Bash 被拒绝，改用 Read"}]},
+    ]
+    raw = "[" + json.dumps(notes[0], ensure_ascii=False) + ", " + json.dumps(notes[1], ensure_ascii=False)
+    conclusion = extract_conclusion(raw)
+    assert conclusion.is_final is False
+    assert conclusion.truncated_stream is True
+    assert "我先读代码" in conclusion.text and "Bash 被拒绝" in conclusion.text
+
+
+def test_report_renders_final_answer_markdown_without_text_fence():
+    events = [{"type": "final", "text": "改完了。\n\n## 改动文件\n- a.py\n- b.py"}]
+    item = _item(stdout="\n".join(json.dumps(e, ensure_ascii=False) for e in events))
+    report = render_report(item)
+    assert "执行输出摘要（最终结论）" in report
+    assert "## 改动文件\n- a.py" in report
+    # A real answer keeps Markdown structure; only raw streams are fenced.
+    fenced_block = "<details><summary>执行输出摘要（最终结论）</summary>\n\n```text"
+    assert fenced_block not in report
+    assert "<details><summary>执行命令</summary>\n\n```text" in report
 
 
 def test_summarize_stdout_tolerates_truncated_tail():

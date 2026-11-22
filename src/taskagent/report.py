@@ -3,15 +3,76 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .executor import build_prompt
 from .models import WorkItem
 
-# Raw codebuddy stdout is a verbose JSON event stream (often >100k chars,
-# including the agent's own system prompt). Keep only the agent's final
-# conclusions in the report; the full stream stays on the WorkItem for the API.
+# Raw agent stdout is a verbose event stream (often >100k chars, including the
+# agent's own system prompt). Keep only conclusions in the report; the full
+# stream stays on the WorkItem for the API.
 _STDOUT_PREVIEW_LIMIT = 4000
+
+
+@dataclass(frozen=True)
+class Conclusion:
+    """Extracted answer plus metadata about how trustworthy it is."""
+
+    text: str
+    is_final: bool = False
+    truncated_stream: bool = False
+
+
+def _decode_events(raw: str) -> tuple[list[dict[str, Any]], bool]:
+    """Decode both CLI stdout dialects; report whether the stream was cut off.
+
+    - codebuddy prints a pretty-printed JSON *array* that is often truncated
+      mid-event; decode element by element and keep the parsed prefix.
+    - DSH prints newline-delimited JSON (session/status/tool_call/text/final);
+      line-by-line decoding keeps the trailing ``final`` answer.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return [], False
+    if text.startswith("["):
+        decoder = json.JSONDecoder()
+        pos = 1
+        events: list[dict[str, Any]] = []
+        truncated = not text.endswith("]")
+        while pos < len(text):
+            while pos < len(text) and text[pos] in " \n\r\t,":
+                pos += 1
+            if pos >= len(text) or text[pos] == "]":
+                break
+            try:
+                event, end = decoder.raw_decode(text, pos)
+            except json.JSONDecodeError:
+                truncated = True
+                break  # keep what we already parsed
+            if isinstance(event, dict):
+                events.append(event)
+            pos = end
+        return events, truncated
+
+    events = []
+    parsed = 0
+    broken = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            broken += 1
+            continue
+        parsed += 1
+        if isinstance(event, dict):
+            events.append(event)
+    # No parseable JSON at all: this is plain text, not a truncated stream.
+    return events, parsed > 0 and broken > 0
 
 
 def parent_title_of(item: WorkItem, store) -> str:
@@ -24,43 +85,62 @@ def parent_title_of(item: WorkItem, store) -> str:
     return ""
 
 
-def summarize_stdout(raw: str, limit: int = _STDOUT_PREVIEW_LIMIT) -> str:
-    """Extract codebuddy's final assistant conclusions from its JSON event stream.
+def _clip(text: str, raw: str, limit: int) -> str:
+    if len(text) > limit:
+        return text[:limit].rstrip() + f"\n\n…（原始输出共 {len(raw)} 字符，已截断；完整内容见工单数据）"
+    return text
 
-    The stream is a pretty-printed JSON array that may be truncated at the end,
-    so parse top-level elements incrementally and tolerate a broken tail. Falls
-    back to a plain-text preview when parsing yields nothing useful.
+
+def extract_conclusion(raw: str, limit: int = _STDOUT_PREVIEW_LIMIT) -> Conclusion:
+    """Pick the agent's answer, not its intermediate "let me look around" notes.
+
+    Priority: explicit ``final``/``result`` events (DSH / CLI result envelope),
+    then assistant output_text blocks, then DSH ``text`` events, then raw
+    plain text. Multiple assistant blocks with no explicit final event are
+    process notes: show them but mark them as not a final conclusion.
     """
-    if not raw or not raw.strip():
-        return ""
-    text = raw.strip()
-    conclusions: list[str] = []
-    if text.startswith("["):
-        decoder = json.JSONDecoder()
-        pos = 1
-        while pos < len(text):
-            while pos < len(text) and text[pos] in " \n\r\t,":
-                pos += 1
-            if pos >= len(text) or text[pos] == "]":
-                break
-            try:
-                event, end = decoder.raw_decode(text, pos)
-            except json.JSONDecodeError:
-                break  # truncated tail — keep what we already parsed
-            if event.get("type") == "message" and event.get("role") == "assistant":
-                for content in event.get("content", []):
-                    if content.get("type") == "output_text":
-                        value = (content.get("text") or "").strip()
-                        if value:
-                            conclusions.append(value)
-            pos = end
-    if conclusions:
-        result = "\n\n".join(conclusions)
-    else:
-        result = text  # not JSON / nothing parsed — show raw
-    if len(result) > limit:
-        result = result[:limit].rstrip() + f"\n\n…（原始输出共 {len(raw)} 字符，已截断；完整内容见工单数据）"
-    return result
+    events, truncated = _decode_events(raw)
+
+    # DSH's final answer: {"type":"final","text":"...","reason":{...}}
+    for event in reversed(events):
+        if event.get("type") == "final":
+            text = str(event.get("text") or "").strip()
+            if text:
+                return Conclusion(_clip(text, raw or "", limit), True, truncated)
+
+    # codebuddy's result envelope: {"type":"result","result":"..."}
+    for event in reversed(events):
+        if event.get("type") == "result":
+            text = str(event.get("result") or event.get("text") or "").strip()
+            if text:
+                return Conclusion(_clip(text, raw or "", limit), True, truncated)
+
+    assistant: list[str] = []
+    for event in events:
+        if event.get("type") == "message" and event.get("role") == "assistant":
+            for content in event.get("content") or []:
+                if content.get("type") == "output_text":
+                    value = str(content.get("text") or "").strip()
+                    if value:
+                        assistant.append(value)
+    if assistant:
+        # A single block is the answer; several are step-by-step narration.
+        return Conclusion(_clip("\n\n".join(assistant), raw or "", limit),
+                          len(assistant) == 1, truncated)
+
+    # DSH text events without a final event are also process notes.
+    texts = [str(e.get("text") or "").strip() for e in events if e.get("type") == "text"]
+    texts = [t for t in texts if t]
+    if texts:
+        return Conclusion(_clip("\n\n".join(texts), raw or "", limit), False, truncated)
+
+    plain = (raw or "").strip()
+    return Conclusion(_clip(plain, raw or "", limit), False, False) if plain else Conclusion("")
+
+
+def summarize_stdout(raw: str, limit: int = _STDOUT_PREVIEW_LIMIT) -> str:
+    """Backward-compatible text-only view of :func:`extract_conclusion`."""
+    return extract_conclusion(raw, limit).text
 
 
 def _command_skeleton(command: str) -> str:
@@ -72,14 +152,17 @@ def _command_skeleton(command: str) -> str:
     return command
 
 
-def _collapsed(title: str, body: str) -> list[str]:
-    """Emit an HTML <details> block (renders collapsed in most Markdown viewers)."""
+def _collapsed(title: str, body: str, *, fenced: bool = True) -> list[str]:
+    """Emit an HTML <details> block (renders collapsed in most Markdown viewers).
+
+    Real conclusions keep their Markdown structure (headings/lists/bold); raw
+    event streams and process notes stay in a plain-text fence.
+    """
+    inner = ["```text", body.rstrip(), "```"] if fenced else [body.rstrip()]
     return [
         f"<details><summary>{title}</summary>",
         "",
-        "```text",
-        body.rstrip(),
-        "```",
+        *inner,
         "",
         "</details>",
         "",
@@ -163,9 +246,15 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             ] + [""]
 
         # Verbose material goes to collapsed appendices instead of the main body.
-        stdout_summary = summarize_stdout(result.stdout)
-        if stdout_summary:
-            lines += _collapsed("执行输出摘要（codebuddy 最终结论）", stdout_summary)
+        conclusion = extract_conclusion(result.stdout)
+        if conclusion.text:
+            if conclusion.is_final:
+                title = "执行输出摘要（最终结论）"
+            elif conclusion.truncated_stream:
+                title = "执行过程节选（输出被截断，未捕获最终结论）"
+            else:
+                title = "执行输出摘要（无明确最终结论）"
+            lines += _collapsed(title, conclusion.text, fenced=not conclusion.is_final)
         if result.command:
             lines += _collapsed("执行命令", _command_skeleton(result.command))
         lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item))

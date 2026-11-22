@@ -54,30 +54,13 @@ export function renderMarkdown(markdown: string): string {
           break;
         }
       }
-      let inner = '';
-      let k = 1;
-      while (k < block.length) {
-        const current = block[k];
-        if (/^\s*<\/details>/i.test(current) || /<summary[^>]*>/i.test(current)) {
-          k++;
-          continue;
-        }
-        if (/^\s*```/.test(current)) {
-          k++;
-          const code: string[] = [];
-          while (k < block.length && !/^\s*```/.test(block[k])) {
-            code.push(block[k]);
-            k++;
-          }
-          k++;
-          inner += `<pre class="md-code">${esc(code.join('\n'))}</pre>`;
-        } else if (current.trim()) {
-          inner += `<p>${inline(current)}</p>`;
-          k++;
-        } else {
-          k++;
-        }
-      }
+      // 折叠块内部可能是最终结论的 Markdown（标题/列表/加粗），也可能是原始
+      // 事件流的 ```text 代码块。交给同一个渲染器递归处理，避免把 Markdown
+      // 标记当成纯文本显示。
+      const innerLines = block.slice(1).filter(
+        (current) => !/^\s*<\/details>/i.test(current) && !/<summary[^>]*>/i.test(current),
+      );
+      const inner = renderMarkdown(innerLines.join('\n'));
       out.push(`<details><summary>${inline(summaryText)}</summary>${inner}</details>`);
       continue;
     }
@@ -147,6 +130,54 @@ export function renderMarkdown(markdown: string): string {
   }
 
   return out.join('\n');
+}
+
+export interface ReportSection {
+  label: string;
+  html: string;
+}
+
+/**
+ * 按顶层 `##` 标题把报告拆成多个板块，交给弹窗渲染成 tab。
+ *
+ * 代码块（```）与折叠块（<details>）内部的 `##` 只是报告正文，不能作为拆分点；
+ * `#` 标题及其后的基本信息表归入第一个「基本信息」板块。
+ */
+export function renderReportSections(markdown: string): ReportSection[] {
+  const lines = String(markdown || '').split('\n');
+  const groups: {label: string; lines: string[]}[] = [];
+  let current = {label: '基本信息', lines: [] as string[]};
+  let inFence = false;
+  let detailsDepth = 0;
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      current.lines.push(line);
+      continue;
+    }
+    if (!inFence) {
+      if (/^\s*<details\b/i.test(line)) {
+        detailsDepth++;
+      } else if (/^\s*<\/details>/i.test(line)) {
+        detailsDepth = Math.max(0, detailsDepth - 1);
+      }
+      if (detailsDepth === 0) {
+        const heading = line.match(/^##\s+(.*)$/);
+        if (heading) {
+          groups.push(current);
+          current = {label: heading[1].trim(), lines: [line]};
+          continue;
+        }
+      }
+    }
+    current.lines.push(line);
+  }
+  groups.push(current);
+
+  return groups
+    .filter((group) => group.lines.some((line) => line.trim()))
+    .map((group) => ({label: group.label, html: renderMarkdown(group.lines.join('\n'))}));
 }
 
 export {esc};
