@@ -95,13 +95,38 @@ function parseTable(lines: string[], start: number): {rows: [string, string][]; 
   return {rows, end: i};
 }
 
-function listUnderHeading(lines: string[], pattern: RegExp, consumed: Set<number>): string[] {
+/**
+ * 标出每一行是否落在 `<details>` 折叠块内部。
+ *
+ * 后端会把「执行输出摘要」整段塞进折叠块，而那段文字里又带 `## 改动文件与原因`
+ * 这类标题。不做区分的话，这些标题会被当成真章节，导致折叠块被切碎、内容丢失。
+ */
+function detailsMask(lines: string[]): boolean[] {
+  const flags = new Array<boolean>(lines.length).fill(false);
+  let depth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const opens = /^\s*<details\b/i.test(lines[i]);
+    const closes = /^\s*<\/details>/i.test(lines[i]);
+    if (opens) depth += 1;
+    flags[i] = depth > 0;
+    if (closes) depth = Math.max(0, depth - 1);
+  }
+  return flags;
+}
+
+function listUnderHeading(
+  lines: string[],
+  pattern: RegExp,
+  consumed: Set<number>,
+  inDetails: boolean[],
+): string[] {
   const files: string[] = [];
   for (let i = 0; i < lines.length; i++) {
+    if (inDetails[i]) continue; // 折叠块内的标题不是真章节
     const heading = lines[i].match(/^#{1,6}\s+(.*)$/);
     if (!heading || !pattern.test(stripInline(heading[1]))) continue;
     let hit = false;
-    for (let j = i + 1; j < lines.length && !/^#{1,6}\s/.test(lines[j]); j++) {
+    for (let j = i + 1; j < lines.length && !/^#{1,6}\s/.test(lines[j]) && !inDetails[j]; j++) {
       const match = lines[j].match(FILE_ITEM);
       if (!match) continue;
       files.push(match[1].trim());
@@ -128,8 +153,11 @@ const LINK_LABEL = /链接|地址|URL|url/;
 function describeBody(
   lines: string[],
   consumed: Set<number>,
+  inDetails: boolean[],
 ): {metaFields: {label: string; value: string; url?: string}[]; description: string; sectionEnd: number} {
-  const start = lines.findIndex((line) => /^#{1,6}\s/.test(line) && /需求描述|描述/.test(line));
+  const start = lines.findIndex(
+    (line, index) => !inDetails[index] && /^#{1,6}\s/.test(line) && /需求描述|描述/.test(line),
+  );
   if (start < 0) return {metaFields: [], description: '', sectionEnd: -1};
 
   const body: string[] = [];
@@ -137,7 +165,7 @@ function describeBody(
 
   // `i` 在循环外声明：循环结束后它就是下一个标题的位置（小节结束处）。
   let i = start + 1;
-  for (; i < lines.length && !/^#{1,6}\s/.test(lines[i]); i++) {
+  for (; i < lines.length && !(/^#{1,6}\s/.test(lines[i]) && !inDetails[i]); i++) {
     const line = lines[i].trim();
     if (!line) {
       body.push('');
@@ -171,9 +199,18 @@ function factsUnderHeading(lines: string[], pattern: RegExp): [string, string][]
   return [];
 }
 
-function markSyncSections(lines: string[], consumed: Set<number>) {
+function markSyncSections(lines: string[], consumed: Set<number>, inDetails: boolean[]) {
   let inside = false;
   for (let i = 0; i < lines.length; i++) {
+    // 遇到折叠块说明已经进入报告附录，同步小节到此为止
+    if (inside && /^\s*<details\b/i.test(lines[i])) {
+      inside = false;
+      continue;
+    }
+    if (inDetails[i]) {
+      if (inside) consumed.add(i);
+      continue;
+    }
     const heading = lines[i].match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       if (heading[1].length <= 3) inside = heading[1].length === 3 && /自动同步/.test(stripInline(heading[2]));
@@ -195,6 +232,7 @@ export function moduleOf(file: string): string {
 export function analyzeReport(markdown: string): ReportSummary {
   const lines = String(markdown || '').split('\n');
   const consumed = new Set<number>();
+  const inDetails = detailsMask(lines);
 
   let headline = '';
   const groups: FactGroup[] = [];
@@ -237,15 +275,15 @@ export function analyzeReport(markdown: string): ReportSummary {
     }
   }
 
-  markSyncSections(lines, consumed);
+  markSyncSections(lines, consumed, inDetails);
 
   const syncFacts = new Map(factsUnderHeading(lines, /自动同步/));
   const factOf = (key: string) => facts.get(key) ?? syncFacts.get(key);
 
-  const changedFiles = listUnderHeading(lines, /改动文件/, consumed);
-  const conflicted = listUnderHeading(lines, /同步冲突/, consumed);
-  const deleted = listUnderHeading(lines, /已删除/, consumed);
-  const skipped = listUnderHeading(lines, /跳过/, consumed);
+  const changedFiles = listUnderHeading(lines, /改动文件/, consumed, inDetails);
+  const conflicted = listUnderHeading(lines, /同步冲突/, consumed, inDetails);
+  const deleted = listUnderHeading(lines, /已删除/, consumed, inDetails);
+  const skipped = listUnderHeading(lines, /跳过/, consumed, inDetails);
   const backupDir = factOf('备份目录') ?? null;
   const syncError =
     lines.map((line) => line.match(WARNING_LINE)).find((m) => m?.[1] === '同步错误')?.[2]?.trim() ?? '';
@@ -404,10 +442,12 @@ export function analyzeReport(markdown: string): ReportSummary {
     modules,
     groups,
     ...(() => {
-      const described = describeBody(lines, consumed);
+      const described = describeBody(lines, consumed, inDetails);
       // 需求描述已由「需求描述」分区单独展示，正文里跳过整节（标题 + 内容）。
       if (described.sectionEnd < 0) return described;
-      const start = lines.findIndex((line) => /^#{1,6}\s/.test(line) && /需求描述|描述/.test(line));
+      const start = lines.findIndex(
+    (line, index) => !inDetails[index] && /^#{1,6}\s/.test(line) && /需求描述|描述/.test(line),
+  );
       for (let i = start; i <= described.sectionEnd && i < lines.length; i++) consumed.add(i);
       return described;
     })(),

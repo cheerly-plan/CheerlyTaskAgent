@@ -146,6 +146,17 @@
   .report-body .md-code {
     @apply my-3 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-[#ededf3] bg-[#f7f7fb] px-4 py-3 font-mono text-[11.5px] leading-[1.75] text-[#3b3e52];
   }
+  /* 固定展开的附加信息块（执行命令 / 提示词）：小标签 + 代码块，无折叠交互 */
+  .report-body .md-block {
+    @apply my-5;
+  }
+  .report-body .md-block-label {
+    @apply mb-2 text-[11.5px] font-semibold tracking-[0.06em] text-faint;
+  }
+  .report-body .md-block .md-code {
+    @apply mt-0;
+  }
+
   .report-body details {
     @apply my-4 rounded-xl border border-border bg-[#fcfcfe] px-4;
   }

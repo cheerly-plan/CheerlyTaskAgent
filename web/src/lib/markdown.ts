@@ -78,7 +78,8 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
           break;
         }
       }
-      const opened = /\bopen\b/i.test(block[0]) || /提示词/.test(summaryText);
+      // 执行输出摘要（最终结论）是报告的主内容，默认展开；原始输出仍折叠。
+      const opened = /\bopen\b/i.test(block[0]) || /执行输出摘要|提示词/.test(summaryText);
       const innerLines = block.slice(1).filter(
         (current) =>
           !/^\s*<\/details>/i.test(current) &&
@@ -91,6 +92,12 @@ export function renderMarkdown(markdown: string, breakOnNewline = false): string
       const isPrompt = /提示词/.test(summaryText);
       const cleaned = isPrompt ? stripHtml(innerLines.join('\n')) : innerLines.join('\n');
       const inner = renderMarkdown(cleaned, breakOnNewline);
+      // 「执行命令」「提示词」是排查问题的关键信息，固定展开、不做折叠交互；
+      // 原始输出可能几十万字符，保留折叠。
+      if (/执行命令|提示词/.test(summaryText)) {
+        out.push(`<div class="md-block"><div class="md-block-label">${inline(summaryText)}</div>${inner}</div>`);
+        continue;
+      }
       out.push(`<details${opened ? ' open' : ''}><summary>${inline(summaryText)}</summary>${inner}</details>`);
       continue;
     }
