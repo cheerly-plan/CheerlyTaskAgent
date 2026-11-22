@@ -1,19 +1,3 @@
-/**
- * 报告 → 可视化摘要模型。
- *
- * 后端 `report.py` 生成的 Markdown 是完整的人类可读记录：关键结论（成功与否、
- * 耗时、改了哪些文件）埋在三张「字段 / 值」表和几百行原始输出之间。这里把
- * 前两张表（基本信息 / 执行结果）解析成结构化事实，并提炼出给人看的重点：
- *
- * - 三态结论与一句话 verdict（成功 · 4 个文件已改动 / 失败 · 1 个冲突）；
- * - 指标卡（执行结果 / 耗时 / 改动文件 / 同步数）；
- * - 提示列表：错误、同步冲突、改动文件、输出截断等需要注意的信息；
- * - 改动文件的模块分布（条形图数据）；
- * - 诊断：原始输出被截断 / 没有最终结论，提示结论的可信度。
- *
- * 只认前两张表是刻意的约定，而非通用 Markdown 解析：报告里的子表（改动文件、
- * 自动同步）都挂在 `###` 或 `####` 标题下，不会被误当成主表。
- */
 
 export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
@@ -29,7 +13,6 @@ export interface Attention {
 export interface Fact {
   label: string;
   value: string;
-  /** ID / 路径这类值用等宽字体，方便复制。 */
   mono?: boolean;
 }
 
@@ -42,17 +25,13 @@ export interface ModuleSlice {
   name: string;
   files: string[];
   count: number;
-  /** 相对最大模块的百分比，直接做条形图宽度。 */
   percent: number;
 }
 
 export interface ReportSummary {
-  /** 报告的 `#` 标题。 */
   headline: string;
-  /** 去掉「工作项报告：」前缀后的工单标题。 */
   subject: string;
   outcome: 'success' | 'failure' | 'pending';
-  /** 一句话结论。 */
   verdict: string;
   ok: boolean | null;
   dryRun: boolean | null;
@@ -60,7 +39,6 @@ export interface ReportSummary {
   changedFiles: string[];
   syncedCount: number;
   conflicted: string[];
-  /** 自动同步明细（同步小节存在时才有）。 */
   sync: {
     deleted: string[];
     skipped: string[];
@@ -71,7 +49,6 @@ export interface ReportSummary {
   attention: Attention[];
   modules: ModuleSlice[];
   groups: FactGroup[];
-  /** 项目 / 模式的「一眼可辨」badge 值（来自基本信息表）。 */
   meta: {
     kind: string;
     status: string;
@@ -81,7 +58,6 @@ export interface ReportSummary {
     repo: string;
     worktree: string;
   };
-  /** 已剥掉标题 / 主表 / 改动与同步清单的正文 Markdown，供「完整报告」渲染。 */
   rest: string;
   diagnostics: string[];
 }
@@ -90,7 +66,6 @@ const FILE_ITEM = /^\s*[-*]\s+`([^`]+)`\s*$/;
 const WARNING_LINE = /^>\s*⚠️\s*(执行错误|同步错误)[：:]?\s*(.*)$/;
 const MONO_FIELDS = new Set(['ID', 'git 地址', '映射仓库', 'worktree']);
 
-/** 去掉 inline 标记（加粗、反引号），得到纯文本。 */
 function stripInline(value: string): string {
   return value.replace(/\*\*(.+?)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').trim();
 }
@@ -99,7 +74,6 @@ function isSeparatorRow(line: string): boolean {
   return /^\s*\|[\s:|-]+\|\s*$/.test(line);
 }
 
-/** `| 字段 | 值 |` 表 → 键值对；跳过表头与分隔行。 */
 function parseTable(lines: string[], start: number): {rows: [string, string][]; end: number} {
   const rows: [string, string][] = [];
   let i = start;
@@ -116,7 +90,6 @@ function parseTable(lines: string[], start: number): {rows: [string, string][]; 
   return {rows, end: i};
 }
 
-/** 取 `### 标题` 之后、下一个标题之前的反引号列表项。 */
 function listUnderHeading(lines: string[], pattern: RegExp, consumed: Set<number>): string[] {
   const files: string[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -130,12 +103,11 @@ function listUnderHeading(lines: string[], pattern: RegExp, consumed: Set<number
       consumed.add(j);
       hit = true;
     }
-    if (hit) consumed.add(i); // 整节都已结构化展示，正文里不再重复
+    if (hit) consumed.add(i);
   }
   return files;
 }
 
-/** 取某个 `###` 小节内第一张「字段 / 值」表（用于同步结果的数量与备份目录）。 */
 function factsUnderHeading(lines: string[], pattern: RegExp): [string, string][] {
   const start = lines.findIndex((line) => {
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
@@ -148,10 +120,6 @@ function factsUnderHeading(lines: string[], pattern: RegExp): [string, string][]
   return [];
 }
 
-/**
- * 「### 自动同步到主仓库」整节（含子标题）已经结构化展示到「改动」标签页，
- * 从正文中移除：包括标题、子标题、其中的「字段 / 值」表与列表。
- */
 function markSyncSections(lines: string[], consumed: Set<number>) {
   let inside = false;
   for (let i = 0; i < lines.length; i++) {
@@ -165,7 +133,6 @@ function markSyncSections(lines: string[], consumed: Set<number>) {
   }
 }
 
-/** 目录聚合：`web/src/pages/a.tsx` → `web/src/pages`；过深的路径取末两级。 */
 export function moduleOf(file: string): string {
   const clean = file.replace(/\s*[（(][^）)]*[）)]\s*$/, '').trim();
   const parts = clean.split('/');
@@ -178,12 +145,10 @@ export function analyzeReport(markdown: string): ReportSummary {
   const lines = String(markdown || '').split('\n');
   const consumed = new Set<number>();
 
-  // ① 标题 + 前两张主表（基本信息 / 执行结果）
   let headline = '';
   const groups: FactGroup[] = [];
   const facts = new Map<string, string>();
 
-  /** 把「字段 / 值」表并入分组与字典，并把表头、分隔行一起标记为已消费。 */
   const takeTable = (label: string, start: number) => {
     const {rows, end} = parseTable(lines, start);
     if (!rows.length) return 0;
@@ -204,7 +169,6 @@ export function analyzeReport(markdown: string): ReportSummary {
       consumed.add(i);
       continue;
     }
-    // 报告开头可能紧跟一个没有 `##` 标题的「字段 / 值」表 → 作为「基本信息」。
     if (!groups.length && i > 0 && /^\s*\|/.test(line) && /^\s*\|.*\|\s*$/.test(line)) {
       const end = takeTable('基本信息', i);
       if (end) {
@@ -213,7 +177,6 @@ export function analyzeReport(markdown: string): ReportSummary {
       }
     }
     if (!/^##\s+/.test(line) || groups.length >= 2) continue;
-    // 标题与表格之间可能空一行（后端用 lines += [...""] 拼接）。
     const tableStart = /^\s*\|/.test(lines[i + 1] ?? '') ? i + 1 : /^\s*\|/.test(lines[i + 2] ?? '') && !(lines[i + 1] ?? '').trim() ? i + 2 : -1;
     if (tableStart < 0) continue;
     const end = takeTable(stripInline(line.replace(/^##\s+/, '')), tableStart);
@@ -223,10 +186,8 @@ export function analyzeReport(markdown: string): ReportSummary {
     }
   }
 
-  // ② 清单类小节：先整节标记为已消费（不重复展示），再按小节取文件。
   markSyncSections(lines, consumed);
 
-  // 同步子表（#### 自动同步到主仓库）里的数量也算进「字段 → 值」字典。
   const syncFacts = new Map(factsUnderHeading(lines, /自动同步/));
   const factOf = (key: string) => facts.get(key) ?? syncFacts.get(key);
 
@@ -238,7 +199,6 @@ export function analyzeReport(markdown: string): ReportSummary {
   const syncError =
     lines.map((line) => line.match(WARNING_LINE)).find((m) => m?.[1] === '同步错误')?.[2]?.trim() ?? '';
 
-  // ③ 结论与警示
   const okRaw = facts.get('成功');
   const ok = okRaw === undefined ? null : okRaw === '是';
   const dryRaw = factOf('dry-run');
@@ -256,7 +216,6 @@ export function analyzeReport(markdown: string): ReportSummary {
   const outcome: ReportSummary['outcome'] =
     ok === null ? 'pending' : ok && !execError ? 'success' : 'failure';
 
-  // ④ 一句话结论
   const parts: string[] = [
     outcome === 'success'
       ? dryRun
@@ -270,7 +229,6 @@ export function analyzeReport(markdown: string): ReportSummary {
   if (conflictCount) parts.push(`${conflictCount} 个文件同步冲突`);
   else if (syncError) parts.push('同步出错');
 
-  // ⑤ 提示：按严重程度排序（错误 → 冲突 → 截断 → 改动文件）
   const attention: Attention[] = [];
   if (execError) {
     attention.push({kind: 'error', tone: 'danger', title: '执行错误', detail: execError});
@@ -310,7 +268,6 @@ export function analyzeReport(markdown: string): ReportSummary {
         : '执行器没有返回明确的 final 事件，摘要来自过程记录。',
     });
   }
-  // 改动文件属于「已知情况」而非风险，只在同步不完整或未落库时提示。
   if (changedFiles.length && !dryRun && syncedCount < changedFiles.length) {
     attention.push({
       kind: 'files',
@@ -332,7 +289,6 @@ export function analyzeReport(markdown: string): ReportSummary {
     });
   }
 
-  // ⑥ 模块分布
   const buckets = new Map<string, string[]>();
   for (const file of changedFiles) {
     const name = moduleOf(file);
@@ -344,7 +300,6 @@ export function analyzeReport(markdown: string): ReportSummary {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
     .map((slice) => ({...slice, percent: Math.round((slice.count / largest) * 100)}));
 
-  // ⑦ 指标卡
   const duration = facts.get('耗时') ?? null;
   const stats: ReportSummary['stats'] = [
     {

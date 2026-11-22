@@ -13,9 +13,7 @@ import {
 export interface ChartSeries {
   key: string;
   label: string;
-  /** 柱体主色（渐变底端）。 */
   color: string;
-  /** 渐变顶端色，缺省自动提亮。 */
   colorFrom?: string;
 }
 
@@ -30,14 +28,12 @@ interface WorkloadChartProps {
   height?: number;
 }
 
-/** 收敛成「非负有限整数」，挡住 null / NaN / Infinity / 字符串 / 负数。 */
 function toCount(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n) || n < 0) return 0;
   return Math.floor(n);
 }
 
-/** 整齐刻度步长（1/2/5 × 10^n）。 */
 function niceStep(max: number): number {
   if (max <= 0) return 1;
   const rough = max / 4;
@@ -47,7 +43,6 @@ function niceStep(max: number): number {
   return Math.max(1, step * magnitude);
 }
 
-/** #rrggbb → 提亮(正)/压深(负)。 */
 function shade(color: string, amount: number): string {
   const hex = color.replace('#', '');
   if (hex.length !== 6) return color;
@@ -65,7 +60,6 @@ interface TipEntry {
   name?: string | number;
 }
 
-/** 自定义 tooltip：日期标题 + 总计 + 分色明细，白底圆角卡片。 */
 function ChartTooltip({
   active,
   payload,
@@ -107,13 +101,6 @@ function ChartTooltip({
   );
 }
 
-/**
- * 工单处理量堆叠柱状图（recharts）。
- * - 紫色渐变柱体 + 圆角，悬停列叠加斜纹高亮
- * - 悬停列 X 轴标签加深，其余列轻微变淡
- * - 自定义 tooltip（日期 / 总计 / 分色明细）
- * - 兜底：异常值收敛为 0，Y 轴整齐步长，不会被撑爆
- */
 export function WorkloadChart({data, series, height = 260}: WorkloadChartProps) {
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
 
@@ -228,7 +215,6 @@ export function WorkloadChart({data, series, height = 260}: WorkloadChartProps) 
                 <Cell
                   key={String(point.label)}
                   fill={`url(#grad-${s.key})`}
-                  // 悬停列叠斜纹强调，其余列轻微变淡
                   className={hoverIndex === pointIndex ? 'chart-bar-active' : undefined}
                   opacity={dimmed ? 0.45 : 1}
                   style={{outline: 'none'}}

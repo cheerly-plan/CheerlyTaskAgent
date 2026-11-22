@@ -13,7 +13,6 @@ import {
   canonicalModelId,
   cliDefaultLabel,
   modelCategory,
-  modelHint,
   modelMatches,
   sortModelsByCategory,
 } from '@/lib/utils';
@@ -35,8 +34,6 @@ export function SettingsPage() {
     setDraft(settings);
   }, [settings]);
 
-  // 每个后端各自的模型列表（来自各自 CLI 探测），缺失时为空。
-  // 必须在提前 return 之前声明，避免 Hooks 调用顺序不一致。
   const modelsByBackend = React.useMemo(() => {
     const map: Record<string, ModelChoice[]> = {};
     for (const info of backendInfos) {
@@ -70,7 +67,6 @@ export function SettingsPage() {
       return {...prev, backends: {...(prev.backends ?? {}), [id]: {...current, [key]: value}}};
     });
 
-  // 新增后端：生成一个不与现有 id 冲突的标识，保存后由后端纳入注册表。
   const addBackend = () =>
     setDraft((prev) => {
       if (!prev) return prev;
@@ -90,7 +86,6 @@ export function SettingsPage() {
       };
     });
 
-  // 删除后端：任何后端都可删除；若被删的正是默认后端，回退到第一个剩余后端（或空）。
   const removeBackend = (id: string) =>
     setDraft((prev) => {
       if (!prev) return prev;
@@ -111,7 +106,6 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      {/* ── 执行后端：完全由配置驱动，可增删 ─────────────────────────── */}
       <Card className="flex min-h-[200px] min-h-0 flex-col overflow-hidden">
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
@@ -126,11 +120,7 @@ export function SettingsPage() {
           </Button>
         </div>
 
-        {backendEntries.length === 0 ? (
-          <div className="p-6 text-center text-[12px] text-faint">
-            还没有配置执行后端，点击「添加后端」新建一个。
-          </div>
-        ) : (
+        {backendEntries.length === 0 ? null : (
             <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-full border-collapse text-[12.5px]">
                 <thead className="sticky top-0 z-10 bg-card">
@@ -149,12 +139,9 @@ export function SettingsPage() {
                     const current = getBackend(id);
                     const displayName = current.label || id;
                     const info = backendInfos.find((entry) => entry.id === id);
-                    // 有些 CLI（DSH）没有 --model：模型钉在它自己的 profile 里，只读展示。
                     const canPickModel = info?.model_selection !== false;
                     const pinnedName = (info?.models ?? []).find((model) => model.current)?.id ?? '';
                     const cliDefault = cliDefaultLabel(modelsByBackend[id] ?? []);
-                    // 自定义模型 = 用户在 CLI 里自己配置的（codebuddy 的 models.json、
-                    // DSH 手写网关路由），与 CLI 自带的内置模型分开统计与标注。
                     const backendModels = modelsByBackend[id] ?? [];
                     const customModels = backendModels.filter((model) => model.custom);
                     return (
@@ -163,7 +150,6 @@ export function SettingsPage() {
                           <Input
                             className="h-8"
                             value={current.label}
-                            placeholder="请输入后端名称"
                             onChange={(event) => patchBackend(id, 'label', event.target.value)}
                           />
                         </td>
@@ -171,7 +157,6 @@ export function SettingsPage() {
                           <Input
                             className="h-8 font-mono"
                             value={current.command}
-                            placeholder="请输入 CLI 路径"
                             onChange={(event) => patchBackend(id, 'command', event.target.value)}
                           />
                         </td>
@@ -181,16 +166,13 @@ export function SettingsPage() {
                               size="sm"
                               className="w-full"
                               value={canonicalModelId(backendModels, current.model)}
-                              placeholder={cliDefault}
                               options={[
                                 {value: '', label: cliDefault},
                                 ...sortModelsByCategory(backendModels).map((model) => ({
                                   value: model.id,
                                   label: model.label ?? model.id,
-                                  hint: modelHint(model),
                                   group: modelCategory(model),
                                 })),
-                                // 当前已保存的模型若不在动态列表里（含别名），仍保留以免丢失
                                 ...(current.model && !backendModels.some((model) => modelMatches(model, current.model))
                                   ? [{value: current.model, label: current.model}]
                                   : []),
@@ -201,10 +183,8 @@ export function SettingsPage() {
                               onChange={(value) => patchBackend(id, 'model', value)}
                             />
                           ) : (
-                            // 该 CLI 没有 --model：模型钉在它自己的 profile 里，只读展示。
                             <div
                               className="flex h-8 w-full items-center gap-1.5 rounded-md border border-dashed border-border bg-[#fbfbfd] px-2 text-xs text-faint"
-                              title={`${displayName} 不支持按任务指定模型，实际使用 profile 中钉住的模型`}
                             >
                               <Lock className="size-3 shrink-0" />
                               <span className="truncate">
@@ -215,7 +195,6 @@ export function SettingsPage() {
                           {canPickModel && backendModels.length > 0 ? (
                             <div
                               className="mt-1 flex items-center gap-1 text-[11px] text-faint"
-                              title={customModels.length ? `自定义：${customModels.map((model) => model.label).join('、')}` : undefined}
                             >
                               <Sparkles className={customModels.length ? 'size-3 text-[#6d3fc0]' : 'size-3'} />
                               <span>
@@ -265,7 +244,6 @@ export function SettingsPage() {
                             size="icon-sm"
                             onClick={() => removeBackend(id)}
                             aria-label={`删除 ${displayName}`}
-                            title="删除此后端"
                           >
                             <Trash2 />
                           </Button>
@@ -279,23 +257,21 @@ export function SettingsPage() {
         )}
       </Card>
 
-      {/* ── 调度策略：没有后端时无默认后端/并发可配置，隐藏 ─────────── */}
       {backendEntries.length > 0 && (
         <Card className="shrink-0 p-5">
           <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
             <SlidersHorizontal className="size-4 text-primary" />
             调度策略
           </h3>
-          <p className="mb-4 mt-0.5 text-[11.5px] text-faint">控制默认后端、并发数量与执行后的全局同步行为。</p>
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="新建任务默认后端" hint="手动建单预选的后端；未启用的后端不会出现" className="mb-0">
+            <Field label="默认后端" className="mb-0">
               <SelectField
                 value={draft.executor || ''}
                 options={backendChoices}
                 onChange={(value) => patch('executor', value)}
               />
             </Field>
-            <Field label="并发执行数" hint="同时运行的最大任务数" className="mb-0">
+            <Field label="并发执行数" className="mb-0">
               <Input
                 type="number"
                 min={1}
@@ -307,7 +283,6 @@ export function SettingsPage() {
         </Card>
       )}
 
-      {/* ── 操作栏 ───────────────────────────────────────────────── */}
       <Card className="flex shrink-0 flex-wrap items-center gap-2 p-4">
         <Button size="sm" onClick={() => void saveSettings(draft)}>
           <Save />
@@ -317,9 +292,6 @@ export function SettingsPage() {
           <RefreshCw />
           重新载入
         </Button>
-        <span className="ml-1 text-[11.5px] text-faint">
-          后端的新增 / 删除、CLI 路径、默认模型与并发数在保存后立即生效；正在执行的任务不受影响。
-        </span>
       </Card>
     </div>
   );

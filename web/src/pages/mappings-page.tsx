@@ -17,7 +17,6 @@ export function MappingsPage() {
   const [profiles, setProfiles] = React.useState<Record<string, RepoProfile>>({});
   const [rebuilding, setRebuilding] = React.useState(false);
 
-  // 仓库画像（多仓库分流的依据）：进页面拉一次，供表格展示角色。
   const loadProfiles = React.useCallback(async () => {
     try {
       const result = await endpoints.repoProfiles();
@@ -25,7 +24,6 @@ export function MappingsPage() {
       for (const profile of result.profiles ?? []) map[profile.mapping_id] = profile;
       setProfiles(map);
     } catch {
-      /* 画像只是辅助信息，失败不影响页面 */
     }
   }, []);
 
@@ -45,7 +43,6 @@ export function MappingsPage() {
     }
   };
 
-  // 缓存还没写进设置时，静默拉一次项目名，避免这页只显示裸项目 ID。
   React.useEffect(() => {
     const cid = (settings?.tapd?.company_id || '').trim();
     if (!cid || !settings?.tapd?.api_user || fetchedProjects.length) return;
@@ -63,8 +60,6 @@ export function MappingsPage() {
   const pickThenMap = () =>
     pickFolder((path) => {
       const name = path.split('/').filter(Boolean).pop() ?? path;
-      // 选完文件夹后异步读取 git origin，预填到「仓库信息 / 备注」。
-      // 读取失败/非 git 目录时保持空，不阻塞弹窗打开。
       void readGitOrigin(path).then((origin) => {
         openMappingModal({
           id: '',
@@ -97,7 +92,6 @@ export function MappingsPage() {
             size="sm"
             variant="outline"
             onClick={() => void rebuildProfiles()}
-            title="重新扫描每个仓库的技术栈与关键词（多仓库分流依据）"
           >
             <RefreshCw className={rebuilding ? 'animate-spin' : ''} />
             重建画像
@@ -113,7 +107,6 @@ export function MappingsPage() {
         <EmptyState
           icon={FolderGit2}
           title="暂无项目映射"
-          description="点右上角「手动新增」直接填写，或用「选择 / 扫描文件夹」从本地目录批量导入。"
         />
       ) : (
         <Table className="min-w-[980px]" containerClassName="min-h-0 flex-1">
@@ -133,14 +126,13 @@ export function MappingsPage() {
               <TableRow key={mapping.id}>
                 <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
                 <TableCell>
-                  <Mono className="block max-w-[200px] truncate" title={mapping.path}>
+                  <Mono className="block max-w-[200px] truncate">
                     {mapping.path}
                   </Mono>
                 </TableCell>
                 <TableCell>
                   <span
                     className="block max-w-[220px] truncate text-[12.5px] text-foreground/70"
-                    title={mapping.note || undefined}
                   >
                     {mapping.note || '—'}
                   </span>
@@ -167,7 +159,6 @@ export function MappingsPage() {
                             key={role}
                             variant="purple"
                             className="gap-1"
-                            title={profile?.fingerprints?.length ? `依据：${profile.fingerprints.join('、')}` : undefined}
                           >
                             <Sparkles className="size-2.5" />
                             {label[role] ?? role}
@@ -185,7 +176,7 @@ export function MappingsPage() {
                     return ids.length ? (
                       <div className="flex flex-wrap gap-1">
                         {ids.map((id) => (
-                          <Badge key={id} variant="info" title={`项目 ID：${id}`}>
+                          <Badge key={id} variant="info">
                             {projectLabel(id)}
                           </Badge>
                         ))}
@@ -228,10 +219,6 @@ export function MappingsPage() {
           </TableBody>
         </Table>
       )}
-
-      <div className="border-t border-border bg-[#fbfbfd] px-5 py-2.5 text-[11.5px] text-faint">
-        目录浏览与扫描为只读且限制在主目录内；不会改动文件系统。
-      </div>
     </Card>
   );
 }

@@ -46,11 +46,9 @@ function sortValue(item: WorkItem, field: string): string {
   }
 }
 
-/** 历史记录：只展示 apply 执行结束的任务（成功 / 失败 / 跳过 / 已取消），可看报告、重试、删除。 */
 export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const {
     historyItems,
-    historyTotal,
     historyHasMore,
     historyLoading,
     loadMoreHistory,
@@ -73,8 +71,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
 
-  // 只归档真实执行（apply）的终态记录；dry-run 是预演，留在任务中心。
-  // 数据来自后端分页（context 里按需向后拉取），这里只对已加载的部分做筛选排序。
   const finished = React.useMemo(() => historyItems.filter((item) => isArchived(item)), [historyItems]);
 
   const visible = React.useMemo(() => {
@@ -105,7 +101,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
     setPage(1);
   }, [filters, keyword, sort, pageSize]);
 
-  // 翻到已加载数据之外时，再向后端要一段历史（分页拉取）。
   const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
   const safePage = Math.min(page, pageCount);
   const loadPending = safePage >= pageCount && historyHasMore && !historyLoading;
@@ -134,7 +129,7 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
 
   const countText =
     visible.length === finished.length
-      ? `${finished.length} 条历史记录${historyHasMore ? `（共 ${historyTotal} 条）` : ''}`
+      ? `${finished.length} 条历史记录`
       : `${visible.length} / ${finished.length} 条历史记录`;
 
   const refresh = async () => {
@@ -160,21 +155,19 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
               size="icon-sm"
               variant="outline"
               onClick={() => void refresh()}
-              title="刷新"
+              aria-label="刷新"
             >
               <RefreshCw className={cn(refreshing && 'animate-spin')} />
             </Button>
           </div>
         </div>
 
-        {/* 工具栏：搜索 / 筛选 / 视图切换 */}
         <div className="flex shrink-0 flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">
           <div className="relative min-w-0 flex-1 lg:max-w-[260px]">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
             <Input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="请输入关键词搜索"
               className="h-8 pl-8 text-xs"
             />
           </div>
@@ -186,7 +179,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
               size="sm"
               className="w-[118px]"
               value={filters.status}
-              title="状态"
               onChange={(value) => setFilters((prev) => ({...prev, status: value}))}
               options={[{value: '', label: '全部状态'}, ...statusOptions]}
             />
@@ -194,7 +186,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
               size="sm"
               className="w-[116px]"
               value={filters.source}
-              title="来源"
               onChange={(value) => setFilters((prev) => ({...prev, source: value}))}
               options={[
                 {value: '', label: '全部来源'},
@@ -206,7 +197,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
               size="sm"
               className="w-[132px]"
               value={filters.project}
-              title="项目"
               onChange={(value) => setFilters((prev) => ({...prev, project: value}))}
               options={[
                 {value: '', label: '全部项目'},
@@ -221,7 +211,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
                   size="sm"
                   className="w-[104px]"
                   value={sort.field}
-                  title="排序字段"
                   onChange={(value) => setSort({field: value as SortField, direction: sort.direction})}
                   options={sortFields}
                 />
@@ -229,7 +218,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
                   size="icon-sm"
                   variant="outline"
                   onClick={() => setSort((prev) => ({...prev, direction: prev.direction === 'asc' ? 'desc' : 'asc'}))}
-                  title={sort.direction === 'asc' ? '当前升序，点击改为降序' : '当前降序，点击改为升序'}
                   aria-label="切换升降序"
                 >
                   {sort.direction === 'asc' ? <ArrowUp /> : <ArrowDown />}
@@ -276,7 +264,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
           <EmptyState
             icon={History}
             title="还没有历史记录"
-            description="apply 执行结束后（成功 / 失败 / 跳过 / 已取消）会自动归档到这里；dry-run 预演留在任务中心。"
             action={
               onOpenTasks ? (
                 <Button variant="outline" size="sm" className="mt-2" onClick={onOpenTasks}>
@@ -289,7 +276,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
           <EmptyState
             icon={Search}
             title="没有符合条件的历史记录"
-            description="试试调整筛选条件或搜索关键词。"
             action={
               <Button variant="outline" size="sm" className="mt-2" onClick={resetFilters}>
                 清除筛选
@@ -335,10 +321,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
             <span className="flex items-center gap-1.5 text-[11.5px] tabular-nums text-faint">
               {historyLoading ? <RefreshCw className="size-3 animate-spin" /> : null}
               共 {finished.length} 条历史记录
-              {historyHasMore ? `（已加载 ${finished.length} / ${historyTotal} 条）` : ''}
-              {!historyHasMore && historyTotal > finished.length
-                ? `（存储共 ${historyTotal} 条，未归档的不计入）`
-                : ''}
               {visible.length !== finished.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
             </span>
             <div className="flex items-center gap-2">
@@ -375,9 +357,6 @@ export function HistoryPage({onOpenTasks}: {onOpenTasks?: () => void}) {
         ) : null}
       </Card>
 
-      <p className="mt-3 shrink-0 text-[11.5px] text-faint">
-        提示：点「报告」查看执行详情；失败或已取消的任务可点「执行」重新运行，dry-run 成功的任务可选 apply 继续。
-      </p>
     </div>
   );
 }

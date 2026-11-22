@@ -76,7 +76,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
   const tapd = settings?.data_source?.tapd ?? settings?.tapd;
   const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
 
-  // 只有 apply 的终态会归档到「历史记录」；dry-run 结果留在列表，方便接着 apply。
   const activeItems = React.useMemo(
     () => items.filter((item) => !isArchived(item)),
     [items],
@@ -92,7 +91,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
       );
     }
     if (filters.level) {
-      // 只按「是否属于某个父需求」区分：父需求本身不执行，单独筛它没有意义。
       list = list.filter((item) =>
         filters.level === 'child' ? Boolean(item.parent_ref) : !item.parent_ref,
       );
@@ -109,7 +107,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
       const result = sortValue(a, sort.field).localeCompare(sortValue(b, sort.field), 'zh-CN');
       return sort.direction === 'asc' ? result : -result;
     });
-    // 树形顺序：子需求紧跟父需求，便于看出层级（父始终是容器）。
     return orderForTreeView(list);
   }, [activeItems, filters, keyword, sort]);
 
@@ -155,7 +152,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
             variant="outline"
             onClick={() => openTapdSync(false)}
             disabled={!tapdReady}
-            title={tapdReady ? '增量预览：列出上次同步后修改的条目，确认后再导入' : '请先在「数据源」配置 TAPD 与 API 凭证'}
           >
             <RefreshCw />
             立即同步
@@ -165,7 +161,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
             variant="outline"
             onClick={() => openTapdSync(true)}
             disabled={!tapdReady}
-            title={tapdReady ? '全量预览：忽略增量游标，列出全部工单，确认后再导入' : '请先在「数据源」配置 TAPD 与 API 凭证'}
           >
             <RefreshCw />
             全量重拉
@@ -177,14 +172,12 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
           </div>
         </div>
 
-        {/* 工具栏：搜索 / 筛选 / 视图切换 */}
         <div className="flex shrink-0 flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center">
           <div className="relative min-w-0 flex-1 lg:max-w-[260px]">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
             <Input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="请输入关键词搜索"
               className="h-8 pl-8 text-xs"
             />
           </div>
@@ -196,7 +189,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               size="sm"
               className="w-[116px]"
               value={filters.source}
-              title="来源"
               onChange={(value) => setFilters((prev) => ({...prev, source: value}))}
               options={[
                 {value: '', label: '全部来源'},
@@ -208,7 +200,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               size="sm"
               className="w-[118px]"
               value={filters.status}
-              title="状态"
               onChange={(value) => setFilters((prev) => ({...prev, status: value}))}
               options={[
                 {value: '', label: '全部状态'},
@@ -219,7 +210,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               size="sm"
               className="w-[132px]"
               value={filters.project}
-              title="项目"
               onChange={(value) => setFilters((prev) => ({...prev, project: value}))}
               options={[
                 {value: '', label: '全部项目'},
@@ -231,7 +221,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               size="sm"
               className="w-[116px]"
               value={filters.level}
-              title="层级"
               onChange={(value) => setFilters((prev) => ({...prev, level: value}))}
               options={[
                 {value: '', label: '全部'},
@@ -246,7 +235,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
                   size="sm"
                   className="w-[104px]"
                   value={sort.field}
-                  title="排序字段"
                   onChange={(value) => setSort({field: value as SortField, direction: sort.direction})}
                   options={sortFields}
                 />
@@ -254,7 +242,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
                   size="icon-sm"
                   variant="outline"
                   onClick={() => setSort((prev) => ({...prev, direction: prev.direction === 'asc' ? 'desc' : 'asc'}))}
-                  title={sort.direction === 'asc' ? '当前升序，点击改为降序' : '当前降序，点击改为升序'}
                   aria-label="切换升降序"
                 >
                   {sort.direction === 'asc' ? <ArrowUp /> : <ArrowDown />}
@@ -298,12 +285,11 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
               size="icon-sm"
               variant="outline"
               onClick={() => void autoMapItems()}
-              title="按 TAPD 项目绑定，自动映射未分配仓库的工单"
               aria-label="自动映射"
             >
               <Wand2 />
             </Button>
-            <Button size="icon-sm" variant="outline" onClick={() => void refresh()} title="刷新">
+            <Button size="icon-sm" variant="outline" onClick={() => void refresh()} aria-label="刷新">
               <RefreshCw className={cn(refreshing && 'animate-spin')} />
             </Button>
           </div>
@@ -312,11 +298,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
         {activeItems.length === 0 ? (
           <EmptyState
             title={items.length === 0 ? '还没有任何工作项' : '当前没有待处理的任务'}
-            description={
-              items.length === 0
-                ? '点右上角「新建任务」手动录入需求或 Bug；TAPD 工单在「数据源」Tab 自动接入。'
-                : '所有任务都已执行结束并归档。可在「历史记录」里查看报告或重新执行。'
-            }
             action={
               items.length === 0 ? (
                 <Button className="mt-2" onClick={() => openNewTask()}>
@@ -333,7 +314,6 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
           <EmptyState
             icon={Search}
             title="没有符合条件的工作项"
-            description="试试调整筛选条件或搜索关键词。"
             action={
               <Button variant="outline" size="sm" className="mt-2" onClick={resetFilters}>
                 清除筛选
@@ -374,21 +354,16 @@ export function TasksPage({onOpenHistory}: {onOpenHistory?: () => void}) {
           </div>
         )}
 
-        {/* 任务中心不分页：列表直接铺满全部待处理任务，仅在超过后端上限时提示。 */}
         {itemsTotal > items.length ? (
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-4 py-2">
             <span className="text-[11.5px] tabular-nums text-faint">
               共 {activeItems.length} 条待处理任务
               {visible.length !== activeItems.length || filterActive ? `，筛选出 ${visible.length} 条` : ''}
-              {`（当前已加载最近 ${items.length} 条）`}
             </span>
           </div>
         ) : null}
       </Card>
 
-      <p className="mt-3 shrink-0 text-[11.5px] text-faint">
-        提示：点「报告」查看执行详情；执行结束的任务会自动归档到「历史记录」。apply 会在隔离 worktree 中真实改代码，执行前需二次确认。
-      </p>
     </div>
   );
 }

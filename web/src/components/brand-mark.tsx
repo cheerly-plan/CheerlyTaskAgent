@@ -1,6 +1,5 @@
 import {cn} from '@/lib/utils';
 
-/** 顶栏品牌标：渐变圆角方块 + 折线图形，替代原 favicon 占位。 */
 export function BrandMark({size = 28, className}: {size?: number; className?: string}) {
   return (
     <div

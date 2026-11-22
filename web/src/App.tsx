@@ -18,7 +18,6 @@ import {Toaster} from '@/components/ui/sonner';
 function Shell() {
   const {conn, connText, openNewTask, page, setPage, reportView, closeReport} = useApp();
 
-  // 从侧栏 / 下拉切换到别的页面时，顺带清空报告状态（下次打开重新加载）。
   const goPage = (next: PageKey) => {
     if (next !== 'report') closeReport();
     setPage(next);
@@ -26,7 +25,6 @@ function Shell() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* 顶部整条：左品牌 + 右执行端，和侧边栏同一底色，视觉上连成一片 */}
       <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-card px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
           <BrandMark size={26} />
@@ -44,7 +42,7 @@ function Shell() {
               options={NAV_ITEMS.map((item) => ({value: item.key, label: item.label}))}
               onChange={(value) => goPage(value as PageKey)}
             />
-            <Button size="icon-sm" onClick={openNewTask} aria-label="新建任务" title="新建任务">
+            <Button size="icon-sm" onClick={openNewTask} aria-label="新建任务">
               <Plus />
             </Button>
           </div>
@@ -70,7 +68,6 @@ function Shell() {
 }
 
 export default function App() {
-  // 页面状态放在 Provider 之上：侧栏、页面、报告详情页共用同一套导航。
   const [page, setPage] = React.useState<PageKey>('dashboard');
   return (
     <AppProvider page={page} setPage={setPage}>

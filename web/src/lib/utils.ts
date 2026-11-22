@@ -5,7 +5,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/** 把模型的上下文窗口 token 数转成可读字符串，如 1M / 200K。 */
 export function formatContext(tokens: number | undefined | null): string {
   if (tokens == null || !Number.isFinite(tokens) || tokens <= 0) return '';
   if (tokens >= 1_000_000) {
@@ -19,10 +18,6 @@ export function formatContext(tokens: number | undefined | null): string {
   return `${tokens}`;
 }
 
-/**
- * 模型下拉的 hint：当前使用 > 全局默认 > 上下文窗口。
- * 「自定义」由选项 label 后缀表达，避免同一条目里重复出现。
- */
 export function modelHint(
   model: {context?: number; current?: boolean},
   extra?: string,
@@ -35,7 +30,6 @@ export function modelHint(
   return parts.length ? parts.join(' · ') : undefined;
 }
 
-/** 已保存的模型 id 是否命中列表项（含去重折叠的别名）。 */
 export function modelMatches(
   model: {id: string; aliases?: string[]},
   savedId: string | null | undefined,
@@ -44,7 +38,6 @@ export function modelMatches(
   return model.id === savedId || (model.aliases?.includes(savedId) ?? false);
 }
 
-/** 把已保存的别名 id 归一到列表里的规范 id（去重后别名不再是独立选项）。 */
 export function canonicalModelId(
   models: {id: string; aliases?: string[]}[],
   savedId: string | null | undefined,
@@ -54,12 +47,6 @@ export function canonicalModelId(
   return hit ? hit.id : savedId;
 }
 
-/**
- * 任务未显式指定模型时，该后端实际会落到哪个模型。
- * 优先级：后端 profile 的 default_model → CLI 当前使用的（current）→ 列表第一个。
- * 只要模型列表非空就返回具体 id，保证下拉/回填不会出现空值；
- * 列表为空时返回空串（此时调用方应禁用模型选择）。
- */
 export function effectiveDefaultModelId(
   models: {id: string; current?: boolean; aliases?: string[]}[],
   backendDefault: string | null | undefined,
@@ -74,10 +61,6 @@ export function effectiveDefaultModelId(
   return models[0]?.id ?? '';
 }
 
-/**
- * 已落地模型的纯展示名：拿到具体模型 id 后取其 label（找不到则回显 id）。
- * 任务一旦创建就带具体模型，展示位直接显示模型名，不再有「默认（X）」这类模糊包装。
- */
 export function resolvedModelLabel(
   models: {id: string; label: string; aliases?: string[]}[],
   modelId: string | null | undefined,
@@ -87,11 +70,6 @@ export function resolvedModelLabel(
   return hit?.label ?? modelId;
 }
 
-/**
- * 系统设置页「默认模型」空选项的文案。空值表示不给后端传 --model，
- * 由 CLI 自己决定 —— 而 CLI 当前实际用的就是被标记 current 的模型，
- * 所以直接把它显示出来，避免「由 CLI 决定」这种含糊说法。
- */
 export function cliDefaultLabel(
   models: {id: string; label: string; current?: boolean}[],
 ): string {
@@ -99,15 +77,10 @@ export function cliDefaultLabel(
   return current ? `跟随 CLI 当前（${current.label}）` : '由 CLI 决定';
 }
 
-/** 模型分类标题：账号/CLI 自带 vs 用户自己配置。 */
 export function modelCategory(model: {custom?: boolean}): string {
   return model.custom ? '自定义模型' : '内置模型';
 }
 
-/**
- * 分组展示时按「内置 → 自定义」排序（组内保持原顺序）。
- * Array#sort 是稳定排序，因此不会打乱后端给的优先级（current/default 在前）。
- */
 export function sortModelsByCategory<T extends {custom?: boolean}>(models: T[]): T[] {
   return [...models].sort((a, b) => Number(Boolean(a.custom)) - Number(Boolean(b.custom)));
 }

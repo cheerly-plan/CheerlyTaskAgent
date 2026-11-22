@@ -5,7 +5,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -18,7 +17,6 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
 }
 
-/** 危险动作的二次确认。关闭方式（X / Esc / 遮罩）都按「取消」处理。 */
 export function ConfirmDialog({open, message, onResolve, confirmLabel = '确认执行'}: ConfirmDialogProps) {
   return (
     <Dialog
@@ -34,7 +32,6 @@ export function ConfirmDialog({open, message, onResolve, confirmLabel = '确认�
       >
         <DialogHeader>
           <DialogTitle>请确认</DialogTitle>
-          <DialogDescription className="sr-only">危险操作确认</DialogDescription>
         </DialogHeader>
 
         <DialogBody>

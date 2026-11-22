@@ -1,4 +1,3 @@
-/** 后端 HTTP 契约的类型定义与极薄的 fetch 封装。 */
 
 export type Kind = 'bug' | 'feature' | 'task';
 export type Status =
@@ -19,13 +18,9 @@ export interface WorkItem {
   source: string;
   source_ref?: string;
   git_url?: string;
-  /** 父子需求：父的 source_ref；顶层为空。 */
   parent_ref?: string;
-  /** 父需求标题快照：父不在本地时用它显示归属。 */
   parent_title?: string;
-  /** 子需求的 source_ref 列表（仅父容器有值）。 */
   children_ids?: string[];
-  /** True = 父容器节点，不执行。 */
   is_container?: boolean;
   repo?: string;
   status: Status;
@@ -40,10 +35,8 @@ export interface WorkItem {
   created_at?: string;
 }
 
-/** 多仓库分流结果（后端 route.py 的决策）。 */
 export interface RouteDecision {
   repo: string;
-  /** auto | history | explicit | role | text | ambiguous | none */
   method: string;
   confidence: number;
   reason: string;
@@ -51,7 +44,6 @@ export interface RouteDecision {
   needs_confirm?: boolean;
 }
 
-/** 本地仓库的结构化画像（多仓库分流依据）。 */
 export interface RepoProfile {
   mapping_id: string;
   name: string;
@@ -72,28 +64,20 @@ export interface RepoProfile {
   override_keywords: string[];
 }
 
-/** TAPD 同步预览中的一条候选（尚未落库）。 */
 export interface TapdPreviewItem {
   source_ref: string;
-  /** new=新增；changed=需求有更新；unchanged=本地已有且无变化。 */
   status: 'new' | 'changed' | 'unchanged';
   title: string;
   description: string;
   kind: Kind;
   external_url: string;
   modified: string;
-  /** 根据 TAPD 项目绑定推断出的本地仓库名（空表示未推断到）。 */
   repo_name: string;
-  /** 多仓库分流结果：方法（history/role/text/ambiguous…）、置信度、理由、候选。 */
   route?: RouteDecision;
-  /** 变更字段（status=changed 时非空）。 */
   changes: string[];
   existing_id: string;
-  /** 父子需求：父的 source_ref；顶层为空。 */
   parent_ref?: string;
-  /** 父需求标题快照：父不在本地时用它显示归属。 */
   parent_title?: string;
-  /** True = 本次拉取里有子需求指向它，是父容器。 */
   is_container?: boolean;
 }
 
@@ -117,33 +101,24 @@ export interface ProjectMapping {
   path: string;
   enabled: boolean;
   note: string;
-  tapd_workspace_ids: string[];  // 一个 TAPD 项目可关联多个本地仓库
-  tapd_workspace_id: string;     // 兼容旧字段（第一个）
+  tapd_workspace_ids: string[];
+  tapd_workspace_id: string;
 }
 
 export interface TapdWorkspace {
   id: string;
   name: string;
   pretty_name: string;
-  /** 所属企业 ID；下拉的企业选项从已缓存项目的这个字段提取。 */
   company_id: string;
 }
 
 export interface ModelChoice {
   id: string;
   label: string;
-  /** 厂商标识（可选，来自本地模型缓存）。 */
   vendor?: string;
-  /** 上下文窗口上限（max input tokens，可选）。 */
   context?: number;
-  /** 去重时折叠掉的等价别名 id（如 hy4flash-free / hy4flash 同为 Hy4 flash）。 */
   aliases?: string[];
-  /** codebuddy 最近一次会话实际使用的模型。 */
   current?: boolean;
-  /**
-   * 自定义模型：用户自己声明的（codebuddy 的 models.json / DSH 手写网关路由），
-   * 而非 CLI 自带的内置模型。UI 据此在选项里标注「自定义」。
-   */
   custom?: boolean;
 }
 
@@ -152,17 +127,8 @@ export interface BackendInfo {
   label: string;
   command: string;
   enabled: boolean;
-  /** 该后端可选的模型（结构化：id + 人类可读 label）。 */
   models?: ModelChoice[];
-  /**
-   * 该后端是否接受按任务指定模型。
-   * false 表示模型钉死在自己的 profile 里且无法覆盖，此时 UI 只读展示默认模型。
-   */
   model_selection?: boolean;
-  /**
-   * 任务未指定模型时该后端回落的模型 id（profile 里配置的默认）。
-   * 空串表示无显式默认，落到 CLI 自己的默认（models 中 current 为 true 的那项）。
-   */
   default_model?: string | null;
 }
 
@@ -178,7 +144,7 @@ export interface AppConfig {
 export interface TapdSettings {
   enabled: boolean;
   base_url: string;
-  workspace_id: string;  // 多选项目 ID，逗号分隔
+  workspace_id: string;
   company_id: string;
   projects: TapdWorkspace[];
   api_user: string;
@@ -203,12 +169,10 @@ export interface BackendConfig {
   auto_sync: boolean;
 }
 
-/** 单一数据源对象（一个数据源、类型不同）。目前仅支持 type=tapd；其他类型留待后续接入。 */
 export interface DataSource {
   type: string;
   name: string;
   enabled: boolean;
-  /** type=tapd 时的专属配置。 */
   tapd: TapdSettings;
 }
 
@@ -263,18 +227,12 @@ export type ItemAction = 'map' | 'dry' | 'apply' | 'exec' | 'cancel' | 'delete' 
 
 export class ApiError extends Error {}
 
-/** 报告接口返回 text/markdown 而非 JSON，单独走这条路径。 */
 export async function fetchText(path: string): Promise<string> {
   const res = await fetch(path);
   if (!res.ok) throw new ApiError((await res.text()) || res.statusText);
   return res.text();
 }
 
-/**
- * 同一 GET 在飞时复用同一个 Promise：首屏多个组件可能同时触发 reloadItems /
- * reloadSettings 等，去重后只发一次真实请求。写请求（POST/PUT/DELETE）不入表，
- * 避免误合并「执行/删除」这类有副作用的动作。
- */
 const inflightGets = new Map<string, Promise<unknown>>();
 
 async function doApi<T>(path: string, init?: RequestInit): Promise<T> {
@@ -285,7 +243,6 @@ async function doApi<T>(path: string, init?: RequestInit): Promise<T> {
       const payload = (await res.json()) as {detail?: string};
       if (payload?.detail) message = payload.detail;
     } catch {
-      /* 后端可能返回空响应体 */
     }
     throw new ApiError(message);
   }
@@ -295,7 +252,7 @@ async function doApi<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function api<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase();
-  const cacheable = method === 'GET' && !init?.signal;  // 带 signal 的请求由调用方控制生命周期，不去重
+  const cacheable = method === 'GET' && !init?.signal;
   if (!cacheable) return doApi<T>(path, init);
 
   const key = path;
@@ -305,7 +262,6 @@ export function api<T>(path: string, init?: RequestInit): Promise<T> {
   const pending = doApi<T>(path, init);
   inflightGets.set(key, pending);
   void pending.finally(() => {
-    // 仅当表里仍是本次 promise 才删除，避免误删后来重建的同 key 请求。
     if (inflightGets.get(key) === pending) inflightGets.delete(key);
   });
   return pending;
@@ -368,11 +324,9 @@ export const endpoints = {
   syncTapd: (body?: {modified_since?: string; exec_mode?: string; force?: boolean}) =>
     api<{created: number; skipped: number}>('/api/tapd/sync', jsonInit('POST', body ?? {})),
 
-  /** 预览 TAPD 变更，不落库。 */
   tapdPreview: (body?: {modified_since?: string; force?: boolean}) =>
     api<TapdPreviewResult>('/api/tapd/preview', jsonInit('POST', body ?? {})),
 
-  /** 确认导入勾选的预览条目。 */
   tapdImport: (body: {items: TapdImportSelection[]; cursor: string}) =>
     api<{created: number; updated: number; skipped: number}>(
       '/api/tapd/import', jsonInit('POST', body),
@@ -394,10 +348,6 @@ export const endpoints = {
     api<ScanResult>('/api/fs/scan', jsonInit('POST', {path, depth})),
 };
 
-/**
- * 读取某个文件夹自身的 git origin（复用 depth=0 的单目录扫描）。
- * 非 git 目录、路径为空或请求失败时返回空串，不抛错、不阻塞调用方。
- */
 export async function readGitOrigin(path: string): Promise<string> {
   if (!path) return '';
   try {

@@ -21,7 +21,6 @@ import {
   cn,
   effectiveDefaultModelId,
   modelCategory,
-  modelHint,
   modelMatches,
   resolvedModelLabel,
   sortModelsByCategory,
@@ -36,7 +35,6 @@ export interface SortState {
 
 export const DEFAULT_SORT: SortState = {field: 'created', direction: 'desc'};
 
-/** 首次点击新列时的默认方向：时间列从新到旧，文本列从 A 到 Z。 */
 export const defaultDirection = (field: SortField): 'asc' | 'desc' =>
   field === 'created' ? 'desc' : 'asc';
 
@@ -52,11 +50,9 @@ interface TaskTableProps {
   sort: SortState;
   onProbe?: (executorId?: string) => void;
   onSort: (field: SortField) => void;
-  /** 滚动容器 class（长列表限制最大高度）。 */
   containerClassName?: string;
 }
 
-/** 项目列：仓库下拉，选中即映射（替代原操作列的「映射」按钮）。 */
 function RepoCell({
   item,
   mappings,
@@ -66,12 +62,10 @@ function RepoCell({
   mappings: ProjectMapping[];
   onMap: (id: string, repo: string) => void;
 }) {
-  // 父容器不执行，项目列不适用。
   if (item.is_container) return <span className="text-xs text-faint">—</span>;
   const options = mappings
     .filter((mapping) => mapping.enabled)
     .map((mapping) => ({value: mapping.name, label: mapping.name}));
-  // 已进入执行流程（排队/执行中/已结束）的任务只读展示，配置锁定。
   if (!canEditConfig(item) || !options.length) {
     return item.repo ? (
       <Badge variant="outline" className="gap-1">
@@ -87,15 +81,12 @@ function RepoCell({
       size="sm"
       className="w-[120px]"
       value={item.repo ?? ''}
-      placeholder="选择仓库"
       options={options}
       onChange={(value) => onMap(item.id, value)}
-      title="映射仓库"
     />
   );
 }
 
-/** 模式列：执行方式下拉，选中写入 selection.mode，供「执行」按钮使用。 */
 function ModeCell({
   item,
   value,
@@ -119,12 +110,10 @@ function ModeCell({
       value={mode}
       options={options}
       onChange={onSelect}
-      title="执行方式（决定「执行」按钮的动作）"
     />
   );
 }
 
-/** 模型单元格：模型名 + 就地选择框（不可选的后端只读展示 profile 钉住的模型）。 */
 function ModelCell({
   item,
   backends,
@@ -147,10 +136,7 @@ function ModelCell({
   if (!canPickModel) {
     const pinned = backend?.models?.find((model) => model.current)?.id;
     return (
-      <span
-        className="text-xs text-faint"
-        title={pinned ? `由 ${backend?.label ?? ''} profile 决定：${pinned}` : `由 ${backend?.label ?? ''} profile 决定`}
-      >
+      <span className="text-xs text-faint">
         由 profile 决定{pinned ? ` · ${pinned}` : ''}
       </span>
     );
@@ -160,14 +146,10 @@ function ModelCell({
   const selected = selection.model || item.model || fallback;
   const options = sortModelsByCategory(modelList).map((model) => ({
     value: model.id,
-    // 分组标题已经写明「自定义模型」，选项不再重复后缀。
     label: model.label ?? model.id,
-    hint: modelHint(model),
     group: modelCategory(model),
   }));
-  // 父容器不执行，模型列不适用。
   if (item.is_container) return <span className="text-xs text-faint">—</span>;
-  // 只有还没执行的任务能改模型；dry-run 跑完后模型必须与报告一致，锁定展示。
   const showSelect = canEditConfig(item) && options.length > 0;
 
   if (!showSelect) {
@@ -183,12 +165,10 @@ function ModelCell({
       onOpenChange={(open) => {
         if (open) onProbe?.(item.executor);
       }}
-      title="本任务使用的模型"
     />
   );
 }
 
-/** 模型名（自定义模型合并成一个紫色标签）。 */
 function ModelTag({
   item,
   backends,
@@ -205,7 +185,7 @@ function ModelTag({
   const label = resolvedModelLabel(list, modelId);
   if (custom) {
     return (
-      <Badge variant="purple" title={`${label} · 用户在 CLI 中自行配置的模型`} className="max-w-[170px]">
+      <Badge variant="purple" className="max-w-[170px]">
         <span className="truncate">{label} · 自定义</span>
       </Badge>
     );
@@ -227,10 +207,8 @@ export function TaskTable({
   onSort,
   containerClassName,
 }: TaskTableProps) {
-  // 按父需求合并：同父的子需求聚在一起，父需求行（若本地有）作为分组标题。
   const groups = React.useMemo(() => groupByParent(items), [items]);
 
-  // tanstack 的排序状态与外部 sort 双向同步（外部还负责分组顺序）。
   const sorting = React.useMemo<SortingState>(
     () => [{id: sort.field, desc: sort.direction === 'desc'}],
     [sort],
@@ -260,10 +238,7 @@ export function TaskTable({
               >
                 {isContainer ? <GitBranch className="size-3.5" /> : <FileText className="size-3.5" />}
               </span>
-              <span
-                className="min-w-0 truncate font-medium text-foreground group-hover:text-primary"
-                title={item.title}
-              >
+              <span className="min-w-0 truncate font-medium text-foreground group-hover:text-primary">
                 {item.title}
               </span>
             </div>
@@ -388,7 +363,6 @@ export function TaskTable({
   const headGroups = table.getHeaderGroups();
   const leafHeaders = headGroups[headGroups.length - 1]?.headers ?? [];
 
-  /** 行 key → 行对象，供分组标题与行内渲染复用同一份视图模型。 */
   const tableRows = table.getRowModel().rows;
   const rowById = React.useMemo(() => {
     const map = new Map(tableRows.map((row) => [row.id, row]));
@@ -418,7 +392,6 @@ export function TaskTable({
                   <button
                     type="button"
                     onClick={header.column.getToggleSortingHandler()}
-                    title={`按${String(header.column.columnDef.header)}排序`}
                     className="inline-flex items-center gap-1 rounded px-1 py-0.5 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
                   >
                     {flexRender(header.column.columnDef.header, header.getContext())}
@@ -438,7 +411,6 @@ export function TaskTable({
         {groups.map((group) => (
           <React.Fragment key={group.key || `solo-${group.items[0]?.id}`}>
             {group.key ? (
-              /* 父需求分组标题：父可能不在本地（只导入了子需求），用快照标题展示。 */
               <TableRow className="group/head bg-[#faf9fd] hover:bg-[#faf9fd]">
                 <td colSpan={leafHeaders.length} className="sticky left-0 z-[2] py-2 pl-4">
                   <div className="flex w-max max-w-[calc(100vw-360px)] items-center gap-2.5">

@@ -6,7 +6,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -17,7 +16,6 @@ import {
   cn,
   effectiveDefaultModelId,
   modelCategory,
-  modelHint,
   sortModelsByCategory,
 } from '@/lib/utils';
 import type {
@@ -32,9 +30,7 @@ import {orderForTreeView} from '@/lib/task-tree';
 interface TapdSyncDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 本次拉取方式：false=增量，true=全量。仅用于展示文案。 */
   force: boolean;
-  /** 正在拉取预览。 */
   loading: boolean;
   preview: TapdPreviewResult | null;
   backends: BackendInfo[];
@@ -51,7 +47,6 @@ const CHANGE_LABEL: Record<string, string> = {
   description: '描述',
 };
 
-/** TAPD 同步预览弹窗：展示新增/更新条目，统一配置执行端/模型后选择性导入。 */
 export function TapdSyncDialog({
   open,
   onOpenChange,
@@ -73,7 +68,6 @@ export function TapdSyncDialog({
   const [submitting, setSubmitting] = React.useState(false);
 
   const allItems = React.useMemo(() => preview?.items ?? [], [preview]);
-  // 父需求（容器）只作为归属信息，不参与导入；列表里不出现，避免勾了也没意义。
   const items = React.useMemo(
     () => orderForTreeView(allItems.filter((i) => !i.is_container)),
     [allItems],
@@ -85,9 +79,7 @@ export function TapdSyncDialog({
     }
     return map;
   }, [allItems]);
-  // 只有「新增 / 更新」可选；unchanged 仅作提示。
   const actionable = React.useMemo(() => items.filter((i) => i.status !== 'unchanged'), [items]);
-  // 子需求的「父需求」标签：父标题从完整预览里查（父本身不参与导入）。
   const parentTitleByRef = React.useMemo(() => {
     const map = new Map<string, string>(containerTitleByRef);
     for (const item of allItems) {
@@ -96,7 +88,6 @@ export function TapdSyncDialog({
     return map;
   }, [allItems, containerTitleByRef]);
 
-  // 每次打开预览：默认全选可操作项，并同步一次顶部配置为当前系统默认。
   React.useEffect(() => {
     if (!open) return;
     setSelected(new Set(actionable.map((i) => i.source_ref)));
@@ -122,7 +113,6 @@ export function TapdSyncDialog({
   const modelOptions = sortModelsByCategory(activeModels).map((m) => ({
     value: m.id,
     label: m.label,
-    hint: modelHint(m),
     group: modelCategory(m),
   }));
   const effectiveModel = effectiveDefaultModelId(activeModels, model);
@@ -144,7 +134,6 @@ export function TapdSyncDialog({
           executor: executor || null,
           model: canPickModel ? (effectiveModel || null) : null,
           exec_mode: execMode,
-          // 每条沿用预览推断的仓库；顶部未强制指定时交给后端自动映射逻辑。
           repo_name: i.repo_name || undefined,
         }));
       await onConfirm(selections);
@@ -158,14 +147,9 @@ export function TapdSyncDialog({
       <DialogContent className="max-w-[760px]">
         <DialogHeader>
           <DialogTitle>同步 TAPD 需求</DialogTitle>
-          <DialogDescription>
-            {force ? '全量重拉：忽略增量游标，列出全部工单。' : '增量同步：只列出上次同步后修改的工单。'}
-            这里只预览变更，勾选并配置后才会写入任务中心。
-          </DialogDescription>
         </DialogHeader>
 
         <DialogBody>
-          {/* 顶部统一配置：对所有勾选条目生效 */}
           <div className="grid grid-cols-3 gap-3 rounded-lg border border-border bg-[#fbfbfd] p-3">
             <Field label="执行端" className="mb-0">
               <SelectField
@@ -183,11 +167,7 @@ export function TapdSyncDialog({
                   options={modelOptions}
                   onChange={setModel}
                 />
-              ) : (
-                <div className="flex h-8 items-center rounded-md border border-dashed border-border px-2 text-[11px] text-faint">
-                  由 profile 决定
-                </div>
-              )}
+              ) : null}
             </Field>
             <Field label="执行模式" className="mb-0">
               <SelectField
@@ -202,7 +182,6 @@ export function TapdSyncDialog({
             </Field>
           </div>
 
-          {/* 统计与全选操作 */}
           <div className="mb-2 mt-4 flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1.5 text-[12px]">
               <Badge variant="success">新增 {counts.new}</Badge>
@@ -226,7 +205,6 @@ export function TapdSyncDialog({
                 type="button"
                 className="text-primary hover:underline"
                 onClick={onRefresh}
-                title="重新拉取预览（放弃当前勾选）"
               >
                 <RefreshCw className="mr-0.5 inline size-3" />
                 重新拉取
@@ -234,7 +212,6 @@ export function TapdSyncDialog({
             </div>
           </div>
 
-          {/* 条目列表 */}
           {loading ? (
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-[12px] text-faint">
               <Loader2 className="size-5 animate-spin" />
@@ -283,18 +260,10 @@ export function TapdSyncDialog({
                         {item.status === 'unchanged' && <Badge variant="muted">无变化</Badge>}
                         <Badge variant="outline">{item.kind}</Badge>
                         {item.repo_name && (
-                          <Badge
-                            variant="info"
-                            title={item.route ? `自动指定：${item.route.reason}` : undefined}
-                          >
-                            {item.repo_name}
-                          </Badge>
+                          <Badge variant="info">{item.repo_name}</Badge>
                         )}
                         {!item.repo_name && item.route?.needs_confirm && item.route.candidates?.length ? (
-                          <Badge
-                            variant="warning"
-                            title={item.route.reason}
-                          >
+                          <Badge variant="warning">
                             待选仓库（{item.route.candidates.length}）
                           </Badge>
                         ) : null}
@@ -302,14 +271,13 @@ export function TapdSyncDialog({
                           <Badge
                             variant="purple"
                             className="max-w-[220px]"
-                            title={`父需求：${parentTitle || item.parent_ref}`}
                           >
                             <GitBranch className="size-3 shrink-0" />
                             <span className="truncate">父需求：{parentTitle || item.parent_ref}</span>
                           </Badge>
                         ) : null}
                       </span>
-                      <span className="mt-1 block truncate text-[13px] text-foreground" title={item.title}>
+                      <span className="mt-1 block truncate text-[13px] text-foreground">
                         {item.title}
                       </span>
                       {item.status === 'changed' && item.changes.length > 0 && (
@@ -328,7 +296,7 @@ export function TapdSyncDialog({
                         rel="noreferrer"
                         onClick={(e) => e.stopPropagation()}
                         className="mt-0.5 shrink-0 text-faint hover:text-primary"
-                        title="在 TAPD 打开"
+                        aria-label="在 TAPD 打开"
                       >
                         <ExternalLink className="size-3.5" />
                       </a>

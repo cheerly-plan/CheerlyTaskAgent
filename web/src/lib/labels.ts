@@ -45,27 +45,17 @@ export const statusDot: Record<Status, string> = {
 export const ACTIVE_STATUSES: Status[] = ['running', 'queued'];
 export const TERMINAL_STATUSES: Status[] = ['succeeded', 'failed', 'skipped', 'cancelled'];
 
-/** 归档到「历史记录」的记录：真实执行（apply）且已结束。dry-run 只是预演，留在任务中心。 */
 export function isArchived(item: {status: Status; exec_mode?: string}): boolean {
   return item.exec_mode === 'apply' && TERMINAL_STATUSES.includes(item.status);
 }
 
-/**
- * 配置列（项目 / 模式 / 模型）是否可编辑。
- * 只有还没开始执行的「待映射 / 就绪」任务能改配置；一旦进入排队 / 执行中 /
- * 已结束（dry-run 或 apply），配置就锁定，保证执行报告与任务配置一致，
- * apply 沿用 dry-run 那一次的项目与模型。
- * 父需求容器不执行任何配置，一律只读（由子需求汇总，无需仓库/模式/模型）。
- */
 export function canEditConfig(item: {status: Status; is_container?: boolean}): boolean {
   if (item.is_container) return false;
   return item.status === 'discovered' || item.status === 'ready';
 }
 
-/** ISO 时间 → `YYYY-MM-DD HH:mm`（后端给的是 UTC ISO 串，沿用原有截断方式）。 */
 export const shortTime = (value?: string) => (value ?? '').slice(0, 16).replace('T', ' ');
 
-/** 卡片视图没有表头，用它列排序字段；升降序由旁边的箭头按钮切换。 */
 export const sortFields = [
   {value: 'created', label: '创建时间'},
   {value: 'title', label: '标题'},

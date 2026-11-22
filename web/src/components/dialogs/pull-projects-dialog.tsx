@@ -7,7 +7,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -24,36 +23,23 @@ const CUSTOM_COMPANY = '__custom_company__';
 interface PullProjectsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 当前企业 ID（弹窗内下拉选择，页面不再单独填写）。 */
   companyId: string;
-  /** 切换企业：父级会立即按新企业拉取项目。 */
   onCompanyIdChange: (value: string) => void;
-  /** 手动/回车拉取，传当前企业 ID。 */
   onFetch: (companyId: string) => void;
   credentialsReady: boolean;
-  /** 全部已缓存项目的企业 ID（跨企业），用于企业下拉；项目列表只展示当前企业的。 */
   availableCompanies: string[];
-  /** 展示的项目列表：优先已缓存项目，拉取后合并最新结果。 */
   workspaces: TapdWorkspace[];
   loading: boolean;
-  /** 多选项目 ID。 */
   selectedWorkspaces: string[];
   onToggleWorkspace: (id: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
   mappings: ProjectMapping[];
-  /** 每个 TAPD 项目分别管理哪些本地仓库：{项目ID: [本地映射ID]}。 */
   associations: Record<string, string[]>;
   onToggleRepo: (workspaceId: string, mappingId: string) => void;
   onApply: () => void;
 }
 
-/**
- * 「拉取项目」弹窗：
- * - 企业 ID 用下拉（选项从已缓存项目的 company_id 提取），保留「手动输入」兜底；
- * - 项目多选，且每个项目分别勾选它管理的本地仓库——避免「两个多选列表」分不清谁管谁；
- * - 打开弹窗 / 切换企业时父级自动拉取，也可手动刷新；企业自身由后端过滤。
- */
 export function PullProjectsDialog({
   open,
   onOpenChange,
@@ -89,7 +75,7 @@ export function PullProjectsDialog({
       if (cid.trim()) ids.add(cid.trim());
     }
     if (companyId.trim()) ids.add(companyId.trim());
-    return [...ids].map((id) => ({value: id, label: id, hint: '来自已记录项目'}));
+    return [...ids].map((id) => ({value: id, label: id}));
   }, [availableCompanies, companyId]);
 
   const effectiveCompanyId = customMode ? customValue.trim() : companyId.trim();
@@ -109,9 +95,6 @@ export function PullProjectsDialog({
       <DialogContent className="max-w-[680px]">
         <DialogHeader>
           <DialogTitle>项目</DialogTitle>
-          <DialogDescription>
-            这里只展示「尚未添加」的项目；选企业后自动拉取，勾选并指定各自管理的本地仓库。已添加的项目请在「管理」里编辑。
-          </DialogDescription>
         </DialogHeader>
 
         <DialogBody>
@@ -121,7 +104,7 @@ export function PullProjectsDialog({
             </Alert>
           )}
 
-          <Field label="企业 ID" hint="下拉选项从已记录项目提取；也可手动输入新的企业 ID。">
+          <Field label="企业 ID">
             <div className="flex gap-2">
               <div className="min-w-0 flex-1">
                 {customMode ? (
@@ -129,7 +112,6 @@ export function PullProjectsDialog({
                     className="font-mono"
                     autoFocus
                     value={customValue}
-                    placeholder="请输入企业 ID"
                     onChange={(event) => setCustomValue(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') commitCustom();
@@ -138,10 +120,9 @@ export function PullProjectsDialog({
                 ) : (
                   <SelectField
                     value={companyId}
-                    placeholder="请选择企业 ID"
                     options={[
                       ...companyOptions,
-                      {value: CUSTOM_COMPANY, label: '手动输入企业 ID…', hint: '拉一个新企业的项目'},
+                      {value: CUSTOM_COMPANY, label: '手动输入企业 ID…'},
                     ]}
                     onChange={(value) => {
                       if (value === CUSTOM_COMPANY) {
@@ -163,7 +144,6 @@ export function PullProjectsDialog({
                   variant="outline"
                   onClick={() => onFetch(effectiveCompanyId)}
                   disabled={loading || !effectiveCompanyId || !credentialsReady}
-                  title="重新拉取最新项目列表"
                 >
                   {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {loading ? '拉取中…' : '拉取'}
@@ -175,7 +155,7 @@ export function PullProjectsDialog({
           <div className="mt-1">
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <p className="text-xs font-semibold tracking-wide text-foreground/75">
-                项目列表（勾选后为每个项目指定本地仓库）
+                项目列表
               </p>
               <div className="flex items-center gap-2 text-[11px]">
                 <button type="button" className="text-primary hover:underline" onClick={onSelectAll}>全选</button>
@@ -188,7 +168,7 @@ export function PullProjectsDialog({
                 {loading
                   ? '正在拉取…'
                   : effectiveCompanyId
-                    ? '没有可添加的新项目（已添加的项目在「管理」里编辑）'
+                    ? '没有可添加的新项目'
                     : '先选择企业 ID'}
               </div>
             ) : (
@@ -233,7 +213,6 @@ export function PullProjectsDialog({
                             options={repoOptions}
                             selected={repoIds}
                             onToggle={(mappingId) => onToggleRepo(ws.id, mappingId)}
-                            placeholder="未关联仓库（点此勾选）"
                             emptyText="暂无本地仓库映射，可先在「项目映射」页添加。"
                             size="sm"
                             maxHeight={200}

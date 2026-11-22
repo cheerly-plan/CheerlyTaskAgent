@@ -7,7 +7,6 @@ import {
   Dialog,
   DialogBody,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -24,7 +23,6 @@ interface FolderPickerDialogProps {
 
 const INITIAL: BrowseResult = {current: '', parent: null, at_root: true, dirs: []};
 
-/** 只读目录浏览器：逐级进入子目录，选中当前路径交给调用方。 */
 export function FolderPickerDialog({open, onOpenChange, onPick}: FolderPickerDialogProps) {
   const [state, setState] = React.useState<BrowseResult>(INITIAL);
   const [loading, setLoading] = React.useState(false);
@@ -49,16 +47,12 @@ export function FolderPickerDialog({open, onOpenChange, onPick}: FolderPickerDia
       <DialogContent className="max-w-[580px]">
         <DialogHeader>
           <DialogTitle>选择文件夹</DialogTitle>
-          <DialogDescription>逐级点选进入子文件夹，点「选择当前文件夹」确定当前路径。</DialogDescription>
         </DialogHeader>
 
         <DialogBody>
           <div className="mb-2.5 flex items-center gap-2 rounded-lg border border-border bg-[#fbfbfd] px-3 py-2">
             <Folder className="size-4 shrink-0 text-faint" />
-            <code
-              className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80"
-              title={state.current || ''}
-            >
+            <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80">
               {state.current || '…'}
             </code>
             {loading ? (

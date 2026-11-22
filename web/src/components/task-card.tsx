@@ -88,10 +88,8 @@ export function TaskCard({
               size="sm"
               className="w-[120px]"
               value={item.repo ?? ''}
-              placeholder="选择仓库"
               options={repoOptions}
               onChange={(value) => onMap(item.id, value)}
-              title="映射仓库"
             />
           ) : item.repo ? (
             <Badge variant="outline" className="gap-1">
@@ -115,11 +113,10 @@ export function TaskCard({
                 {value: 'apply', label: 'apply'},
               ]}
               onChange={(value) => onSelect(item.id, 'mode', value)}
-              title="执行方式"
             />
           )}
           {isContainer ? null : modelLocked ? (
-            <Badge variant="muted" title={`由 ${backend?.label ?? ''} profile 决定`}>
+            <Badge variant="muted">
               profile 决定{pinnedModel ? ` · ${pinnedModel}` : ''}
             </Badge>
           ) : (

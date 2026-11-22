@@ -12,7 +12,6 @@ const CONN_STYLE: Record<ConnState, {className: string; dot: string}> = {
 
 export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' | 'settings' | 'report';
 
-/** 报告详情页不是主菜单项；它借用来源列表的 key 保持导航高亮。 */
 export function navKeyOf(page: PageKey, reportFrom?: PageKey): PageKey {
   return page === 'report' && reportFrom && reportFrom !== 'report' ? reportFrom : page;
 }
@@ -29,11 +28,9 @@ export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
 interface AppSidebarProps {
   page: PageKey;
   onPage: (page: PageKey) => void;
-  /** 报告详情页高亮它来自的列表（任务中心 / 历史记录）。 */
   reportFrom?: PageKey;
 }
 
-/** 左侧导航：品牌 + 主操作（新建任务）+ 页面菜单 + 连接状态。 */
 export function AppSidebar({page, onPage, reportFrom}: AppSidebarProps) {
   const activeKey = navKeyOf(page, reportFrom);
   return (
@@ -64,7 +61,6 @@ export function AppSidebar({page, onPage, reportFrom}: AppSidebarProps) {
   );
 }
 
-/** 执行端连接状态徽标（页面右上角）。 */
 export function ConnBadge({conn, connText}: {conn: ConnState; connText: string}) {
   const style = CONN_STYLE[conn];
   return (

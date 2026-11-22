@@ -42,18 +42,14 @@ interface TapdSourceCardProps {
   onPatch: (source: DataSource) => void;
   onChangeType: (type: string) => void;
   onSave: () => void;
-  /** 有效映射（已叠加未保存的映射草稿），用于展示与编辑。 */
   mappings: ProjectMapping[];
-  /** 暂存某条映射的仓库关联变更，由页面在主「保存」时统一落库。 */
   onStageMapping: (mappingId: string, workspaceIds: string[]) => void;
 }
 
-/** 数据源本质上是「一个对象、类型不同」；这里列出已支持的类型供切换。 */
-const SOURCE_TYPES: {value: string; label: string; hint?: string}[] = [
-  {value: 'tapd', label: 'TAPD', hint: '需求 / 缺陷工单'},
+const SOURCE_TYPES: {value: string; label: string}[] = [
+  {value: 'tapd', label: 'TAPD'},
 ];
 
-/** 单个 TAPD 数据源卡片：配置表单 + 拉取/新增项目弹窗，自包含其本地状态。 */
 export function TapdSourceCard({
   source,
   onPatch,
@@ -95,8 +91,6 @@ export function TapdSourceCard({
     }
     return [...map.values()];
   };
-  // 下拉只列「已登记」的项目（tapd.projects）。nameCache 仅用于给 workspace_id 里
-  // 尚未登记的项目补全中文名，不作为独立选项——否则拉取缓存里的项目会混进来且删不掉。
   const allSavedProjects = normalizeProjects(tapd.projects ?? [], tapd.company_id || '');
   for (const id of selectedIds) {
     if (!allSavedProjects.some((p) => p.id === id)) {
@@ -110,7 +104,6 @@ export function TapdSourceCard({
     }
   }
 
-  // 项目 ID → 关联的本地映射 ID / 仓库名（从映射反推）。
   const repoIdsByProject: Record<string, string[]> = {};
   const repoNameByProject: Record<string, string[]> = {};
   for (const mapping of mappings) {
@@ -123,20 +116,17 @@ export function TapdSourceCard({
     }
   }
 
-  // 首次进入静默拉一次项目名。
   React.useEffect(() => {
     if (hydrated.current || pullOpen) return;
     if (!tapd.company_id || !tapd.api_user || !tapd.api_password) return;
     hydrated.current = true;
     void fetchWorkspaces(tapd.company_id, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const visibleWorkspaces = workspaces.filter(
     (p) => !pullCompanyId || p.company_id === pullCompanyId,
   );
 
-  // 拉取只处理「尚未登记」的项目；已登记的通过字段内勾选或「管理」编辑。
   const savedProjectIds = new Set(allSavedProjects.map((p) => p.id));
   const pullCandidates = visibleWorkspaces.filter((p) => !savedProjectIds.has(p.id));
 
@@ -222,26 +212,21 @@ export function TapdSourceCard({
       toast.warning('请先选择项目');
       return;
     }
-    // 一次性更新 company_id / workspace_id / projects（避免连续 patchTapd 相互覆盖）。
     onPatch({
       ...source,
       tapd: {
         ...tapd,
         company_id: cid,
-        // 合并「外面已勾选」+「本次拉取新勾选」，不能直接覆盖，否则应用后会清掉已有项目。
         workspace_id: [...new Set([...selectedIds, ...selectedWorkspaces])].join(','),
         projects: workspaces,
       },
     });
-    // 每个项目要归到哪些本地仓库：{mappingId: [workspaceId...]}。
     const desiredByMapping = new Map<string, string[]>();
     for (const wid of selectedWorkspaces) {
       for (const mid of repoSelection[wid] ?? []) {
         desiredByMapping.set(mid, [...(desiredByMapping.get(mid) ?? []), wid]);
       }
     }
-    // 只重分配「本次明确勾了仓库」的项目。勾了项目但一个仓库都没勾时保持它
-    // 原有的仓库关联，避免把映射里已有的绑定清掉。
     const selectedWithRepo = new Set([...desiredByMapping.values()].flat());
     for (const mapping of mappings) {
       const oldIds = mapping.tapd_workspace_ids?.length
@@ -260,7 +245,6 @@ export function TapdSourceCard({
   };
 
   const addNewProject = async (project: {id: string; name: string}, repoIds: string[]) => {
-    // 一次性更新 workspace_id 和 projects（避免连续 patchTapd 相互覆盖）。
     onPatch({
       ...source,
       tapd: {
@@ -272,7 +256,6 @@ export function TapdSourceCard({
         ],
       },
     });
-    // 只暂存映射关联，点主「保存」时才真正落库（与表单其它字段一致）。
     for (const mid of repoIds) {
       const mapping = mappings.find((m) => m.id === mid);
       if (!mapping) continue;
@@ -304,7 +287,6 @@ export function TapdSourceCard({
         ),
       },
     });
-    // 只看草稿里的有效映射；仓库关联的改动暂存，点主「保存」时统一落库。
     const desired = new Set(patch.repoIds);
     for (const mapping of mappings) {
       const ids = mapping.tapd_workspace_ids?.length
@@ -322,8 +304,6 @@ export function TapdSourceCard({
   };
 
   const removeProject = (projectId: string) => {
-    // 只更新草稿，点「保存」后才真正落库（与表单其它字段一致）。
-    // projects / workspace_id / 本地缓存一起清：只清一处，重渲染时项目会被补全回来。
     const nextIds = selectedIds.filter((id) => id !== projectId);
     const nextTapd: TapdSettings = {
       ...tapd,
@@ -356,51 +336,33 @@ export function TapdSourceCard({
         </div>
       </div>
 
-      <Field
-        label="API 地址"
-        hint={
-          <span className="flex items-center gap-2">
-            <button type="button" className="text-[11px] text-primary hover:underline"
-              onClick={() => patchTapd('base_url', 'https://api.tapd.cn')}>公网</button>
-              <span className="text-[11px] text-faint">https://api.tapd.cn</span>
-            <button type="button" className="text-[11px] text-primary hover:underline"
-              onClick={() => patchTapd('base_url', 'https://apiv2.tapd.woa.com')}>内网</button>
-            <span className="text-[11px] text-faint">apiv2.tapd.woa.com</span>
-          </span>
-        }
-      >
+      <Field label="API 地址">
         <Input
           className="font-mono"
           value={tapd.base_url}
-          placeholder="请输入 TAPD API 地址"
           onChange={(event) => patchTapd('base_url', event.target.value)}
         />
       </Field>
 
       <div className="grid grid-cols-2 gap-4">
-        <Field label="API 账号 (应用 ID)" hint="需申请 TAPD 应用凭证并授权项目">
+        <Field label="API 账号 (应用 ID)">
           <Input
             className="font-mono"
             value={tapd.api_user}
-            placeholder="请输入 API 账号"
             onChange={(event) => patchTapd('api_user', event.target.value)}
           />
         </Field>
-        <Field label="API 密码 (应用秘钥)" hint="凭证明文保存在本机 data/settings.json">
+        <Field label="API 密码 (应用秘钥)">
           <Input
             type="password"
             value={tapd.api_password}
-            placeholder="留空表示保持已保存值不变"
             onChange={(event) => patchTapd('api_password', event.target.value)}
           />
         </Field>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <Field
-          label="项目"
-          hint="勾选要拉取的 TAPD 项目；改动点「保存」生效。仓库关联在「拉取」里配置。"
-        >
+        <Field label="项目">
           <div className="flex gap-2 items-center">
             <FloatingRepoSelect
               options={allSavedProjects.map((p) => ({
@@ -418,14 +380,11 @@ export function TapdSourceCard({
                 patchTapd('workspace_id', allSavedProjects.map((p) => p.id).join(','))
               }
               onClear={() => patchTapd('workspace_id', '')}
-              placeholder="请选择要拉取的项目"
-              emptyText="暂无项目，点右侧「新增」或「拉取」登记。"
             />
             <Button
               variant="outline"
               size="sm"
               onClick={() => setProjectsOpen(true)}
-              title="管理 TAPD 项目：新增，或编辑已有项目的名称与仓库关联"
             >
               <Settings2 />
               管理
@@ -434,7 +393,6 @@ export function TapdSourceCard({
               variant="outline"
               size="sm"
               onClick={openPull}
-              title="按企业拉取项目列表，多选并配置各自管理的本地仓库"
             >
               <RefreshCw />
               拉取
@@ -445,7 +403,6 @@ export function TapdSourceCard({
           <Input
             className="font-mono"
             value={tapd.current_user}
-            placeholder="请输入变更人"
             onChange={(event) => patchTapd('current_user', event.target.value)}
           />
         </Field>
@@ -475,11 +432,10 @@ export function TapdSourceCard({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <Field label="成功后回填状态" hint="回填状态需额外开通写权限">
+        <Field label="成功后回填状态">
           <Input
             className="font-mono"
             value={tapd.status_on_success}
-            placeholder="请输入成功状态码"
             onChange={(event) => patchTapd('status_on_success', event.target.value)}
           />
         </Field>
@@ -487,7 +443,6 @@ export function TapdSourceCard({
           <Input
             className="font-mono"
             value={tapd.status_on_failure}
-            placeholder="留空不回填"
             onChange={(event) => patchTapd('status_on_failure', event.target.value)}
           />
         </Field>
@@ -502,7 +457,6 @@ export function TapdSourceCard({
           />
           <div>
             <h4 className="text-xs font-semibold text-foreground/80">定时拉取</h4>
-            <p className="text-[11px] text-faint">开启后按间隔增量拉取（基于 modified 时间）。</p>
           </div>
         </div>
         <Field label="间隔（分钟）" className="mb-0">

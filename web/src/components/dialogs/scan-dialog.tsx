@@ -29,7 +29,6 @@ interface Row extends ScanCandidate {
   checked: boolean;
 }
 
-/** 目录扫描结果：勾选候选文件夹后批量加入项目映射。 */
 export function ScanDialog({open, onOpenChange, path, onAdded}: ScanDialogProps) {
   const [root, setRoot] = React.useState('');
   const [rows, setRows] = React.useState<Row[]>([]);
@@ -108,11 +107,7 @@ export function ScanDialog({open, onOpenChange, path, onAdded}: ScanDialogProps)
 
         <DialogBody>
           <p className="mb-2.5 text-xs text-foreground/70">
-            {loading
-              ? '扫描中…'
-              : rows.length
-                ? `发现 ${rows.length} 个文件夹（git 仓库排在前面），勾选后批量加入映射。`
-                : '未发现候选文件夹'}
+            {loading ? '扫描中…' : rows.length ? `发现 ${rows.length} 个文件夹` : '未发现候选文件夹'}
           </p>
 
           <div className="scrollbar-thin max-h-[380px] overflow-auto rounded-lg border border-border bg-card">

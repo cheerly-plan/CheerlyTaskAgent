@@ -25,15 +25,12 @@ export function KindBadge({kind}: {kind: Kind}) {
 export function Mono({
   children,
   className,
-  title,
 }: {
   children: React.ReactNode;
   className?: string;
-  title?: string;
 }) {
   return (
     <code
-      title={title}
       className={cn(
         'rounded-md bg-secondary/90 px-1.5 py-0.5 font-mono text-[11.5px] text-foreground/80',
         className,
@@ -47,14 +44,12 @@ export function Mono({
 export function EmptyState({
   icon: Icon = Inbox,
   title,
-  description,
   action,
   compact,
   className,
 }: {
   icon?: React.ComponentType<{className?: string}>;
   title?: string;
-  description?: string;
   action?: React.ReactNode;
   compact?: boolean;
   className?: string;
@@ -71,7 +66,6 @@ export function EmptyState({
         <Icon className="size-5" />
       </div>
       {title ? <div className="text-sm font-semibold text-foreground/90">{title}</div> : null}
-      {description ? <div className="max-w-md text-xs leading-relaxed text-faint">{description}</div> : null}
       {action}
     </div>
   );

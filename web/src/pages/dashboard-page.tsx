@@ -14,21 +14,19 @@ const RANGES = [
   {value: '30', label: '最近 30 天'},
 ];
 
-// 紫色系：成功最深、失败中等、其它最浅，和整体品牌色一致。
 const SERIES: ChartSeries[] = [
   {key: 'succeeded', label: '成功', color: '#5b54c4', colorFrom: '#9d98f0'},
   {key: 'failed', label: '失败', color: '#8b7fe8', colorFrom: '#c4bffa'},
   {key: 'other', label: '其它', color: '#b9b3f0', colorFrom: '#e2dffb'},
 ];
 
-/** 概览：关键数字 + 最近工单。 */
 export function DashboardPage() {
   const {items, mappings} = useApp();
 
   const counts = React.useMemo(() => {
     const result = {running: 0, succeeded: 0, failed: 0, total: 0};
     for (const item of items) {
-      if (item.is_container) continue; // 父容器不执行，不计入 KPI
+      if (item.is_container) continue;
       result.total += 1;
       if (ACTIVE_STATUSES.includes(item.status)) result.running += 1;
       else if (item.status === 'succeeded') result.succeeded += 1;
@@ -39,7 +37,6 @@ export function DashboardPage() {
 
   const [range, setRange] = React.useState('7');
 
-  // 每天「处理掉」的工单数：按结束时间（finished_at 缺失时退回 created_at）归到自然日。
   const daily = React.useMemo(() => {
     const days = Number(range);
     const buckets = new Map<string, {succeeded: number; failed: number; other: number}>();
@@ -52,11 +49,10 @@ export function DashboardPage() {
       buckets.set(key, {succeeded: 0, failed: 0, other: 0});
     }
     for (const item of items) {
-      if (item.is_container) continue; // 父容器不执行，不计入
+      if (item.is_container) continue;
       if (!ACTIVE_STATUSES.includes(item.status) && item.status !== 'discovered' && item.status !== 'ready') {
-        // 已结束：按创建时间所在日归桶（我们没有 finished_at 的展示需求时足够准确）
       } else {
-        continue; // 未结束的不算「处理掉」
+        continue;
       }
       const stamp = item.created_at ?? '';
       if (!stamp) continue;
@@ -92,9 +88,6 @@ export function DashboardPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3.5">
           <div>
             <h3 className="text-[13px] font-semibold text-foreground">工单处理量</h3>
-            <p className="mt-0.5 text-[11.5px] text-faint">
-              结束执行的工单数，按天统计 · 区间内共 {dailyTotal} 个
-            </p>
           </div>
           <div className="flex items-center gap-2">
             <SelectField
@@ -103,7 +96,6 @@ export function DashboardPage() {
               value={range}
               options={RANGES}
               onChange={setRange}
-              title="统计区间"
             />
           </div>
         </div>

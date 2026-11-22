@@ -3,7 +3,6 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
-  /** 滚动容器：长列表用它限制最大高度并纵向滚动。 */
   containerClassName?: string
 }
 

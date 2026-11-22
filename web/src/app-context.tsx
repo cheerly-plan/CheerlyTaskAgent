@@ -26,16 +26,13 @@ import {
   type WorkItem,
 } from '@/lib/api';
 
-/** 后端 /api/items 的 limit 上限；任务中心一次拉全量，分页只在前端做。 */
 const ITEMS_FULL_LIMIT = 2000;
 
-/** 历史记录分页一次取多少条（后端单次最多 2000 条）。 */
 const HISTORY_PAGE_SIZE = 200;
 
 interface HistoryPageState {
   items: WorkItem[];
   total: number;
-  /** 后端还有未加载的历史页时为 true，后端时间排序即偏移。 */
   hasMore: boolean;
   loading: boolean;
 }
@@ -44,16 +41,12 @@ const EMPTY_HISTORY_PAGE: HistoryPageState = {items: [], total: 0, hasMore: fals
 
 interface AppContextValue {
   items: WorkItem[];
-  /** 存储里的工作项总数（可能多于已加载的 items）。 */
   itemsTotal: number;
-  /** 历史记录：后端分页拉到的最新一段归档记录，前端再按页切片。 */
   historyItems: WorkItem[];
   historyTotal: number;
   historyHasMore: boolean;
   historyLoading: boolean;
-  /** 再向后端取一段历史记录（拉取中会忽略重复调用）。 */
   loadMoreHistory: () => Promise<void>;
-  /** 回到第一页重新拉取历史记录（刷新 / 列表有变更时用）。 */
   reloadHistory: () => Promise<void>;
   mappings: ProjectMapping[];
   models: ModelChoice[];
@@ -63,35 +56,26 @@ interface AppContextValue {
   conn: ConnState;
   connText: string;
   loading: boolean;
-  /** 当前页面；报告详情页也参与这套导航（由 App 维护）。 */
   page: PageKey;
   setPage: (page: PageKey) => void;
-  /** 报告详情页数据（可见性由 page 是否为 'report' 决定）。 */
   reportView: ReportViewState & {
-    /** 已解析的报告摘要；没有生成报告时为 null。 */
     summary: ReportSummary | null;
-    /** 来源页面的中文名，用于「返回」按钮。 */
     backLabel: string;
-    /** 来源页面，供侧栏高亮。 */
     backFrom: PageKey;
   };
-  /** 打开某工单的报告详情页（没有报告时展示工单当前信息）。 */
   openReport: (id: string) => Promise<void>;
   closeReport: () => void;
   selections: Record<string, ActionSelection>;
   setSelection: (id: string, key: keyof ActionSelection, value: string) => void;
   reloadItems: () => Promise<void>;
-  /** 按 TAPD 项目绑定，给未映射的历史工单补仓库。 */
   autoMapItems: () => Promise<void>;
   reloadMappings: () => Promise<void>;
   reloadSettings: () => Promise<void>;
   saveSettings: (next: UISettings) => Promise<void>;
   runItemAction: (action: ItemAction, id: string) => Promise<void>;
-  /** 项目列下拉即时映射仓库。 */
   mapItemNow: (id: string, repo: string) => Promise<void>;
   openNewTask: () => void;
   syncTapd: (force?: boolean) => Promise<void>;
-  /** 打开 TAPD 同步预览弹窗；force=true 表示全量重拉。 */
   openTapdSync: (force?: boolean) => void;
   pickFolder: (apply: (path: string) => void) => void;
   openScan: (path: string) => void;
@@ -99,12 +83,7 @@ interface AppContextValue {
   toggleMapping: (id: string) => Promise<void>;
   deleteMapping: (id: string) => Promise<void>;
   confirm: (message: string) => Promise<boolean>;
-  /** 该后端是否接受按任务指定模型（DSH 之类把模型钉在 profile 里 → false）。 */
   modelSelectionSupported: (executorId?: string) => boolean;
-  /**
-   * 首次要用某个后端的模型下拉时调用：跑一次真实探测并回写结果。
-   * 缓存按后端 id，避免每次下拉都起子进程。
-   */
   ensureBackendProbe: (executorId?: string) => void;
 }
 
@@ -121,21 +100,13 @@ interface FolderPickerState {
   apply: ((path: string) => void) | null;
 }
 
-/**
- * 报告详情页的状态（整页视图，不是弹窗）。
- * 可见性由 App 维护的 `page === 'report'` 决定；`from` 记录来源列表，
- * 「返回」时据此跳回原来的页面。
- */
 export interface ReportViewState {
   loading: boolean;
   error: string | null;
-  /** 被查看的工单（来自列表缓存，可能为空，比如列表已刷新）。 */
   item: WorkItem | null;
-  /** 报告 Markdown 原文；没有生成报告时为 null。 */
   markdown: string | null;
   downloadUrl: string | null;
   downloadName: string;
-  /** 打开报告前所在的页面，用于「返回」。 */
   from: PageKey;
 }
 
@@ -149,7 +120,6 @@ const EMPTY_REPORT: ReportViewState = {
   from: 'history',
 };
 
-/** 报告页在导航里借用来源列表的 key（报告页本身不是独立主菜单项）。 */
 const PAGE_LABEL: Record<PageKey, string> = {
   dashboard: '概览',
   tasks: '任务中心',
@@ -171,7 +141,6 @@ export function AppProvider({
 }) {
   const [items, setItems] = React.useState<WorkItem[]>([]);
   const [itemsTotal, setItemsTotal] = React.useState(0);
-  // 历史记录页用独立的分页状态：按页向后端要数据，不随全局全量列表增长。
   const [historyPage, setHistoryPage] = React.useState<HistoryPageState>(EMPTY_HISTORY_PAGE);
   const [mappings, setMappings] = React.useState<ProjectMapping[]>([]);
   const [models, setModels] = React.useState<ModelChoice[]>([]);
@@ -215,8 +184,6 @@ export function AppProvider({
     setConfirmState({open: false, message: ''});
   }, []);
 
-  // ── 数据加载 ──────────────────────────────────────────────────────────────
-  // 任务中心不分页：一次拉全部工作项（受后端 2000 条上限约束）。
   const reloadItems = React.useCallback(async () => {
     try {
       const data = await endpoints.items({limit: ITEMS_FULL_LIMIT});
@@ -233,13 +200,11 @@ export function AppProvider({
   }, []);
 
   const historyLoadingRef = React.useRef(false);
-  // 回调里读最新已加载条数，避免把 historyItems 放进依赖导致反复重建。
   const historyItemsRef = React.useRef<WorkItem[]>([]);
   React.useEffect(() => {
     historyItemsRef.current = historyPage.items;
   }, [historyPage.items]);
 
-  // 历史记录：从后端分页拉取，首次加载 / 刷新都只取最新一页。
   const reloadHistory = React.useCallback(async () => {
     if (historyLoadingRef.current) return;
     historyLoadingRef.current = true;
@@ -260,7 +225,6 @@ export function AppProvider({
     }
   }, [fetchHistoryPage]);
 
-  // 拉取下一段历史（按已加载条数做 offset），追加到已有列表。
   const loadMoreHistory = React.useCallback(async () => {
     if (historyLoadingRef.current) return;
     historyLoadingRef.current = true;
@@ -268,7 +232,6 @@ export function AppProvider({
     try {
       const loaded = historyItemsRef.current;
       const page = await fetchHistoryPage(loaded.length);
-      // offset 已越过后端总量（期间有删除）时拉不到数据，直接结束，避免卡在加载态。
       if (loaded.length > 0 && page.items.length === 0) {
         setHistoryPage({items: loaded, total: page.total, hasMore: false, loading: false});
         return;
@@ -325,8 +288,6 @@ export function AppProvider({
     }
   }, []);
 
-  // CLI / 后端信息来自 /api/config。保存设置后也要重新拉取，否则顶栏执行端
-  // 与模型下拉会一直显示保存前的旧后端（包括旧的 CLI 路径与标签）。
   const reloadConfig = React.useCallback(async () => {
     try {
       const config = await endpoints.config();
@@ -349,7 +310,6 @@ export function AppProvider({
     })().finally(() => setLoading(false));
   }, [reloadConfig, reloadItems, reloadHistory, reloadMappings, reloadSettings]);
 
-  // 项目名缓存：设置里没存过时静默拉一次，供映射弹窗显示名称而不是裸 ID。
   React.useEffect(() => {
     const cid = (settings?.tapd?.company_id || '').trim();
     if (!cid || !settings?.tapd?.api_user || tapdProjects.length) return;
@@ -358,15 +318,8 @@ export function AppProvider({
       .catch(() => undefined);
   }, [settings?.tapd?.company_id, settings?.tapd?.api_user, tapdProjects.length]);
 
-  // SSE：后端有任何变更就刷新任务中心；历史记录只重拉第一页（其余页按需拉取）。
-  // 注意：连接建立时后端会回放历史事件（最多 200 条），前端首屏已全量拉取过，
-  // 这些回放事件不带新信息——跳过它们，否则每条都会触发一次 reloadItems +
-  // reloadHistory，首屏就能打出几十次 /api/items。真正的新事件做 120ms 防抖，
-  // 一次任务状态推进常连发数条（queued/started/progress/…），合并成一次刷新。
   React.useEffect(() => {
     const source = new EventSource('/api/events');
-    // 连接状态只驱动徽标颜色；文案由下面的 connText 统一派生，避免把
-    // 顶栏的「执行端 XXX」覆盖成「实时同步中」。
     source.onopen = () => setConn('live');
     source.onerror = () => setConn('reconnecting');
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -374,9 +327,8 @@ export function AppProvider({
       if (event.data === '[DONE]') return;
       try {
         const payload = JSON.parse(event.data) as {replay?: boolean};
-        if (payload?.replay) return;  // 历史回放事件：首屏已全量加载，无需逐条刷新
+        if (payload?.replay) return;
       } catch {
-        /* 非 JSON 消息按新事件处理 */
       }
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
@@ -414,7 +366,7 @@ export function AppProvider({
             toast.info('该后端无法按任务指定模型，已改为只读展示');
           }
         } catch (error) {
-          probedBackends.current.delete(executorId);  // 允许下次重试
+          probedBackends.current.delete(executorId);
           toast.error('探测后端能力失败：' + (error as Error).message);
         }
       })();
@@ -437,11 +389,9 @@ export function AppProvider({
     [],
   );
 
-  // ── 任务动作 ──────────────────────────────────────────────────────────────
   const openReport = React.useCallback(
     async (id: string) => {
       const item = items.find((entry) => entry.id === id) ?? null;
-      // 先切页再取数：报告页自己渲染加载态，避免点击后界面毫无反应。
       setPage('report');
       setReport((prev) => ({
         ...prev,
@@ -534,7 +484,6 @@ export function AppProvider({
     [confirm, items, modelSelectionSupported, openReport, reloadItems, reloadHistory, selections],
   );
 
-  /** 项目列/卡片里的仓库下拉：选中即落库映射。 */
   const mapItemNow = React.useCallback(
     async (id: string, repo: string) => {
       try {
@@ -548,7 +497,6 @@ export function AppProvider({
     [reloadItems],
   );
 
-  // ── 新建任务 ──────────────────────────────────────────────────────────────
   const createManual = React.useCallback(
     async (draft: ManualTaskDraft, mode: 'draft' | 'dry' | 'apply') => {
       const title = draft.title.trim();
@@ -602,7 +550,6 @@ export function AppProvider({
     }
   }, [reloadItems]);
 
-  // ── TAPD 同步预览（先预览、勾选配置、确认后再落库）────────────────────────
   const fetchTapdPreview = React.useCallback(async (force: boolean) => {
     setTapdSync((prev) => ({...prev, loading: true, force}));
     try {
@@ -636,7 +583,6 @@ export function AppProvider({
     }
   }, [tapdSync.preview, reloadItems]);
 
-  // ── 项目映射 ──────────────────────────────────────────────────────────────
   const saveMapping = React.useCallback(
     async (draft: MappingDraft) => {
       if (!draft.name) {
@@ -689,13 +635,11 @@ export function AppProvider({
     [confirm, reloadMappings],
   );
 
-  // ── 设置 ──────────────────────────────────────────────────────────────────
   const saveSettings = React.useCallback(
     async (next: UISettings) => {
       const tapd = next.tapd;
       const payload: UISettings = {
         executor: next.executor || 'codebuddy',
-        // 扁平字段从 backends 派生，避免旧值覆盖用户新填的 command。
         codebuddy_command: (next.backends?.codebuddy?.command || '').trim(),
         dsh_path: (next.backends?.dsh?.command || '').trim(),
         default_model: next.default_model || '',
@@ -758,9 +702,9 @@ export function AppProvider({
       };
       try {
         await endpoints.saveSettings(payload);
-        probedBackends.current.clear();  // 后端配置变了，能力需重新探测
+        probedBackends.current.clear();
         await reloadSettings();
-        await reloadConfig();  // CLI / 后端清单随之刷新，顶栏执行端立即更新
+        await reloadConfig();
         toast.success('设置已保存并已生效');
       } catch (error) {
         toast.error('保存失败：' + (error as Error).message);
@@ -769,8 +713,6 @@ export function AppProvider({
     [reloadConfig, reloadSettings],
   );
 
-  // 顶栏执行端：以刚保存的 settings 为准（含用户新改的后端标签 / CLI），
-  // 配置里还没有时再回退到 /api/config 的后端清单，最后才显示裸 id。
   const executorLabel = React.useMemo(() => {
     const executorId = settings?.executor || '';
     const fromSettings = (executorId ? settings?.backends?.[executorId]?.label : '') || '';
@@ -785,7 +727,6 @@ export function AppProvider({
         ? '重连中…'
         : '连接中…';
 
-  // 解析一次报告，页面里多处共用；没有报告时为 null（走工单信息降级视图）。
   const reportView = React.useMemo(
     () => ({
       ...report,
@@ -840,8 +781,6 @@ export function AppProvider({
     ensureBackendProbe,
   };
 
-  // 新建任务要回填的默认模型：系统设置里「默认执行后端」真正保存的 model 值。
-  // 设置一旦保存，settings 刷新后这里自动跟随，无需额外刷新 config。
   const effectiveDefaultModel = React.useMemo(() => {
     const executorId = settings?.executor || '';
     const backend = executorId ? settings?.backends?.[executorId] : undefined;

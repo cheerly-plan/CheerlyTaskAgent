@@ -66,23 +66,10 @@ const ROW_BORDER: Record<Tone, string> = {
   neutral: 'border-l-border',
 };
 
-/**
- * 报告详情页：整页展示一次执行的完整结果。
- *
- * 版面（宽屏两栏）：结论横幅横贯顶部 → 左栏「概览统计 / 需求描述 / 改动明细」，
- * 右栏「核心信息 / 同步情况 / 原始输出」。
- *
- * 与旧弹窗的差别：不受 880px 宽度和视口高度限制，信息一屏铺开；告一段落后
- * 用「← 返回」回到来源列表；请求还没回来时先给出加载中的骨架，而不是空白。
- */
 export function ReportPage() {
   const {reportView, closeReport} = useApp();
   const {loading, error, summary, markdown, item, downloadUrl, downloadName, backLabel} = reportView;
 
-  // 正文 = 报告去掉标题与「基本信息 / 执行结果」两张主表后的部分（需求描述、
-  // 改动原因、验证结果、折叠的原始输出）。这些表已经在页面上方结构化展示，
-  // 再渲染一遍会和「核心信息 / 指标卡」重复。注意必须整段渲染：
-  // 折叠块里的 `##` 级标题要跟它的 <details> 一起输出，不能按小节切碎。
   const reportHtml = React.useMemo(
     () => renderMarkdown(summary?.rest?.trim() ? summary.rest : (markdown ?? '')),
     [summary, markdown],
@@ -90,10 +77,9 @@ export function ReportPage() {
 
   return (
     <div className="mx-auto w-full max-w-[1180px]">
-      {/* 页头：返回 + 标题 + 下载 */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2.5">
-          <Button variant="ghost" size="icon-sm" onClick={closeReport} title={`返回${backLabel}`} aria-label={`返回${backLabel}`}>
+          <Button variant="ghost" size="icon-sm" onClick={closeReport} aria-label={`返回${backLabel}`}>
             <ArrowLeft />
           </Button>
           <div className="min-w-0">
@@ -134,7 +120,6 @@ export function ReportPage() {
       ) : summary ? (
         <ReportView summary={summary} reportHtml={reportHtml} />
       ) : (
-        // 没有报告（如 dry-run 未执行）：展示工单当前信息 + 生成条件说明。
         <Card className="p-4">
           <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
         </Card>
@@ -162,7 +147,6 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
 
           <Card id="report-full" className="scroll-mt-4 p-4">
             <CardTitle icon={FileDiff}>需求与报告正文</CardTitle>
-            {/* 需求描述、改动原因与验证结论；执行命令 / 提示词 / 原始输出折叠在文末。 */}
             <div className="report-body" dangerouslySetInnerHTML={{__html: reportHtml}} />
           </Card>
 
@@ -196,7 +180,6 @@ function ReportView({summary, reportHtml}: {summary: ReportSummary; reportHtml: 
   );
 }
 
-/** 结论横幅：颜色 + 图标 + 一句话结论，替代埋在表格里的「成功 | 是」。 */
 function ReportOutcomeBanner({summary, onJump}: {summary: ReportSummary; onJump: (ref: string) => void}) {
   const tone: Tone = summary.outcome === 'success' ? 'success' : summary.outcome === 'failure' ? 'danger' : 'neutral';
   const Icon = tone === 'success' ? CircleCheck : tone === 'danger' ? AlertTriangle : CircleSlash;
@@ -246,7 +229,6 @@ function ReportOutcomeBanner({summary, onJump}: {summary: ReportSummary; onJump:
   );
 }
 
-/** 四张指标卡：与概览页 KPI 卡同一套视觉。 */
 function ReportStats({stats}: {stats: ReportSummary['stats']}) {
   const icons: LucideIcon[] = [CircleCheck, Timer, Files, FolderTree];
   return (
@@ -264,7 +246,6 @@ function ReportStats({stats}: {stats: ReportSummary['stats']}) {
             <div className={cn('mt-1 truncate text-[19px] font-semibold leading-tight tracking-[-0.02em]', TONE_TEXT[stat.tone])}>
               {stat.value}
             </div>
-            {stat.hint ? <div className="truncate text-[11px] text-faint">{stat.hint}</div> : null}
           </div>
         );
       })}
@@ -272,7 +253,6 @@ function ReportStats({stats}: {stats: ReportSummary['stats']}) {
   );
 }
 
-/** 需要关注：错误 / 冲突 / 截断 / 未落库，按严重程度前置。 */
 function ReportAttention({attention, onJump}: {attention: Attention[]; onJump: (ref: string) => void}) {
   if (!attention.length) {
     return (
@@ -327,7 +307,6 @@ function ReportAttention({attention, onJump}: {attention: Attention[]; onJump: (
   );
 }
 
-/** 核心信息：来源 / 类型 / 模型 / 仓库等，纵向排列适配右栏。 */
 function ReportMeta({summary}: {summary: ReportSummary}) {
   const basic = summary.groups.find((group) => group.label === '基本信息') ?? summary.groups[0];
   const execution = summary.groups.find((group) => group.label !== '基本信息');
@@ -342,7 +321,6 @@ function ReportMeta({summary}: {summary: ReportSummary}) {
           (fact.label === '状态' || fact.label === '类型') && 'font-medium',
           fact.mono && 'font-mono text-[11px]',
         )}
-        title={fact.value}
       >
         {displayValue(fact.label, fact.value)}
       </dd>
@@ -364,7 +342,6 @@ function ReportMeta({summary}: {summary: ReportSummary}) {
   );
 }
 
-/** 同步明细：数量 + 备份目录 + 删除/跳过清单。 */
 function ReportSync({summary}: {summary: ReportSummary}) {
   const {sync} = summary;
   if (!sync) return null;
@@ -397,7 +374,6 @@ function ReportSync({summary}: {summary: ReportSummary}) {
   );
 }
 
-/** 改动明细：按目录聚合的条形图 + 文件清单。 */
 function ReportChanges({summary}: {summary: ReportSummary}) {
   const {modules, changedFiles} = summary;
   if (!changedFiles.length) {
@@ -408,7 +384,7 @@ function ReportChanges({summary}: {summary: ReportSummary}) {
     <div className="space-y-3">
       <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
         {modules.map((slice) => (
-          <div key={slice.name} title={slice.files.join('\n')}>
+          <div key={slice.name}>
             <div className="mb-1 flex items-baseline justify-between gap-2 text-[11.5px]">
               <span className="truncate font-mono text-foreground/80">{slice.name}</span>
               <span className="shrink-0 text-faint">{slice.count} 个</span>
@@ -423,7 +399,6 @@ function ReportChanges({summary}: {summary: ReportSummary}) {
         {changedFiles.map((file) => (
           <code
             key={file}
-            title={file}
             className="max-w-full truncate rounded-md border border-border bg-[#fafafd] px-1.5 py-0.5 font-mono text-[11px] text-foreground/75"
           >
             {file}
@@ -471,7 +446,6 @@ function ReportSkeleton() {
   );
 }
 
-/** 状态 / 类型用中文标签，其余原样展示。 */
 function displayValue(label: string, value: string): string {
   if (label === '状态') return statusLabel[value] ?? value;
   if (label === '类型') return kindLabel[value] ?? value;

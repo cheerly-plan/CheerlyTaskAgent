@@ -8,15 +8,12 @@ import {toast} from 'sonner';
 export function DataSourcesPage() {
   const {settings, saveSettings, mappings, reloadMappings} = useApp();
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
-  // 项目↔仓库关联也走草稿：只有点主「保存」才写入 projects.json，
-  // 与 settings 草稿保持同一套「保存才生效」的心智。
   const [mappingDraft, setMappingDraft] = React.useState<Record<string, string[]>>({});
 
   React.useEffect(() => {
     setDraft(settings);
   }, [settings]);
 
-  // UI 与弹窗计算都基于「已落库映射 + 草稿覆盖」的有效视图。
   const effectiveMappings = React.useMemo(
     () =>
       mappings.map((m) => {
@@ -48,23 +45,18 @@ export function DataSourcesPage() {
   };
 
   const changeType = (value: string) => {
-    // 切换类型时重建该类型的空配置；目前仅 tapd，切换即重置为 TAPD 默认。
     if (value === 'tapd') {
       patchSource({type: 'tapd', name: 'TAPD', enabled: false, tapd: {...TAPD_DEFAULT}});
     }
   };
 
   const save = async () => {
-    // 取消勾选 / 删除 = 不再拉取该项目；同步解除它和本地仓库的映射，
-    // 否则项目映射页会残留一个永远不会再产出工单的绑定。
     const selected = new Set(
       (draft.data_source?.tapd?.workspace_id ?? '')
         .split(',')
         .map((id) => id.trim())
         .filter(Boolean),
     );
-    // 最终期望关联 = 草稿覆盖后的值，再剔除不再拉取的项目。与已落库映射比较，
-    // 只提交真正有差异的项（草稿里改了又改回来的不写）。
     let changed = 0;
     for (const mapping of mappings) {
       const staged = mappingDraft[mapping.id];
