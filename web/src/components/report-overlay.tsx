@@ -7,7 +7,8 @@ import {cn} from '@/lib/utils';
 export type ReportLayout = 'drawer' | 'split' | 'focus';
 
 /**
- * 报告叠加层：来源页（任务中心 / 历史记录）照常留在背景，报告以工作台形式覆盖。
+ * 报告叠加层：来源页（任务中心 / 历史记录）照常留在背景，报告以全屏浮层覆盖整个视口
+ * （含顶栏与侧栏）。
  *
  * 三档布局与原型一致：抽屉（背景虚化）/ 分屏（与列表并排）/ 专注（占满主区）。
  * 档位是会话内临时偏好，切换报告不重置；关闭报告时随组件卸载。
@@ -17,7 +18,7 @@ export function ReportOverlay() {
   const [layout, setLayout] = React.useState<ReportLayout>('drawer');
 
   return (
-    <div className="absolute inset-0 z-30 flex" data-layout={layout}>
+    <div className="fixed inset-0 z-50 flex" data-layout={layout}>
       {/* 背景：抽屉虚化、分屏轻微压暗、专注完全遮住。 */}
       <div
         aria-hidden="true"

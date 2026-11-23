@@ -61,7 +61,6 @@ function Shell() {
 
       <div className="flex min-h-0 flex-1">
         <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} />
-        {/* 叠加层只覆盖主内容区，侧边栏始终可见、可点击切换 */}
         <div className="relative flex min-h-0 flex-1">
           <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
             {background === 'dashboard' ? <DashboardPage /> : null}
@@ -71,9 +70,11 @@ function Shell() {
             {background === 'sources' ? <DataSourcesPage /> : null}
             {background === 'settings' ? <SettingsPage /> : null}
           </main>
-          {page === 'report' ? <ReportOverlay /> : null}
         </div>
       </div>
+
+      {/* 报告以全屏浮层呈现，盖住顶栏与侧栏；背景仍渲染来源页 */}
+      {page === 'report' ? <ReportOverlay /> : null}
 
       <Toaster position="top-right" richColors closeButton />
     </div>

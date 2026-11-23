@@ -404,7 +404,7 @@ export function ReportPage({layout, onLayoutChange, onClose}: ReportPageProps) {
               />
 
               <main ref={bodyRef} className="min-w-0">
-                <ViewBar view={view} onView={setView} onFind={openFind} />
+                <ViewBar view={view} onView={setView} onFind={openFind} scrollRef={scrollRef} />
 
                 {view === 'raw' ? (
                   <RawView
@@ -708,11 +708,7 @@ function Hero({
           </div>
         </div>
 
-        <div className="mt-4 text-[14px] font-semibold tracking-[-0.01em] text-[#22243a]">
-          {summary.subject || '执行报告'}
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {metrics.map((metric) => (
             <div key={metric.label} className="rounded-xl border border-[rgba(38,42,80,0.09)] bg-white/75 px-3 py-2">
               <div className="text-[10.5px] text-[#8b8fa8]">{metric.label}</div>
@@ -835,13 +831,34 @@ function ViewBar({
   view,
   onView,
   onFind,
+  scrollRef,
 }: {
   view: 'structured' | 'raw';
   onView: (view: 'structured' | 'raw') => void;
   onFind: () => void;
+  scrollRef: React.RefObject<HTMLDivElement>;
 }) {
+  // 只在吸顶时显示实色背景与分隔线；平时透明融入内容，避免那条带子格格不入。
+  const [stuck, setStuck] = React.useState(false);
+  const sentinelRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const root = scrollRef.current;
+    const sentinel = sentinelRef.current;
+    if (!root || !sentinel) return;
+    const observer = new IntersectionObserver(([entry]) => setStuck(!entry.isIntersecting), {root});
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [scrollRef]);
+
   return (
-    <div className="sticky top-0 z-10 mb-3 flex items-center gap-2 bg-gradient-to-b from-background via-background to-transparent py-2">
+    <>
+    <div ref={sentinelRef} aria-hidden="true" className="-mb-px h-px" />
+    <div
+      className={cn(
+        'sticky top-0 z-20 mb-3 flex items-center gap-2 border-b border-transparent py-2 transition-colors duration-200',
+        stuck && 'border-border/60 bg-background',
+      )}
+    >
       <div className="flex gap-0.5 rounded-lg border border-border bg-card/80 p-0.5">
         {(
           [
@@ -872,6 +889,7 @@ function ViewBar({
         查找
       </button>
     </div>
+    </>
   );
 }
 
@@ -972,6 +990,11 @@ function OverviewBody({summary, descriptionHtml}: {summary: Summary; description
   const fields = summary.metaFields;
   return (
     <>
+      {summary.subject ? (
+        <div className="mb-2.5 text-[14px] font-semibold leading-snug tracking-[-0.01em] text-[#22243a]">
+          {summary.subject}
+        </div>
+      ) : null}
       {descriptionHtml ? (
         <div className="report-body rounded-xl border border-border/60 bg-[#fafbff] px-3.5 py-3 text-[12px] leading-[1.8] text-[#5b5f78]">
           <div dangerouslySetInnerHTML={{__html: descriptionHtml}} />
