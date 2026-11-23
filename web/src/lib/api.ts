@@ -191,6 +191,16 @@ export interface DataSource {
   tapd: TapdSettings;
 }
 
+/** A backend-agent LLM (OpenAI-compatible). Unrelated to execution CLIs. */
+export interface ModelConfig {
+  id: string;
+  label: string;
+  provider: string;
+  base_url: string;
+  api_key: string;
+  enabled: boolean;
+}
+
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
@@ -199,6 +209,9 @@ export interface UISettings {
   max_concurrent: number;
   auto_sync: boolean;
   backends: Record<string, BackendConfig>;
+  models: ModelConfig[];
+  /** 后端 Agent 使用的模型 id；空值表示第一个启用的模型。 */
+  agent_model: string;
   tapd: TapdSettings;
   data_source: DataSource;
 }

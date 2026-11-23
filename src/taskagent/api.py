@@ -121,6 +121,10 @@ class UISettingsBody(BaseModel):
     max_concurrent: int = Field(default=1, ge=1)
     auto_sync: bool = True
     backends: dict[str, Any] = Field(default_factory=dict)
+    # 后端 Agent 自己的 LLM 配置（OpenAI 兼容），与执行端 CLI 解耦。
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    # 后端 Agent 默认使用的模型 id；空值表示第一个启用的模型。
+    agent_model: str = ""
     tapd: dict[str, Any] = Field(default_factory=dict)
     # 单一数据源对象：type/name/enabled + 类型专属字段（目前仅 tapd）。
     data_source: dict[str, Any] = Field(default_factory=dict)
@@ -294,7 +298,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning("启动父子关系整理失败", exc_info=True)
 
     # 自动执行引擎：只在两个触发点工作——TAPD 定时拉取、任务中心手动勾选。
-    automation = AutomationEngine(scheduler=scheduler, store=store, events=events)
+    automation = AutomationEngine(
+        scheduler=scheduler, store=store, events=events, settings=settings
+    )
 
     # ── TAPD (authoritative source) ────────────────────────────────────────────
     _tapd_last_sync: dict[str, str] = {"modified": ""}  # incremental cursor, in-memory

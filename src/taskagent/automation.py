@@ -19,6 +19,7 @@ import logging
 from typing import Any
 
 from .events import Event
+from .llm import AgentLLM, AgentModel, resolve_agent_model
 from .models import ItemStatus, WorkItem
 from .planner import Plan, plan_repo
 
@@ -30,10 +31,13 @@ PLANNER_MAX_CANDIDATES = 4
 
 
 class AutomationEngine:
-    def __init__(self, *, scheduler, store, events) -> None:
+    def __init__(self, *, scheduler, store, events, settings=None) -> None:
         self.scheduler = scheduler
         self.store = store
         self.events = events
+        # App settings are read lazily at plan time so a model configured in the
+        # UI takes effect without restarting the server.
+        self.settings = settings
 
     # ── 触发入口 ──────────────────────────────────────────────────────────────
     async def dispatch(self, item_ids: list[str], *, trigger: str = "manual") -> dict[str, Any]:
@@ -63,7 +67,16 @@ class AutomationEngine:
                 if not candidates:
                     skipped.append({"id": item_id, "reason": "未映射仓库，且没有可用的候选仓库"})
                     continue
-                plan = await self._plan(item, candidates)
+                agent = self._agent_model()
+                if len(candidates) > 1 and (
+                    agent is None or not agent.base_url or not agent.api_key
+                ):
+                    skipped.append({
+                        "id": item_id,
+                        "reason": "未配置可用的后端 Agent 模型（需 Base URL 与 API Key）",
+                    })
+                    continue
+                plan = await self._plan(item, candidates, agent)
                 if plan is None:
                     skipped.append({"id": item_id, "reason": "自动规划未能确定仓库，请手动映射"})
                     continue
@@ -116,10 +129,23 @@ class AutomationEngine:
             if m.enabled
         ]
 
-    async def _plan(self, item: WorkItem, candidates) -> Plan | None:
-        backend = self.scheduler.executors.resolve(item.executor)
+    def _agent_model(self) -> AgentModel | None:
+        """The enabled backend-agent model, read fresh from saved settings."""
+        if self.settings is None:
+            return None
+        ui = self.settings.load_ui_settings()
+        return resolve_agent_model(
+            ui.get("models") or [], str(ui.get("agent_model") or "")
+        )
+
+    async def _plan(
+        self, item: WorkItem, candidates, agent: AgentModel | None = None
+    ) -> Plan | None:
+        agent = agent or self._agent_model()
+        if agent is None:
+            return None
         return await plan_repo(
-            item, candidates, backend=backend, enabled=True,
+            item, candidates, llm=AgentLLM(agent), enabled=True,
             timeout_s=PLANNER_TIMEOUT_S, max_candidates=PLANNER_MAX_CANDIDATES,
         )
 

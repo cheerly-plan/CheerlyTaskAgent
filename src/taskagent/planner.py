@@ -1,14 +1,15 @@
-"""规划阶段：在多候选仓库时让 LLM 选一个仓库并给出执行方案。
+"""规划阶段：在多候选仓库时让后端 Agent 的 LLM 选一个仓库并给出执行方案。
 
 只有「规则判不出来」的场景才调用 LLM（TAPD 项目绑定了多个本地仓库）。单候选
 直接命中，零额外调用；调用失败就如实返回 ``None``，任务留在待人工映射，绝不
-瞎猜一个仓库把代码改错地方。规划用的 CLI 调用是只读的（codebuddy `plan` 模式 /
-DSH `read-only`），不会产生任何文件改动。
+瞎猜一个仓库把代码改错地方。这里的 LLM 是调度台自己配置的 OpenAI 兼容接口
+（``taskagent.llm``），与执行端的 codebuddy / DSH CLI 无关。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from pathlib import Path
 
 from .models import ItemKind, ProjectMapping, WorkItem
 from .report import extract_conclusion
+
+logger = logging.getLogger(__name__)
 
 _KIND_LABEL = {
     ItemKind.BUG: "缺陷修复",
@@ -146,7 +149,7 @@ async def plan_repo(
     item: WorkItem,
     candidates: list[ProjectMapping],
     *,
-    backend,
+    llm,
     enabled: bool,
     timeout_s: int,
     max_candidates: int,
@@ -156,12 +159,13 @@ async def plan_repo(
         return None
     if len(candidates) == 1:
         return Plan(repo=candidates[0].name, reason="该项目只关联了一个本地仓库", source="rule")
-    if not enabled or backend is None:
+    if not enabled or llm is None:
         return None
     subset = candidates[: max(1, max_candidates)]
     prompt = build_plan_prompt(item, subset)
     try:
-        raw = await backend.ask(prompt, timeout_s=timeout_s)
-    except Exception:  # noqa: BLE001 - planning must never break the dispatcher
+        raw = await llm.complete(prompt, timeout_s=timeout_s)
+    except Exception as error:  # noqa: BLE001 - planning must never break the dispatcher
+        logger.warning("后端 Agent 规划失败（%s）：%s", item.id, error)
         return None
     return parse_plan(raw, subset)

@@ -91,6 +91,57 @@ def test_settings_api_roundtrip(tmp_path):
         assert client.get("/api/settings").json() == saved
 
 
+def test_agent_model_config_roundtrip_and_blank_key_keeps_value(tmp_path):
+    """模型配置经 /api/settings 持久化；空 api_key 表示保持原值（UI 掩码）。"""
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        payload = client.get("/api/settings").json()
+        assert payload["models"] == []
+        assert payload["agent_model"] == ""
+        payload["models"] = [{
+            "id": "qwen-max",
+            "label": "Qwen Max",
+            "provider": "Qwen",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "sk-secret",
+            "enabled": True,
+        }]
+        payload["agent_model"] = "qwen-max"
+        saved = client.put("/api/settings", json=payload).json()
+        assert saved["models"][0]["id"] == "qwen-max"
+        assert saved["models"][0]["api_key"] == "sk-secret"
+        assert saved["agent_model"] == "qwen-max"
+
+        # 提交空秘钥不应把已保存的秘钥冲掉。
+        payload = client.get("/api/settings").json()
+        payload["models"][0]["api_key"] = ""
+        saved = client.put("/api/settings", json=payload).json()
+        assert saved["models"][0]["api_key"] == "sk-secret"
+
+        # 指向不存在的模型时回退为空（后端再用第一个启用的模型）。
+        payload["agent_model"] = "missing"
+        saved = client.put("/api/settings", json=payload).json()
+        assert saved["agent_model"] == ""
+
+
+def test_model_config_does_not_change_cli_model_choices(tmp_path):
+    """后端 Agent 的模型配置不能混进执行端的模型下拉。"""
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        payload = client.get("/api/settings").json()
+        payload["models"] = [{
+            "id": "backend-only",
+            "label": "后端专用",
+            "provider": "Vendor",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "sk-secret",
+            "enabled": True,
+        }]
+        client.put("/api/settings", json=payload)
+        choices = client.get("/api/config").json()["models"]
+        assert all(choice["id"] != "backend-only" for choice in choices)
+
+
 def test_saving_settings_applies_without_restart(tmp_path):
     """PUT /api/settings must refresh executors and concurrency in place.
 

@@ -10,6 +10,7 @@ import {DashboardPage} from '@/pages/dashboard-page';
 import {DataSourcesPage} from '@/pages/data-sources-page';
 import {HistoryPage} from '@/pages/history-page';
 import {MappingsPage} from '@/pages/mappings-page';
+import {ModelsPage} from '@/pages/models-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
 import {ReportOverlay} from '@/components/report-overlay';
@@ -68,6 +69,7 @@ function Shell() {
             {background === 'history' ? <HistoryPage /> : null}
             {background === 'mapping' ? <MappingsPage /> : null}
             {background === 'sources' ? <DataSourcesPage /> : null}
+            {background === 'models' ? <ModelsPage /> : null}
             {background === 'settings' ? <SettingsPage /> : null}
           </main>
         </div>

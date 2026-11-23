@@ -115,6 +115,30 @@ def normalise_data_source(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalise_model(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalise one backend-agent LLM entry from the model configuration page.
+
+    These models drive the backend agent's own OpenAI-compatible calls (e.g.
+    planner repository selection); they never configure an execution CLI.
+    """
+    model_id = str(item.get("id") or "").strip()
+    return {
+        "id": model_id,
+        "label": str(item.get("label") or "").strip() or model_id,
+        "provider": str(item.get("provider") or "").strip(),
+        "base_url": str(item.get("base_url") or "").strip(),
+        "api_key": str(item.get("api_key") or "").strip(),
+        "enabled": bool(item.get("enabled", True)),
+    }
+
+
+def _sync_agent_model(data: dict[str, Any]) -> None:
+    """Keep ``agent_model`` pointing at a saved entry; blank = first enabled."""
+    known = {str(m.get("id")) for m in data.get("models") or [] if isinstance(m, dict)}
+    agent_model = str(data.get("agent_model") or "").strip()
+    data["agent_model"] = agent_model if agent_model in known else ""
+
+
 UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "executor": "codebuddy",  # default backend for new tasks (legacy key, kept for /api/config)
     "codebuddy_command": "codebuddy",
@@ -122,6 +146,10 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "default_model": "",
     "max_concurrent": 1,
     "auto_sync": True,
+    # 后端 Agent 自己使用的 LLM（OpenAI 兼容接口），与执行端 CLI 解耦。
+    "models": [],
+    # 后端 Agent 实际调用的模型 id；空值表示用第一个启用的模型。
+    "agent_model": "",
     "backends": _default_backends(),
     # 数据源是一个「单一对象、类型不同」的配置：``data_source`` 含
     # type/name/enabled + 类型专属字段。目前仅支持 tapd 类型；其他类型
@@ -303,6 +331,7 @@ class Settings:
             "auto_sync": self.auto_sync,
             "data_source": dict(UI_SETTINGS_DEFAULTS["data_source"]),
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
+            "models": [],
         }
         path = self.ui_settings_path
         saved: dict[str, Any] = {}
@@ -337,10 +366,24 @@ class Settings:
                             data[key].pop("nick", None)  # 已移除：拉项目改走 company_id
                         elif key == "data_source" and isinstance(value, dict):
                             data[key] = normalise_data_source(value)
+                        elif key == "models" and isinstance(value, list):
+                            models: list[dict[str, Any]] = []
+                            seen_ids: set[str] = set()
+                            for item in value:
+                                if not isinstance(item, dict):
+                                    continue
+                                model = normalise_model(item)
+                                if not model["id"] or model["id"] in seen_ids:
+                                    continue
+                                seen_ids.add(model["id"])
+                                models.append(model)
+                            data["models"] = models
                         elif key in data:
                             data[key] = value
             except (OSError, ValueError):
                 pass  # corrupt/unreadable file -> fall back to defaults
+        # 后端 Agent 的默认模型必须指向一份已保存的配置；空值表示用第一个启用的。
+        _sync_agent_model(data)
         # Migrate legacy flat fields into backends when the file predates them.
         if isinstance(saved, dict) and "backends" not in saved:
             data["backends"]["codebuddy"]["command"] = data.get("codebuddy_command") or "codebuddy"
@@ -442,8 +485,32 @@ class Settings:
                             tapd[list_key] = []
                     src["tapd"] = tapd
                 data["data_source"] = src
+            elif key == "models" and isinstance(value, list):
+                # 完整接管：模型配置由 UI 维护，空 api_key 表示「保持原值」
+                # （UI 对秘钥做掩码，不回传明文），按 id 继承已保存的秘钥。
+                old = {
+                    str(m.get("id")): m
+                    for m in (data.get("models") or [])
+                    if isinstance(m, dict)
+                }
+                models: list[dict[str, Any]] = []
+                seen_model_ids: set[str] = set()
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    model = normalise_model(item)
+                    if not model["id"] or model["id"] in seen_model_ids:
+                        continue
+                    seen_model_ids.add(model["id"])
+                    if not model["api_key"]:
+                        model["api_key"] = str(
+                            (old.get(model["id"]) or {}).get("api_key") or ""
+                        )
+                    models.append(model)
+                data["models"] = models
             elif key in data:
                 data[key] = value
+        _sync_agent_model(data)
         data["max_concurrent"] = max(1, int(data.get("max_concurrent", 1) or 1))
         # Normalise tapd values.
         tapd = data["tapd"]

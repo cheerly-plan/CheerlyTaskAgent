@@ -1,4 +1,4 @@
-import {LayoutDashboard, List, FolderGit2, History, Inbox, Settings2} from 'lucide-react';
+import {Bot, LayoutDashboard, List, FolderGit2, History, Inbox, Settings2} from 'lucide-react';
 
 import {cn} from '@/lib/utils';
 
@@ -16,6 +16,7 @@ export type PageKey =
   | 'history'
   | 'mapping'
   | 'sources'
+  | 'models'
   | 'settings'
   | 'report';
 
@@ -29,6 +30,7 @@ export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
   {key: 'history', label: '历史记录', icon: History},
   {key: 'mapping', label: '项目映射', icon: FolderGit2},
   {key: 'sources', label: '数据源', icon: Inbox},
+  {key: 'models', label: '模型配置', icon: Bot},
   {key: 'settings', label: '系统设置', icon: Settings2},
 ];
 

@@ -127,6 +127,7 @@ const PAGE_LABEL: Record<PageKey, string> = {
   history: '历史记录',
   mapping: '项目映射',
   sources: '数据源',
+  models: '模型配置',
   settings: '系统设置',
   report: '报告',
 };
@@ -693,6 +694,16 @@ export function AppProvider({
         default_model: next.default_model || '',
         max_concurrent: Math.max(1, Number(next.max_concurrent) || 1),
         auto_sync: next.auto_sync !== false,
+        // 后端 Agent 自己的 LLM 配置；执行端 CLI 的模型仍由各后端自行发现。
+        models: (next.models ?? []).map((model) => ({
+          id: (model.id || '').trim(),
+          label: (model.label || '').trim(),
+          provider: (model.provider || '').trim(),
+          base_url: (model.base_url || '').trim(),
+          api_key: (model.api_key || '').trim(),
+          enabled: model.enabled !== false,
+        })),
+        agent_model: (next.agent_model || '').trim(),
         backends: Object.fromEntries(
           Object.entries(next.backends ?? {}).map(([id, cfg]) => [
             id,

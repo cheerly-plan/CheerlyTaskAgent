@@ -230,9 +230,63 @@ async def test_plan_repo_single_candidate_skips_llm(tmp_path: Path):
     candidates = [_mapping("only", tmp_path)]
     plan = await plan_repo(
         WorkItem.create(title="x", description="y"), candidates,
-        backend=None, enabled=True, timeout_s=5, max_candidates=3,
+        llm=None, enabled=True, timeout_s=5, max_candidates=3,
     )
     assert plan is not None and plan.repo == "only" and plan.source == "rule"
+
+
+async def test_plan_repo_degrades_when_backend_llm_fails(tmp_path: Path):
+    candidates = [_mapping("api", tmp_path), _mapping("web", tmp_path)]
+
+    class BrokenLLM:
+        async def complete(self, prompt: str, *, timeout_s: float = 0) -> str:
+            raise RuntimeError("endpoint down")
+
+    plan = await plan_repo(
+        WorkItem.create(title="改首页", description="x"), candidates,
+        llm=BrokenLLM(), enabled=True, timeout_s=5, max_candidates=3,
+    )
+    assert plan is None
+
+
+async def test_engine_reads_agent_model_from_settings(tmp_path: Path):
+    scheduler, store, _, _ = _scheduler(tmp_path)
+
+    class FakeSettings:
+        def load_ui_settings(self):
+            return {
+                "models": [{
+                    "id": "qwen-max",
+                    "enabled": True,
+                    "base_url": "https://example.test/v1",
+                    "api_key": "sk-test",
+                }],
+                "agent_model": "qwen-max",
+            }
+
+    engine = AutomationEngine(
+        scheduler=scheduler, store=store, events=scheduler.events,
+        settings=FakeSettings(),
+    )
+    agent = engine._agent_model()
+    assert agent is not None and agent.id == "qwen-max"
+
+
+async def test_plan_repo_uses_backend_llm(tmp_path: Path):
+    candidates = [_mapping("api", tmp_path), _mapping("web", tmp_path)]
+
+    class FakeLLM:
+        async def complete(self, prompt: str, *, timeout_s: float = 0) -> str:
+            assert "候选仓库" in prompt
+            return '```json\n{"repo":"web","reason":"前端页面","steps":["改页面"]}\n```'
+
+    plan = await plan_repo(
+        WorkItem.create(title="改首页", description="x"), candidates,
+        llm=FakeLLM(), enabled=True, timeout_s=5, max_candidates=3,
+    )
+    assert plan is not None
+    assert plan.repo == "web" and plan.source == "llm"
+    assert plan.to_prompt() == "1. 改页面"
 
 # ── 父需求容器：只做分组头，不映射、不执行 ───────────────────────────────────
 def test_parent_import_is_container_and_not_executable(tmp_path: Path):

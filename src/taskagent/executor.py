@@ -727,34 +727,6 @@ class CodeBuddyExecutor(Executor):
         argv.append(build_prompt(item))
         return argv
 
-    # ── read-only Q&A（自动规划用，不产生任何文件改动）────────────────────────
-    def _ask_argv(self, prompt: str) -> list[str]:
-        """Plan-mode invocation: reads the repo, cannot edit it."""
-        return [
-            self.command, "-p", "--output-format", "json",
-            "--permission-mode", "plan", prompt,
-        ]
-
-    async def ask(self, prompt: str, *, timeout_s: float = 120.0, cwd: str | None = None) -> str:
-        """Run a non-mutating prompt and return raw stdout (empty on failure)."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._ask_argv(prompt),
-                cwd=cwd,
-                env=self._clean_env(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except (FileNotFoundError, OSError):
-            return ""
-        try:
-            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-        except TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return ""
-        return stdout_b.decode("utf-8", errors="replace")
-
     async def run(
         self,
         item: WorkItem,
@@ -1791,13 +1763,6 @@ class DshExecutor(CodeBuddyExecutor):
         argv += ["--json", build_prompt(item)]
         return argv
 
-    def _ask_argv(self, prompt: str) -> list[str]:
-        # headless + read-only preset: can read the repo, cannot edit it.
-        return [
-            self.command, "--profile", "headless",
-            "--permission-mode", "read-only", "--json", prompt,
-        ]
-
     async def run(
         self,
         item: WorkItem,
@@ -1837,6 +1802,10 @@ class DshExecutor(CodeBuddyExecutor):
         )
         for name in names:
             if not name:
+                continue
+            # An explicit process environment value wins; otherwise fall back
+            # to DSH's own credential store.
+            if name in env:
                 continue
             if name in os.environ:
                 env[name] = os.environ[name]
