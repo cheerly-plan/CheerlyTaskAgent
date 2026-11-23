@@ -149,6 +149,19 @@ def test_report_prompt_block_is_open():
     assert "<details><summary>执行命令</summary>" in report
 
 
+def test_report_prompt_title_uses_actual_executor():
+    item = WorkItem.create(title="DSH 任务", description="x", executor="dsh")
+    report = render_report(item)
+    assert "下发给 DSH 的提示词" in report
+    assert "下发给 codebuddy 的提示词" not in report
+
+
+def test_report_prompt_title_keeps_unknown_executor_id():
+    item = WorkItem.create(title="自定义执行端", description="x", executor="my-cli")
+    report = render_report(item)
+    assert "下发给 my-cli 的提示词" in report
+
+
 def test_child_report_shows_parent():
     child = WorkItem.create(title="登录页", description="", parent_ref="tapd:story:p1")
     # 有父标题时用标题。

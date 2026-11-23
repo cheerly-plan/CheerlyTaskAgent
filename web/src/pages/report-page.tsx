@@ -1103,26 +1103,31 @@ function ChangesBody({
               <div className="mb-2 flex items-center gap-2 text-[11px] font-bold text-muted-foreground">
                 <span className="rounded-md bg-primary-muted px-2 py-0.5 font-mono text-[10px] font-semibold text-primary">{group.name}</span>
                 <span className="font-normal">{group.count} 个文件</span>
-                <span className="ml-auto text-[10px] font-normal text-faint">点击查看改动原因</span>
               </div>
               {files.map((file) => {
                 const key = `${group.name}/${file}`;
                 const open = Boolean(openFiles[key]);
-                const detail = reasons[file] ?? ['本次执行修改了该文件，具体改动见执行输出摘要。'];
+                const detail = reasons[file];
+                const hasReason = Boolean(detail?.length);
                 return (
                   <div key={key} className="mb-1.5 overflow-hidden rounded-xl border border-border bg-white transition-colors hover:border-primary/40">
                     <div className="flex items-center">
                       <button
                         type="button"
-                        onClick={() => onToggleFile(key)}
-                        className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left"
+                        onClick={() => hasReason && onToggleFile(key)}
+                        className={cn(
+                          'flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left',
+                          hasReason && 'cursor-pointer',
+                        )}
                       >
                         <span className="flex size-[26px] shrink-0 items-center justify-center rounded-lg bg-secondary text-faint">
                           <FileText className="size-3.5" />
                         </span>
                         <span className="min-w-0 flex-1 break-all font-mono text-[11px] font-semibold text-foreground">{file}</span>
                         <span className="shrink-0 rounded-md bg-[#e8f7ed] px-1.5 py-0.5 text-[10px] font-semibold text-[#16a34a]">已同步</span>
-                        <ChevronRight className={cn('size-3.5 shrink-0 text-faint transition-transform', open && 'rotate-90')} />
+                        {hasReason ? (
+                          <ChevronRight className={cn('size-3.5 shrink-0 text-faint transition-transform', open && 'rotate-90')} />
+                        ) : null}
                       </button>
                       <button
                         type="button"
@@ -1134,14 +1139,14 @@ function ChangesBody({
                         <Copy className="size-3" />
                       </button>
                     </div>
-                    {open ? (
+                    {open && hasReason ? (
                       <div className="border-t border-border/60 py-2.5 pl-12 pr-4 text-[11.5px] leading-[1.8] text-muted-foreground">
                         <b className="text-foreground">改动原因</b>
-                        <ul className="mt-1 list-disc pl-4">
+                        <div className="mt-1.5 space-y-1">
                           {detail.map((line) => (
-                            <li key={line}>{line}</li>
+                            <div key={line}>{line}</div>
                           ))}
-                        </ul>
+                        </div>
                       </div>
                     ) : null}
                   </div>

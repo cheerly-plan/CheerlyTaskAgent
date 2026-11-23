@@ -15,6 +15,20 @@ from .models import WorkItem
 # stream stays on the WorkItem for the API.
 _STDOUT_PREVIEW_LIMIT = 4000
 
+# Human-facing name for the backend that ran a task. The prompt itself is
+# backend-agnostic, but the report section title must name the actual executor
+# (e.g. "DSH" for dsh tasks, not the historical hard-coded "codebuddy").
+_BACKEND_LABELS: dict[str, str] = {
+    "codebuddy": "codebuddy",  # keep the long-standing wording for legacy reports/tests
+    "dsh": "DSH",
+}
+
+
+def executor_label(executor: str | None) -> str:
+    """Display name for an executor id; unknown/custom ids are shown verbatim."""
+    eid = (executor or "").strip()
+    return _BACKEND_LABELS.get(eid.lower(), eid) or "codebuddy"
+
 
 @dataclass(frozen=True)
 class Conclusion:
@@ -259,11 +273,11 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             lines += _collapsed(title, conclusion.text, fenced=not conclusion.is_final)
         if result.command:
             lines += _collapsed("执行命令", _command_skeleton(result.command))
-        lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item), opened=True)
+        lines += _collapsed(f"下发给 {executor_label(item.executor)} 的提示词", build_prompt(item), opened=True)
         if result.stderr:
             lines += _collapsed("stderr", result.stderr)
     else:
-        lines += _collapsed("下发给 codebuddy 的提示词", build_prompt(item), opened=True)
+        lines += _collapsed(f"下发给 {executor_label(item.executor)} 的提示词", build_prompt(item), opened=True)
 
     if item.error:
         lines += ["## 错误", "", f"`{item.error}`", ""]

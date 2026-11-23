@@ -261,14 +261,46 @@ export function extractReportExtras(markdown: string): ReportExtras {
     else extras.commands.push(appendix);
   }
 
-  // 执行器结论里的「改动文件与原因」：每行 `- `path`：原因`。
+  // 执行器结论里的「改动文件与原因」，常见两种写法：
+  //   A. `- **`path`**` 独占一行，下面缩进 `- 原因1` / `- 原因2`（codebuddy / dsh 默认输出）
+  //   B. `- `path`：原因`（单行冒号）
   const reasonHead = text.match(/^#{2,4}\s*改动文件与原因\s*$/m);
   if (reasonHead) {
     const rest = text.slice((reasonHead.index ?? 0) + reasonHead[0].length);
     const tail = rest.split(/^#{1,4}\s/m)[0] ?? '';
+    let current: string | null = null;
     for (const line of tail.split('\n')) {
-      const item = line.match(/^\s*[-*]\s+`?([^`：:]+?)`?\s*[：:]\s*(.+)$/);
-      if (item) extras.reasons[item[1].trim()] = [item[2].trim()];
+      // 子原因：缩进的 `- xxx`，归属到上一个文件标题
+      const sub = line.match(/^\s{2,}[-*]\s+(.+)$/);
+      if (sub && current) {
+        extras.reasons[current].push(sub[1].trim());
+        continue;
+      }
+      // 单行：`- `path`：原因`
+      const inline = line.match(/^\s*[-*]\s+`?([^`：:]+?)`?\s*[：:]\s*(.+)$/);
+      if (inline) {
+        const key = inline[1].replace(/\*/g, '').trim();
+        (extras.reasons[key] ??= []).push(inline[2].trim());
+        current = key;
+        continue;
+      }
+      // 文件标题：`- **`path`**` 或 `- `path``
+      const fileLine = line.match(/^\s*[-*]\s+(?:\*\*)?`([^`]+)`(?:\*\*)?\s*$/);
+      if (fileLine) {
+        current = fileLine[1].trim();
+        extras.reasons[current] ??= [];
+        continue;
+      }
+      // 粗体无反引号的文件：`- **path**`
+      const boldLine = line.match(/^\s*[-*]\s+\*\*([^*]+)\*\*\s*$/);
+      if (boldLine) {
+        current = boldLine[1].trim();
+        extras.reasons[current] ??= [];
+      }
+    }
+    // 丢掉没有解析到原因的空条目，避免前端显示占位文字
+    for (const key of Object.keys(extras.reasons)) {
+      if (!extras.reasons[key].length) delete extras.reasons[key];
     }
   }
 
