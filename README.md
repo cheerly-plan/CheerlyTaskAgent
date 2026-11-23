@@ -63,6 +63,23 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 - **git 映射（回退）**：扫描本地仓库 `origin`，归一化 `https://` / `git@` / `ssh://` / 裸 `host/owner/repo` 统一匹配；项目映射未命中时才走 git 扫描，也可在界面手动指定仓库。
 - **幂等**：`source_ref`（`tapd:<type>:<id>`）做去重键，同一个 TAPD 工单重复同步不会重复建单。
 - **安全**：默认 dry-run；apply 用 `git worktree` 隔离 + 显式审批 + 提示词注入防护；命令用 argv 列表拼接（非 shell），任务文本无法注入 shell 命令。
+- **验证门禁（自动链路，MVP）**：自动执行在原子合并前，会在隔离 worktree 里跑该仓库的检查。**未配置、空改动、改动测试/快照文件、任一检查失败或超时都会拦截**——主仓一个文件都不写，任务置为失败留在任务中心可重试，worktree 保留供排查。仓库没配置检查时默认 fail-closed（`TASKAGENT_VERIFY=0` 可临时关闭并记录为「验证已禁用」）。四类 `test / lint / typecheck / build` 必须齐全：每类要么有检查、要么在 `na` 里显式写理由，缺一类直接拦。检查命令**像仓库画像一样自动生成**：启动和新增项目映射时，按 `pyproject.toml`、`package.json` scripts、`go.mod`、`Cargo.toml`、`Makefile` 探测 test/lint/typecheck/build 命令并写入 `data/verify.json`（只加不改，手工配置保留）；仓库文件变化后到「项目映射」点「重建画像与验证」手动重建（会覆盖已有条目）。`GET /api/verify-config` 返回每个仓库的检查与 `stale` 标记，`POST /api/verify-config/rebuild` 强制重建。`link_dirs` 把主仓的 `.venv` / `web/node_modules` 软链进 worktree，让检查能直接跑：
+
+    ```json
+    {"repos": {"CheerlyTaskAgent": {
+      "source": "auto", "fingerprint": "…",
+      "checks": [
+        {"id": "python-test", "category": "test",
+         "command": [".venv/bin/python", "-m", "pytest", "-q"], "timeout_s": 300},
+        {"id": "python-lint", "category": "lint",
+         "command": [".venv/bin/python", "-m", "ruff", "check", "src", "tests"], "timeout_s": 300},
+        {"id": "node-web-build", "category": "build",
+         "command": ["pnpm", "--dir", "web", "run", "build"], "timeout_s": 300}
+      ],
+      "link_dirs": [".venv", "web/node_modules"],
+      "na": {"typecheck": "未安装 mypy/pyright"}
+    }}}
+    ```
 - **自动同步（三方比较，防覆盖）**：apply 先建隔离 worktree，并把主仓库当前工作区的未提交改动叠加进去作为基线，所以 codebuddy 改的是你眼前的最新代码，而不是过期的已提交版本（叠加失败会安全回退到纯 HEAD 基线）。apply 成功后，codebuddy 的改动文件自动同步回主仓库工作区（无需手动从 worktree 拷贝），看板即显示「完成（已同步 N 个文件）」。对每个文件以 worktree 的 HEAD 为 base，与主仓库当前版本、codebuddy 结果做三方比较：**仅当主仓库自 base 以来未改动才直接覆盖**；若主仓库也已改动，先尝试三方合并（`git merge-file`，仅在无冲突时写入），否则**不覆盖**，把双方版本备份为 `.main` / `.codebuddy` 并在报告中列出冲突，看板显示「N 个文件冲突未覆盖」。这样过期 worktree 不会回滚主仓库里更新的改动。同步只碰改动文件、按忽略规则过滤（`.env`/`data/`/venv 等不同步）、拒绝路径逃逸；备份在 `<data_dir>/sync-backups/<item>/<时间>/`；失败写进报告但不否定 apply 结果。用 `TASKAGENT_AUTO_SYNC=0` 可关闭，回到纯隔离模式。
 - **可观测**：SSE 实时推送导入/映射/排队/执行/进度/成功/失败/重试；每单都有 Markdown 报告（含自动同步明细与备份位置）。
 
@@ -115,6 +132,8 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 | `GET` | `/api/mappings` | 项目映射配置列表 |
 | `POST` | `/api/mappings` | 新增项目映射 `{name,aliases,path,enabled,note,tapd_workspace_id}` |
 | `POST` | `/api/mappings/bulk` | 批量新增 `{items:[...]}`，返回 added/failed |
+| `GET` | `/api/verify-config` | 自动生成的验证配置：每仓库的检查、是否已配置、仓库文件是否变化（stale） |
+| `POST` | `/api/verify-config/rebuild` | 按仓库文件强制重建全部验证配置（覆盖已有条目） |
 | `PUT` | `/api/mappings/{id}` | 编辑/启停（支持局部字段） |
 | `DELETE` | `/api/mappings/{id}` | 删除项目映射 |
 | `GET` | `/api/items` | 工作项列表 |
@@ -173,7 +192,7 @@ uv run ruff check src tests
 
 # 前端（web/）
 pnpm --dir web install
-pnpm --dir web typecheck   # tsc --noEmit
+pnpm --dir web typecheck   # tsc -b
 pnpm --dir web build       # 产物 → src/taskagent/web/
 pnpm --dir web dev         # 开发模式，需同时跑 taskagent serve
 ```

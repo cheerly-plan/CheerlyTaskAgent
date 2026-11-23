@@ -30,6 +30,13 @@ from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
 from .tapd import TapdClient, TapdConfig, TapdError, TapdItem, is_closed_status
+from .verification import CATEGORIES
+from .verifyconfig import (
+    ensure_verify_config,
+    is_stale,
+    load_verify_config,
+    prune_verify_config,
+)
 
 logger = logging.getLogger("taskagent")
 
@@ -216,6 +223,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ensure_profiles(profile_store, projects.list())
     except Exception:  # 画像失败不该挡住启动
         logger.warning("初始化仓库画像失败", exc_info=True)
+    # 验证配置与画像同源：启动时给缺配置的仓库补一份（只加不改，手工配置保留）。
+    verify_config_path = settings.data_dir / "verify.json"
+    try:
+        ensure_verify_config(verify_config_path, projects.list())
+    except Exception:  # 验证配置失败同样不能挡住启动
+        logger.warning("初始化验证配置失败", exc_info=True)
     browser = FolderBrowser(settings.browse_root)
     events = EventBus()
 
@@ -817,6 +830,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception:
                 logger.warning("建立仓库画像失败：%s", mapping.path, exc_info=True)
 
+    def _refresh_verify(mapping: Any) -> None:
+        """新增/修改映射后补生成验证配置；已有条目保持不变。"""
+        try:
+            ensure_verify_config(verify_config_path, [mapping], only={mapping.name})
+            prune_verify_config(
+                verify_config_path, {item.name for item in projects.list()}
+            )
+        except Exception:
+            logger.warning("生成验证配置失败：%s", mapping.path, exc_info=True)
+
+    def _verify_rows() -> list[dict[str, Any]]:
+        data = load_verify_config(verify_config_path)
+        repos = data.get("repos") if isinstance(data.get("repos"), dict) else {}
+        rows: list[dict[str, Any]] = []
+        for mapping in projects.list():
+            entry = repos.get(mapping.name)
+            entry = entry if isinstance(entry, dict) else {}
+            checks = entry.get("checks") if isinstance(entry.get("checks"), list) else []
+            raw_na = entry.get("na") if isinstance(entry.get("na"), dict) else {}
+            na = {
+                str(key): str(value) for key, value in raw_na.items()
+                if str(value).strip()
+            }
+            present = {str(check.get("category")) for check in checks}
+            missing = [
+                category for category in CATEGORIES
+                if category not in present and category not in na
+            ]
+            rows.append({
+                "mapping_id": mapping.id,
+                "name": mapping.name,
+                "path": mapping.path,
+                "checks": checks,
+                "na": na,
+                "missing_categories": missing,
+                "configured": bool(checks),
+                "complete": bool(checks) and not missing,
+                "stale": is_stale(entry, mapping.path) if entry else False,
+                "generated_at": str(entry.get("generated_at") or ""),
+                "source": str(entry.get("source") or ""),
+            })
+        return rows
+
     @app.post("/api/mappings", status_code=201)
     def api_add_mapping(body: MappingBody) -> dict[str, Any]:
         try:
@@ -824,6 +880,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         _refresh_profile(mapping)
+        _refresh_verify(mapping)
         return mapping.to_dict()
 
     @app.post("/api/mappings/bulk", status_code=201)
@@ -833,6 +890,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 mapping = projects.add(data.model_dump())
                 _refresh_profile(mapping)
+                _refresh_verify(mapping)
                 added.append(mapping.to_dict())
             except ValueError as error:
                 failed.append({"item": data.model_dump(), "error": str(error)})
@@ -847,6 +905,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         _refresh_profile(updated)
+        _refresh_verify(updated)
         return updated.to_dict()
 
     @app.delete("/api/mappings/{mapping_id}")
@@ -854,6 +913,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not projects.remove(mapping_id):
             raise HTTPException(404, "mapping not found")
         profile_store.remove(mapping_id)
+        prune_verify_config(
+            verify_config_path, {item.name for item in projects.list()}
+        )
         return {"deleted": True}
 
     @app.get("/api/items")
@@ -1050,6 +1112,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """重建全部画像（仓库有改动时可手动触发）。"""
         result = ensure_profiles(profile_store, projects.list(), force=True)
         return {**result, "profiles": [p.to_dict() for p in profile_store.all()]}
+
+    @app.get("/api/verify-config")
+    def api_verify_config() -> dict[str, Any]:
+        """自动生成的验证配置：每个仓库的检查、是否配置、仓库文件是否已变化。"""
+        return {"repos": _verify_rows(), "path": str(verify_config_path)}
+
+    @app.post("/api/verify-config/rebuild")
+    def api_verify_config_rebuild() -> dict[str, Any]:
+        """按仓库文件重建全部验证配置（手工触发；已有配置会被覆盖）。"""
+        result = ensure_verify_config(
+            verify_config_path, projects.list(), force=True, prune=True
+        )
+        return {
+            "created": result["created"],
+            "rebuilt": result["rebuilt"],
+            "pruned": result["pruned"],
+            "repos": _verify_rows(),
+        }
 
     @app.post("/api/repo-profiles/{mapping_id}/override")
     def api_repo_profile_override(mapping_id: str, body: RepoOverrideBody) -> dict[str, Any]:

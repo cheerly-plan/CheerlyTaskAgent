@@ -20,6 +20,7 @@ interface MappingDialogProps {
   onOpenChange: (open: boolean) => void;
   editing: ProjectMapping | null;
   tapdProjects: TapdWorkspace[];
+  projectNames?: Record<string, string>;
   onSave: (draft: MappingDraft) => void;
   onPickFolder: (apply: (path: string) => void) => void;
 }
@@ -41,7 +42,7 @@ const toForm = (mapping: ProjectMapping | null): FormState => ({
 });
 
 export function MappingDialog({
-  open, onOpenChange, editing, tapdProjects, onSave, onPickFolder,
+  open, onOpenChange, editing, tapdProjects, projectNames = {}, onSave, onPickFolder,
 }: MappingDialogProps) {
   const [form, setForm] = React.useState<FormState>(() => toForm(editing));
 
@@ -76,7 +77,7 @@ export function MappingDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>{editing ? '编辑项目映射' : '新增项目映射'}</DialogTitle>
+          <DialogTitle>{editing?.id ? '编辑项目映射' : '添加项目映射'}</DialogTitle>
         </DialogHeader>
 
         <DialogBody>
@@ -124,11 +125,14 @@ export function MappingDialog({
                 ...tapdProjects.map((p) => ({id: p.id, name: p.name || p.pretty_name || p.id})),
                 ...form.workspaceIds
                   .filter((id) => !tapdProjects.some((p) => p.id === id))
-                  .map((id) => ({id, name: id})),
+                  .map((id) => ({id, name: projectNames[id] ?? id})),
               ]}
               selected={form.workspaceIds}
               onToggle={toggleWorkspace}
-              emptyText="暂无已记录项目，请先在「数据源」页拉取或新增项目。"
+              searchable
+              maxHeight={320}
+              onClear={() => patch('workspaceIds', [])}
+              emptyText="数据源里还没有勾选 TAPD 项目，请先在「数据源」页勾选。"
             />
           </Field>
         </DialogBody>

@@ -43,8 +43,10 @@ export function FloatingRepoSelect({
   const popRef = React.useRef<HTMLDivElement>(null);
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
-  const [pos, setPos] = React.useState<{top: number; left: number; width: number; above: boolean}>({
-    top: 0, left: 0, width: 0, above: false,
+  const [pos, setPos] = React.useState<{
+    top: number; left: number; width: number; above: boolean; height: number;
+  }>({
+    top: 0, left: 0, width: 0, above: false, height: maxHeight,
   });
 
   const selectedSet = React.useMemo(() => new Set(selected), [selected]);
@@ -54,6 +56,9 @@ export function FloatingRepoSelect({
         `${option.name} ${option.trailing ?? ''}`.toLowerCase().includes(keyword),
       )
     : options;
+  // Render at most a slice for huge project lists; search still covers all.
+  const renderLimit = 200;
+  const shownOptions = visibleOptions.slice(0, renderLimit);
   const selectedNames = options
     .filter((o) => selectedSet.has(o.id))
     .map((o) => o.name);
@@ -68,15 +73,18 @@ export function FloatingRepoSelect({
     if (!el) return;
     const r = el.getBoundingClientRect();
     const gap = 4;
-    const estimated = Math.min(maxHeight, 80 + options.length * 30);
     const roomBelow = window.innerHeight - r.bottom - gap;
-    const above = roomBelow < Math.min(estimated, 160) && r.top > roomBelow;
-    const top = above ? Math.max(8, r.top - gap - Math.min(estimated, maxHeight)) : r.bottom + gap;
+    const roomAbove = r.top - gap;
+    const above = roomBelow < Math.min(220, maxHeight) && roomAbove > roomBelow;
+    const available = above ? roomAbove : roomBelow;
+    const content = Math.min(maxHeight, 64 + Math.min(options.length, 10) * 32);
+    const height = Math.max(120, Math.min(content, available - 8));
     setPos({
-      top,
+      top: above ? Math.max(8, r.top - gap - height) : r.bottom + gap,
       left: Math.max(8, Math.min(r.left, window.innerWidth - r.width - 8)),
       width: r.width,
       above,
+      height,
     });
   }, [maxHeight, options.length]);
 
@@ -151,7 +159,7 @@ export function FloatingRepoSelect({
   const popover = open && createPortal(
     <div
       ref={popRef}
-      style={{position: 'fixed', top: pos.top, left: pos.left, width: pos.width, maxHeight, zIndex: 60, pointerEvents: 'auto'}}
+      style={{position: 'fixed', top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.height, zIndex: 60, pointerEvents: 'auto'}}
       onPointerDown={(event) => event.stopPropagation()}
       className="scrollbar-thin overflow-y-auto rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-lg"
     >
@@ -162,6 +170,8 @@ export function FloatingRepoSelect({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onPointerDown={(event) => event.stopPropagation()}
+            placeholder="搜索项目…"
+            aria-label="搜索项目"
             className="h-7 w-full rounded-md border border-border bg-card px-2 text-[11.5px] outline-none placeholder:text-faint focus:border-primary"
           />
         </div>
@@ -171,7 +181,7 @@ export function FloatingRepoSelect({
       ) : visibleOptions.length === 0 ? (
         <p className="px-1.5 py-1 text-[11px] text-faint">没有匹配的项目</p>
       ) : (
-        visibleOptions.map((option) => {
+        shownOptions.map((option) => {
           const checked = selectedSet.has(option.id);
           return (
             <div
@@ -221,6 +231,11 @@ export function FloatingRepoSelect({
           );
         })
       )}
+      {visibleOptions.length > shownOptions.length ? (
+        <p className="px-1.5 py-1 text-[11px] text-faint">
+          共 {visibleOptions.length} 个，{keyword ? '继续输入缩小范围' : '输入关键词搜索'}
+        </p>
+      ) : null}
       {onSelectAll || onClear ? (
         <div className="mt-1 flex items-center justify-between border-t border-border px-1.5 pt-1.5 text-[11px]">
           <span className="text-faint">已选 {selected.length} / {options.length}</span>

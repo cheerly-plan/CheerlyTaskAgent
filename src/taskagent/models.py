@@ -154,6 +154,9 @@ class RunResult:
     sync_conflicts: list[str] = field(default_factory=list)
     sync_backup_dir: str | None = None
     sync_error: str | None = None
+    # Post-execution verification gate verdict (see ``verification.py``).
+    # Empty for dry-run / legacy results / manual applies.
+    verification: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +175,7 @@ class RunResult:
             "sync_conflicts": self.sync_conflicts,
             "sync_backup_dir": self.sync_backup_dir,
             "sync_error": self.sync_error,
+            "verification": self.verification,
         }
 
 

@@ -57,10 +57,25 @@ def _fake_cli(tmp_path: Path) -> Path:
     return script
 
 
-def test_manual_task_auto_runs_and_merges(tmp_path: Path):
+def _write_verify(settings: Settings, command: tuple[str, ...] = ("true",)) -> None:
+    """Four-category gate config; every check runs the same fake command."""
+    path = settings.data_dir / "verify.json"
+    checks = [
+        {
+            "id": category, "label": category, "category": category,
+            "command": list(command), "timeout_s": 30,
+        }
+        for category in ("test", "lint", "typecheck", "build")
+    ]
+    path.write_text(
+        json.dumps({"repos": {"demo": {"checks": checks}}}),
+        encoding="utf-8",
+    )
+
+
+def _setup(tmp_path: Path, command: tuple[str, ...] = ("true",)) -> tuple[Path, Settings]:
     repo = _make_repo(tmp_path)
     fake = _fake_cli(tmp_path)
-
     settings = Settings(data_dir=tmp_path / "data", project_roots=())
     ui = settings.load_ui_settings()
     ui["backends"] = {
@@ -71,6 +86,12 @@ def test_manual_task_auto_runs_and_merges(tmp_path: Path):
     }
     ui["executor"] = "codebuddy"
     settings.save_ui_settings(ui)
+    _write_verify(settings, command)
+    return repo, settings
+
+
+def test_manual_task_auto_runs_and_merges(tmp_path: Path):
+    repo, settings = _setup(tmp_path)
 
     app = create_app(settings)
     with TestClient(app) as client:
@@ -114,3 +135,41 @@ def test_manual_task_auto_runs_and_merges(tmp_path: Path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert count == "1"
+
+def test_verification_failure_blocks_merge(tmp_path: Path):
+    repo, settings = _setup(tmp_path, ("false",))
+    app = create_app(settings)
+    with TestClient(app) as client:
+        mapping = client.post("/api/mappings", json={"name": "demo", "path": str(repo)})
+        assert mapping.status_code == 201, mapping.text
+        created = client.post("/api/tasks/manual", json={
+            "title": "把返回值改成 2", "description": "main 返回 2",
+            "kind": "bug", "repo_name": "demo",
+            "exec_mode": "apply", "run_now": False, "approved": False,
+        })
+        assert created.status_code == 201, created.text
+        item_id = created.json()["id"]
+
+        started = client.post("/api/tasks/auto-run", json={"ids": [item_id]})
+        assert started.status_code == 200, started.text
+
+        item = None
+        for _ in range(200):
+            item = client.get(f"/api/items/{item_id}").json()
+            if item["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert item is not None and item["status"] == "failed", item
+        assert "验证未通过" in item["stage"]
+        assert "验证未通过" in (item["error"] or "")
+        # 门禁拦下：主仓工作区一个字节都没变，worktree 保留。
+        assert item["merge_state"] == ""
+        assert "return 1" in (repo / "app.py").read_text(encoding="utf-8")
+        assert not (repo / "util.py").exists()
+        assert item["result"]["verification"]["state"] == "failed"
+        assert item["result"]["worktree"]
+
+        report = client.get(f"/api/items/{item_id}/report").text
+        assert "### 验证" in report
+        assert "未通过" in report

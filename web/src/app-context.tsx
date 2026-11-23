@@ -638,10 +638,12 @@ export function AppProvider({
         toast.warning('请输入项目名');
         return;
       }
-      const editing = mappingDialog.editing;
+      const editingId = mappingDialog.editing?.id;
       try {
-        if (editing) {
-          await endpoints.updateMapping(editing.id, draft);
+        // 从「添加」进弹窗时 editing 是一个 id 为空的草稿（用来预填路径），
+        // 必须走新增；只有真正的已保存映射才 PUT，否则会打到 /api/mappings/。
+        if (editingId) {
+          await endpoints.updateMapping(editingId, draft);
         } else {
           await endpoints.createMapping(draft);
         }
@@ -847,6 +849,31 @@ export function AppProvider({
     return backend?.model || defaultModel || '';
   }, [settings, defaultModel]);
 
+  // 映射弹窗只能关联「数据源里已勾选」的 TAPD 项目；缓存/拉取到的全量项目
+  // 只用来给已有关联显示名称，不再出现在下拉候选里。
+  const mappingProjectData = React.useMemo(() => {
+    const all = [...(settings?.tapd?.projects ?? []), ...tapdProjects].filter(
+      (project, index, list) => list.findIndex((item) => item.id === project.id) === index,
+    );
+    const selectedRaw = settings?.data_source?.tapd?.workspace_id
+      || settings?.tapd?.workspace_id
+      || '';
+    const selected = new Set(
+      selectedRaw.split(',').map((id) => id.trim()).filter(Boolean),
+    );
+    return {
+      options: all.filter((project) => selected.has(project.id)),
+      names: Object.fromEntries(
+        all.map((project) => [project.id, project.name || project.pretty_name || project.id]),
+      ),
+    };
+  }, [
+    settings?.tapd?.projects,
+    settings?.data_source?.tapd?.workspace_id,
+    settings?.tapd?.workspace_id,
+    tapdProjects,
+  ]);
+
   return (
     <AppContext.Provider value={value}>
       {children}
@@ -894,9 +921,8 @@ export function AppProvider({
       <MappingDialog
         open={mappingDialog.open}
         editing={mappingDialog.editing}
-        tapdProjects={[...(settings?.tapd?.projects ?? []), ...tapdProjects].filter(
-          (project, index, list) => list.findIndex((item) => item.id === project.id) === index,
-        )}
+        tapdProjects={mappingProjectData.options}
+        projectNames={mappingProjectData.names}
         onOpenChange={(open) =>
           setMappingDialog((prev) => ({open, editing: open ? prev.editing : null}))
         }

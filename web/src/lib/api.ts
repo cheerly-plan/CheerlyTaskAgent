@@ -78,6 +78,28 @@ export interface RepoProfile {
   override_keywords: string[];
 }
 
+export interface VerifyCheck {
+  id: string;
+  label?: string;
+  category?: string;
+  command: string[];
+  timeout_s?: number;
+}
+
+export interface VerifyRepo {
+  mapping_id: string;
+  name: string;
+  path: string;
+  checks: VerifyCheck[];
+  na?: Record<string, string>;
+  missing_categories?: string[];
+  configured: boolean;
+  complete?: boolean;
+  stale: boolean;
+  generated_at?: string;
+  source?: string;
+}
+
 export interface TapdPreviewItem {
   source_ref: string;
   status: 'new' | 'changed' | 'unchanged';
@@ -343,6 +365,12 @@ export const endpoints = {
   rebuildRepoProfiles: () =>
     api<{created: number; rebuilt: number; pruned: number; profiles: RepoProfile[]}>(
       '/api/repo-profiles/rebuild',
+      {method: 'POST'},
+    ),
+  verifyConfig: () => api<{repos: VerifyRepo[]; path: string}>('/api/verify-config'),
+  rebuildVerifyConfig: () =>
+    api<{created: number; rebuilt: number; pruned: number; repos: VerifyRepo[]}>(
+      '/api/verify-config/rebuild',
       {method: 'POST'},
     ),
   autoMapItems: () =>

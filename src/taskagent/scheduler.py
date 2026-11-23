@@ -14,6 +14,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,10 @@ class SchedulerSettings:
     max_concurrent: int = 1          # codebuddy is heavy; run one at a time by default
     retry_delays: tuple[float, ...] = (2.0, 8.0)
     reports_dir: Path = Path("data/reports")
+    # Verification gate (auto path only). Defaults to <data_dir>/verify.json,
+    # i.e. the sibling of reports/. None means "derive from reports_dir".
+    verify_config_file: Path | None = None
+    verify_default_timeout_s: int = 300
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -510,6 +515,9 @@ class Scheduler:
             raise ValueError("任务尚未成功执行，没有可合并的改动")
         if item.result.dry_run:
             raise ValueError("dry-run 没有可合并的代码")
+        verification = item.result.verification
+        if isinstance(verification, dict) and verification and not verification.get("ok", True):
+            raise ValueError("该任务验证未通过，不能合并；请修复后重新执行")
         if item.repo is None:
             raise ValueError("任务没有映射仓库")
         backend = self.executors.resolve(item.executor)
@@ -753,6 +761,41 @@ class Scheduler:
             self._parent_locks[key] = lock
         return lock
 
+    # ── verification gate ─────────────────────────────────────────────────────
+    async def _verify(self, item: WorkItem, result) -> dict[str, Any]:
+        """Run the repository's checks inside the task worktree.
+
+        Synchronous subprocess work is pushed to a thread so a slow test suite
+        cannot freeze the event loop (SSE / UI / other tasks).
+        """
+        from .verification import run_gate
+
+        config_file = self.settings.verify_config_file or (
+            self.settings.reports_dir.parent / "verify.json"
+        )
+        repo = item.repo
+        try:
+            return await asyncio.to_thread(
+                run_gate,
+                repo_name=repo.name if repo else "",
+                repo_path=repo.path if repo else "",
+                worktree=result.worktree,
+                changed=list(result.changed_files),
+                item_id=item.id,
+                config_path=config_file,
+                data_dir=self.settings.reports_dir.parent,
+                default_timeout_s=self.settings.verify_default_timeout_s,
+            )
+        except Exception as error:
+            logger.exception("验证执行异常 %s", item.id)
+            return {
+                "ok": False,
+                "state": "error",
+                "reason": f"验证执行异常：{type(error).__name__}: {error}",
+                "checks": [],
+                "duration_s": 0,
+            }
+
     # ── execution ──────────────────────────────────────────────────────────────
     async def _execute(self, item_id: str) -> None:
         probe = self.store.get(item_id)
@@ -812,24 +855,42 @@ class Scheduler:
                 return
 
             item.result = result
+            verify_failure = ""
             if result.ok:
-                item.status = ItemStatus.SUCCEEDED
+                # Keep RUNNING until the gate/merge decision is made: callers
+                # poll on status, so flipping to SUCCEEDED before verification
+                # would let them read a half-finished task ("验证中…").
                 if result.dry_run:
                     item.stage = "完成（dry-run）"
                 elif item.auto and item.hold_merge:
-                    # 自动链路：scheduler 负责原子合并，无冲突才写入主仓工作区。
-                    merged = self._auto_merge(item, backend, result)
-                    if merged:
-                        files = len(result.synced_files) + len(result.sync_deleted)
-                        item.stage = f"完成（已自动合并 {files} 个文件到工作区）"
-                        # Merge landed: reclaim the isolated worktree now.
-                        self._gc_after_success(item, backend)
+                    # 验证门禁：先在隔离 worktree 里跑仓库声明的检查。验证不过
+                    # （含未配置、跑不起来、超时、测试文件被改）就一个文件都
+                    # 不写回主仓，worktree 保留供排查。
+                    item.stage = "验证中…"
+                    self.store.save(item)
+                    self.events.publish(Event("item_verifying", item_id, {}))
+                    gate = await self._verify(item, result)
+                    result.verification = gate
+                    if not gate.get("ok"):
+                        verify_failure = str(gate.get("reason") or "未知原因")
+                        item.stage = f"验证未通过：{verify_failure}"
                     else:
-                        conflicts = len(result.sync_conflicts)
-                        item.stage = (
-                            f"完成（合并冲突 {conflicts} 个文件，未写入主仓）"
-                            if conflicts else "完成（合并失败，未写入主仓）"
-                        )
+                        # 自动链路：scheduler 负责原子合并，无冲突才写入主仓工作区。
+                        merged = self._auto_merge(item, backend, result)
+                        if merged:
+                            files = len(result.synced_files) + len(result.sync_deleted)
+                            note = "，验证已禁用" if gate.get("state") == "disabled" else ""
+                            item.stage = (
+                                f"完成（已自动合并 {files} 个文件到工作区{note}）"
+                            )
+                            # Merge landed: reclaim the isolated worktree now.
+                            self._gc_after_success(item, backend)
+                        else:
+                            conflicts = len(result.sync_conflicts)
+                            item.stage = (
+                                f"完成（合并冲突 {conflicts} 个文件，未写入主仓）"
+                                if conflicts else "完成（合并失败，未写入主仓）"
+                            )
                 elif result.sync_error:
                     # Apply itself worked, but the mirror into the main repo
                     # failed — surface it so the user doesn't assume the code
@@ -845,7 +906,14 @@ class Scheduler:
                     item.stage = f"完成（已同步 {n} 个文件到主仓库）"
                 else:
                     item.stage = "完成"
-                item.error = None
+                if verify_failure:
+                    # 验证没过 = 这单没有交付；置 failed 以便留在任务中心可重试，
+                    # 而不是归档进历史。
+                    item.status = ItemStatus.FAILED
+                    item.error = f"验证未通过：{verify_failure}"
+                else:
+                    item.status = ItemStatus.SUCCEEDED
+                    item.error = None
             else:
                 if item.attempt < item.max_attempts and _is_retryable(result.error):
                     delay = self.settings.retry_delays[
@@ -868,8 +936,14 @@ class Scheduler:
             )
             self.store.save(item)
             event = "item_succeeded" if result.ok else "item_failed"
+            if result.ok and result.verification and not result.verification.get("ok", True):
+                event = "item_verify_failed"
             self.events.publish(
-                Event(event, item_id, {"report_path": item.report_path, "error": item.error})
+                Event(event, item_id, {
+                    "report_path": item.report_path,
+                    "error": item.error,
+                    "verification": result.verification or {},
+                })
             )
             # Optional write-back (e.g. TAPD status). Runs in a thread so a slow
             # external API can't stall the scheduler; failures never mask the
@@ -878,7 +952,11 @@ class Scheduler:
                 try:
                     # 合并未写入主仓时不要把 TAPD 工单标记为完成，避免“归档”了
                     # 但代码根本没进工作区。
-                    done = bool(result.ok) and item.merge_state != "blocked"
+                    done = (
+                        bool(result.ok)
+                        and item.merge_state != "blocked"
+                        and bool(result.verification.get("ok", True))
+                    )
                     await asyncio.to_thread(self.on_finished, item, done)
                 except Exception as exc:  # noqa: BLE001 - write-back is best effort
                     logger.warning("工作项 %s 状态回填失败：%s", item_id, exc)

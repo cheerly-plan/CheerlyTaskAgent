@@ -210,6 +210,62 @@ def _collapsed(title: str, body: str, *, fenced: bool = True, opened: bool = Fal
     ]
 
 
+_VERIFY_STATE_LABELS: dict[str, str] = {
+    "passed": "通过",
+    "failed": "未通过",
+    "unconfigured": "未配置",
+    "no_changes": "无改动",
+    "test_files_changed": "改动包含测试文件",
+    "incomplete": "验证类别不齐",
+    "error": "验证出错",
+    "disabled": "已禁用",
+}
+
+
+def _verification_section(verification: dict[str, Any]) -> list[str]:
+    """Render the post-execution gate verdict (empty for legacy/dry-run)."""
+    state = str(verification.get("state") or "")
+    label = _VERIFY_STATE_LABELS.get(state, state or "未知")
+    reason = str(verification.get("reason") or "")
+    lines = ["### 验证", "", f"> 验证结果：**{label}**" + (f"（{reason}）" if reason else ""), ""]
+    test_files = verification.get("test_files") or []
+    if test_files:
+        lines += ["改动的测试文件：", ""] + [f"- `{name}`" for name in test_files] + [""]
+    checks = verification.get("checks") or []
+    if checks:
+        lines += ["| 检查 | 命令 | 结果 | 耗时 |", "|---|---|---|---|"]
+        for check in checks:
+            command = " ".join(str(part) for part in (check.get("command") or []))
+            if check.get("timed_out"):
+                outcome = "超时"
+            elif check.get("ok"):
+                outcome = "通过"
+            elif check.get("exit_code") is None:
+                outcome = "无法执行"
+            else:
+                outcome = f"失败（退出码 {check.get('exit_code')}）"
+            lines.append(
+                f"| {check.get('label') or check.get('id')} | `{command}` | {outcome} "
+                f"| {check.get('duration_s', 0)}s |"
+            )
+        lines += [""]
+    missing = verification.get("missing_categories") or []
+    if missing:
+        lines += [f"> ⚠️ 缺少验证类别：{'、'.join(str(item) for item in missing)}", ""]
+    na = verification.get("na") or {}
+    if isinstance(na, dict) and na:
+        lines += ["未适用（N/A）：", ""] + [
+            f"- **{category}**：{reason}" for category, reason in na.items()
+        ] + [""]
+    for check in checks:
+        tail = str(check.get("tail") or "")
+        if tail.strip():
+            lines += _collapsed(
+                f"验证输出：{check.get('label') or check.get('id')}", tail
+            )
+    return lines
+
+
 def render_report(item: WorkItem, parent_title: str = "") -> str:
     repo = item.repo
     result = item.result
@@ -237,12 +293,14 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
         lines += ["## 需求描述", "", item.description.rstrip(), ""]
 
     if result:
+        verification = result.verification if isinstance(result.verification, dict) else {}
+        gate_ok = bool(verification.get("ok", True))
         lines += [
             "## 执行结果",
             "",
             "| 字段 | 值 |",
             "|---|---|",
-            f"| 成功 | {'是' if result.ok else '否'} |",
+            f"| 成功 | {'是' if result.ok and gate_ok else '否'} |",
             f"| dry-run | {'是' if result.dry_run else '否'} |",
             f"| 耗时 | {result.duration_s:.2f}s |",
             f"| 改动文件 | {len(result.changed_files)} 个 |",
@@ -254,6 +312,9 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
         if result.changed_files:
             lines += ["### 改动文件", ""] + [f"- `{name}`" for name in result.changed_files] + [""]
 
+        if verification:
+            lines += _verification_section(verification)
+
         # 自动链路：scheduler 在任务结束后做原子合并。
         if item.hold_merge:
             if item.merge_state == "merged":
@@ -264,6 +325,8 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
                     f"自动合并有 {n} 个文件冲突，**一个文件都没有写入主仓库**。"
                     "到任务中心对该任务点「合并」可重试（先处理冲突）。"
                 ) if n else "自动合并失败，**没有写入主仓库**；可在任务中心点「合并」重试。"
+            elif verification and not verification.get("ok", True):
+                note = "验证未通过，**没有写入主仓库**；worktree 保留供排查。"
             else:
                 note = "自动执行结果尚未合并到主仓库工作区。"
             lines += ["### 合并状态", "", f"> {note}", ""]

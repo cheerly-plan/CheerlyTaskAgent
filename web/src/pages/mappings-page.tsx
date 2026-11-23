@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {FolderGit2, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2} from 'lucide-react';
+import {FolderGit2, Pencil, RefreshCw, Search, Sparkles, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {EmptyState, Mono} from '@/components/status-bits';
@@ -9,8 +9,9 @@ import {Card} from '@/components/ui/card';
 import {Switch} from '@/components/ui/switch';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
-import {endpoints, readGitOrigin, type RepoProfile, type TapdWorkspace} from '@/lib/api';
+import {endpoints, readGitOrigin, type RepoProfile, type TapdWorkspace, type VerifyRepo} from '@/lib/api';
 import {cn} from '@/lib/utils';
+import {toast} from 'sonner';
 
 function IconTip({label, children}: {label: string; children: React.ReactNode}) {
   return (
@@ -24,10 +25,11 @@ function IconTip({label, children}: {label: string; children: React.ReactNode}) 
 }
 
 export function MappingsPage() {
-  const {settings, mappings, pickFolder, openScan, openMappingModal, toggleMapping, deleteMapping} = useApp();
+  const {settings, mappings, pickFolder, openScan, openMappingModal, toggleMapping, deleteMapping, confirm} = useApp();
   const [fetchedProjects, setFetchedProjects] = React.useState<TapdWorkspace[]>([]);
   const [profiles, setProfiles] = React.useState<Record<string, RepoProfile>>({});
   const [rebuilding, setRebuilding] = React.useState(false);
+  const [verifyRepos, setVerifyRepos] = React.useState<Record<string, VerifyRepo>>({});
 
   const loadProfiles = React.useCallback(async () => {
     try {
@@ -43,15 +45,47 @@ export function MappingsPage() {
     void loadProfiles();
   }, [loadProfiles, mappings.length]);
 
-  const rebuildProfiles = async () => {
-    setRebuilding(true);
+  const loadVerify = React.useCallback(async () => {
     try {
-      const result = await endpoints.rebuildRepoProfiles();
+      const result = await endpoints.verifyConfig();
+      const map: Record<string, VerifyRepo> = {};
+      for (const repo of result.repos ?? []) map[repo.mapping_id] = repo;
+      setVerifyRepos(map);
+    } catch {
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadVerify();
+  }, [loadVerify, mappings.length]);
+
+  const rebuildAll = async () => {
+    const ok = await confirm(
+      '将按仓库文件重建「仓库画像」与「验证配置」；验证命令的手工修改会被覆盖。继续？',
+    );
+    if (!ok) return;
+    setRebuilding(true);
+    const [profileResult, verifyResult] = await Promise.allSettled([
+      endpoints.rebuildRepoProfiles(),
+      endpoints.rebuildVerifyConfig(),
+    ]);
+    let verifyCount = 0;
+    if (profileResult.status === 'fulfilled') {
       const map: Record<string, RepoProfile> = {};
-      for (const profile of result.profiles ?? []) map[profile.mapping_id] = profile;
+      for (const profile of profileResult.value.profiles ?? []) map[profile.mapping_id] = profile;
       setProfiles(map);
-    } finally {
-      setRebuilding(false);
+    }
+    if (verifyResult.status === 'fulfilled') {
+      const map: Record<string, VerifyRepo> = {};
+      for (const repo of verifyResult.value.repos ?? []) map[repo.mapping_id] = repo;
+      setVerifyRepos(map);
+      verifyCount = (verifyResult.value.created ?? 0) + (verifyResult.value.rebuilt ?? 0);
+    }
+    setRebuilding(false);
+    if (profileResult.status === 'fulfilled' && verifyResult.status === 'fulfilled') {
+      toast.success(`已重建画像与验证配置（验证 ${verifyCount} 个仓库）`);
+    } else {
+      toast.error('部分重建失败，请重试');
     }
   };
 
@@ -92,25 +126,23 @@ export function MappingsPage() {
           <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground">项目映射</h3>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={pickThenMap}>
-            <FolderGit2 />
-            添加
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void rebuildAll()}
+            disabled={rebuilding}
+            title="按仓库文件重建仓库画像与验证配置"
+          >
+            <RefreshCw className={rebuilding ? 'animate-spin' : ''} />
+            重建数据
           </Button>
           <Button variant="outline" size="sm" onClick={() => pickFolder((path) => openScan(path))}>
             <Search />
             扫描
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void rebuildProfiles()}
-          >
-            <RefreshCw className={rebuilding ? 'animate-spin' : ''} />
-            重建画像
-          </Button>
-          <Button size="sm" onClick={() => openMappingModal(null)}>
-            <Plus />
-            新增
+          <Button  size="sm" onClick={pickThenMap}>
+            <FolderGit2 />
+            添加
           </Button>
         </div>
       </div>
@@ -121,16 +153,17 @@ export function MappingsPage() {
           title="暂无项目映射"
         />
       ) : (
-        <Table className="min-w-[980px]" containerClassName="min-h-0 flex-1">
+        <Table className="min-w-[1080px]" containerClassName="min-h-0 min-w-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[180px] pl-5">项目名</TableHead>
-              <TableHead className="w-[260px]">本地路径</TableHead>
-              <TableHead className="w-[280px]">仓库信息 / 备注</TableHead>
-              <TableHead className="w-[150px]">仓库画像</TableHead>
-              <TableHead className="w-[150px]">TAPD 项目</TableHead>
-              <TableHead className="w-[110px]">状态</TableHead>
-              <TableHead className="w-[96px] pr-5 text-right">操作</TableHead>
+              <TableHead className="w-[160px] pl-5">项目名</TableHead>
+              <TableHead className="w-[220px]">本地路径</TableHead>
+              <TableHead className="w-[220px]">仓库信息 / 备注</TableHead>
+              <TableHead className="w-[130px]">仓库画像</TableHead>
+              <TableHead className="w-[110px]">验证配置</TableHead>
+              <TableHead className="w-[130px]">TAPD 项目</TableHead>
+              <TableHead className="w-[90px]">状态</TableHead>
+              <TableHead className="sticky right-0 z-20 w-[80px] bg-[#fafafd] pr-5 text-right shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.18)]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -138,13 +171,13 @@ export function MappingsPage() {
               <TableRow key={mapping.id}>
                 <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
                 <TableCell>
-                  <Mono className="block max-w-[240px] truncate" title={mapping.path}>
+                  <Mono className="block max-w-[200px] truncate" title={mapping.path}>
                     {mapping.path}
                   </Mono>
                 </TableCell>
                 <TableCell>
                   <span
-                    className="block max-w-[260px] truncate text-[12.5px] text-foreground/70"
+                    className="block max-w-[200px] truncate text-[12.5px] text-foreground/70"
                     title={mapping.note || undefined}
                   >
                     {mapping.note || '—'}
@@ -183,19 +216,67 @@ export function MappingsPage() {
                 </TableCell>
                 <TableCell>
                   {(() => {
+                    const verify = verifyRepos[mapping.id];
+                    if (!verify) return <span className="text-xs text-faint">—</span>;
+                    if (!verify.checks?.length) {
+                      return <span className="text-xs text-faint">未探测到</span>;
+                    }
+                    const missing = verify.missing_categories ?? [];
+                    const naCount = Object.keys(verify.na ?? {}).length;
+                    return (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {missing.length ? (
+                          <Badge variant="destructive-muted">
+                            缺 {missing.join('、')}
+                          </Badge>
+                        ) : (
+                          <Badge variant={verify.stale ? 'warning' : 'success'}>
+                            {verify.checks.length} 项
+                          </Badge>
+                        )}
+                        {naCount ? (
+                          <span
+                            className="text-[11px] text-faint"
+                            title={Object.entries(verify.na ?? {})
+                              .map(([category, reason]) => `${category}: ${reason}`)
+                              .join('\n')}
+                          >
+                            N/A {naCount}
+                          </span>
+                        ) : null}
+                        {verify.stale ? (
+                          <span className="text-[11px] text-faint">待重建</span>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+                </TableCell>
+                <TableCell>
+                  {(() => {
                     const ids = mapping.tapd_workspace_ids?.length
                       ? mapping.tapd_workspace_ids
                       : mapping.tapd_workspace_id ? [mapping.tapd_workspace_id] : [];
-                    return ids.length ? (
-                      <div className="flex flex-wrap gap-1">
-                        {ids.map((id) => (
-                          <Badge key={id} variant="info">
+                    if (!ids.length) return <span className="text-xs text-faint">—</span>;
+                    const shown = ids.slice(0, 2);
+                    const rest = ids.length - shown.length;
+                    return (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {shown.map((id) => (
+                          <Badge
+                            key={id}
+                            variant="info"
+                            className="max-w-[120px] truncate"
+                            title={projectLabel(id)}
+                          >
                             {projectLabel(id)}
                           </Badge>
                         ))}
+                        {rest > 0 ? (
+                          <span title={ids.slice(2).map(projectLabel).join('、')}>
+                            <Badge variant="muted">+{rest}</Badge>
+                          </span>
+                        ) : null}
                       </div>
-                    ) : (
-                      <span className="text-xs text-faint">—</span>
                     );
                   })()}
                 </TableCell>
@@ -211,7 +292,7 @@ export function MappingsPage() {
                     </span>
                   </div>
                 </TableCell>
-                <TableCell className="pr-5">
+                <TableCell className="sticky right-0 z-10 bg-card pr-5 shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.12)] group-hover:bg-[#f8f7fd]">
                   <div className="flex items-center justify-end gap-1">
                     <IconTip label="编辑">
                       <Button
