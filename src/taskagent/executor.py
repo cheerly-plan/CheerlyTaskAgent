@@ -161,12 +161,6 @@ def build_prompt(item: WorkItem) -> str:
             f"{item.plan}\n"
             "--- 方案结束 ---\n"
         )
-    if item.hold_merge:
-        # 自动链路：结果不直接合并进主仓，需要给「我的待办」一份结构化评估。
-        # 走懒导入，避免 executor <-> review <-> report 的模块环。
-        from .review import review_instruction
-
-        text += review_instruction()
     return text
 
 
@@ -1228,6 +1222,49 @@ class CodeBuddyExecutor(Executor):
         except OSError:
             return False
 
+    def _sync_preflight(
+        self,
+        worktree: Path,
+        repo_root: Path,
+        pending: list[str],
+        filt,
+    ) -> list[str]:
+        """Return the files that would conflict, without touching the main repo.
+
+        Mirrors the branch logic in :meth:`sync_to_repo`: unsafe/ignored paths
+        are skipped on purpose, and only genuine "both sides changed" cases
+        count as conflicts.
+        """
+        conflicts: list[str] = []
+        for rel in pending:
+            target = self._sync_safe_target(repo_root, rel)
+            if target is None or filt.is_ignored(rel):
+                continue
+            src = worktree / rel
+            has_head, base = self._sync_base_bytes(worktree, rel)
+            if not has_head:
+                continue  # legacy plain-directory sandbox: copy path never conflicts
+            theirs = src.read_bytes() if src.is_file() else None
+            ours = target.read_bytes() if target.is_file() else None
+            if theirs is None:
+                if ours is not None and not (base is not None and ours == base):
+                    conflicts.append(rel)
+                continue
+            if ours is None:
+                if base is not None:
+                    conflicts.append(rel)
+                continue
+            if ours == theirs:
+                continue
+            if base is not None and ours == base:
+                continue
+            if base is not None:
+                merged, clean = self._sync_three_way_merge(base, ours, theirs)
+                if clean and merged is not None:
+                    continue
+            conflicts.append(rel)
+        return conflicts
+
     @staticmethod
     def _sync_base_bytes(worktree: Path, rel: str) -> tuple[bool, bytes | None]:
         """Return ``(has_head, base_bytes)`` for a changed file.
@@ -1296,6 +1333,7 @@ class CodeBuddyExecutor(Executor):
         *,
         item_id: str,
         changed: list[str],
+        atomic: bool = False,
     ) -> dict[str, object]:
         """Merge codebuddy's changed files from the worktree into the real repo.
 
@@ -1306,6 +1344,11 @@ class CodeBuddyExecutor(Executor):
         attempted, and on conflict nothing is clobbered — both versions are
         backed up and the conflict is reported. This prevents a stale worktree
         from wiping later main-repo changes that were not in its base.
+
+        ``atomic=True`` first runs :meth:`_sync_preflight`: if *any* file would
+        conflict, nothing is written to the main repo (``ok=False`` and
+        ``sync_conflicts`` explains why). This is what the automatic merge path
+        uses so a blocked merge never leaves a half-applied working tree.
 
         Also keeps the earlier guarantees: only changed paths are touched;
         paths are normalized, ignore-filtered and checked to stay inside the
@@ -1347,6 +1390,16 @@ class CodeBuddyExecutor(Executor):
             if rel and rel not in seen:
                 seen.add(rel)
                 pending.append(rel)
+
+        if atomic:
+            conflicts_found = self._sync_preflight(worktree, repo_root, pending, filt)
+            if conflicts_found:
+                result["ok"] = False
+                result["sync_conflicts"] = [
+                    f"{rel} (主仓库与执行结果均修改且无法自动合并；原子合并未写入任何文件)"
+                    for rel in conflicts_found
+                ]
+                return result
 
         for rel in pending:
             target = self._sync_safe_target(repo_root, rel)

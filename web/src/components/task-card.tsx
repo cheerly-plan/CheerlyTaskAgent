@@ -2,7 +2,7 @@ import {CornerDownRight, FolderGit2, GitBranch, Layers} from 'lucide-react';
 
 import {Badge} from '@/components/ui/badge';
 import {SelectField} from '@/components/select-field';
-import {KindBadge, StatusBadge} from '@/components/status-bits';
+import {KindBadge, MergeBadge, StatusBadge} from '@/components/status-bits';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
 import {canEditConfig, sourceLabel} from '@/lib/labels';
@@ -60,7 +60,10 @@ export function TaskCard({
             {item.git_url ? <span className="truncate">· {item.git_url}</span> : null}
           </div>
         </div>
-        <StatusBadge status={item.status} />
+        <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          <MergeBadge state={item.merge_state} />
+          <StatusBadge status={item.status} />
+        </span>
       </div>
 
       {isContainer ? (

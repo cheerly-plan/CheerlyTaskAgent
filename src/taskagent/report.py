@@ -229,15 +229,19 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
         if result.changed_files:
             lines += ["### 改动文件", ""] + [f"- `{name}`" for name in result.changed_files] + [""]
 
-        # 自动链路：结果留在隔离 worktree，等人在「我的待办」里点合并。
+        # 自动链路：scheduler 在任务结束后做原子合并。
         if item.hold_merge:
-            lines += [
-                "### 合并状态",
-                "",
-                "> 这是自动执行的结果，**没有写入主仓库工作区**。"
-                + (f"已生成待办 `{item.todo_id}`，请在「我的待办」里评审后合并。" if item.todo_id else "尚未生成待办。"),
-                "",
-            ]
+            if item.merge_state == "merged":
+                note = "已自动合并到主仓库工作区（未提交；冲突文件不会被覆盖）。"
+            elif item.merge_state == "blocked":
+                n = len(result.sync_conflicts)
+                note = (
+                    f"自动合并有 {n} 个文件冲突，**一个文件都没有写入主仓库**。"
+                    "到任务中心对该任务点「合并」可重试（先处理冲突）。"
+                ) if n else "自动合并失败，**没有写入主仓库**；可在任务中心点「合并」重试。"
+            else:
+                note = "自动执行结果尚未合并到主仓库工作区。"
+            lines += ["### 合并状态", "", f"> {note}", ""]
 
         # Auto-sync outcome: which files landed in the main repo, what was
         # mirrored as a deletion, and where originals were backed up.

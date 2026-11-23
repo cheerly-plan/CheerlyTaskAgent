@@ -45,7 +45,14 @@ export const statusDot: Record<Status, string> = {
 export const ACTIVE_STATUSES: Status[] = ['running', 'queued'];
 export const TERMINAL_STATUSES: Status[] = ['succeeded', 'failed', 'skipped', 'cancelled'];
 
-export function isArchived(item: {status: Status; exec_mode?: string}): boolean {
+export function isArchived(item: {
+  status: Status;
+  exec_mode?: string;
+  merge_state?: string;
+}): boolean {
+  // 自动合并冲突的任务虽然执行成功，但代码没进主仓——留在任务中心待处理，
+  // 不能当历史归档掉。
+  if (item.merge_state === 'blocked') return false;
   return item.exec_mode === 'apply' && TERMINAL_STATUSES.includes(item.status);
 }
 

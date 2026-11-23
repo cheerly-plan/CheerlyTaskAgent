@@ -1,7 +1,7 @@
-"""端到端：手动任务 → 自动出队 → 假 CLI 改代码 → 待办 → 合并。
+"""端到端：手动任务 → 自动执行 → 假 CLI 改代码 → 原子合并进主仓工作区。
 
-不调用真实 LLM：用一个 shell 脚本冒充执行后端，只验证链路接线（调度循环、隔离
-worktree、hold_merge、评审解析、待办、三方安全合并、不提交）。
+不调用真实 LLM：用一个 shell 脚本冒充执行后端，只验证链路接线（触发式出队、
+隔离 worktree、无冲突自动合并、不提交、不产生多余归档）。
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _fake_cli(tmp_path: Path) -> Path:
     return script
 
 
-def test_manual_task_auto_runs_into_todo_and_merges(tmp_path: Path):
+def test_manual_task_auto_runs_and_merges(tmp_path: Path):
     repo = _make_repo(tmp_path)
     fake = _fake_cli(tmp_path)
 
@@ -101,24 +101,12 @@ def test_manual_task_auto_runs_into_todo_and_merges(tmp_path: Path):
         assert item is not None and item["status"] == "succeeded", item
         assert item["exec_mode"] == "apply"
         assert item["approved_by"] == "auto"
-        # 自动执行不写主仓：结果仍停在待办里。
-        assert "return 1" in (repo / "app.py").read_text(encoding="utf-8")
-        assert not (repo / "util.py").exists()
-
-        todos = client.get("/api/todos").json()["todos"]
-        assert len(todos) == 1
-        todo = todos[0]
-        assert todo["status"] == "pending"
-        assert todo["can_merge"] is True
-        assert todo["impact_level"] == "low"
-        assert set(todo["changed_files"]) == {"app.py", "util.py"}
-        assert todo["review_source"] == "llm"
-
-        merged = client.post(f"/api/todos/{todo['id']}/merge")
-        assert merged.status_code == 200, merged.text
-        assert merged.json()["status"] == "merged"
+        # 无冲突 → 自动合并写回主仓工作区。
+        assert item["merge_state"] == "merged", item
         assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")
         assert (repo / "util.py").is_file()
+        # 待办菜单已移除，接口也不存在。
+        assert client.get("/api/todos").status_code == 404
 
     # 合并只改工作区，不产生提交。
     count = subprocess.run(

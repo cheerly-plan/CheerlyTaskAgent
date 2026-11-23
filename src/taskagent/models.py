@@ -243,11 +243,11 @@ class WorkItem:
     # 自动链路（非人工点击）派发的任务：auto=True、approved_by="auto"。
     auto: bool = False
     approved_by: str = ""            # user | auto（谁批准的 apply）
-    auto_batch_id: str = ""          # 所属自动批次，用于「一系列任务跑完」汇总
     auto_dispatched_at: str = ""     # 已自动派发时间；非空即不再重复出队
-    hold_merge: bool = False         # True = 成功后不自动同步回主仓，进「我的待办」等待人工合并
+    # True = 执行器不自行同步，由 scheduler 在任务结束后做**原子合并**
+    hold_merge: bool = False
+    merge_state: str = ""            # "" | "merged" | "blocked"（自动合并结果）
     plan: str = ""                   # LLM/规则规划出的执行步骤，注入提示词
-    todo_id: str = ""                # 关联的待办条目
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -337,9 +337,8 @@ class WorkItem:
             "report_path": self.report_path,
             "auto": self.auto,
             "approved_by": self.approved_by,
-            "auto_batch_id": self.auto_batch_id,
             "hold_merge": self.hold_merge,
-            "todo_id": self.todo_id,
+            "merge_state": self.merge_state,
             "created_at": self.created_at,
         }
 
@@ -372,11 +371,10 @@ class WorkItem:
             "report_path": self.report_path,
             "auto": self.auto,
             "approved_by": self.approved_by,
-            "auto_batch_id": self.auto_batch_id,
             "auto_dispatched_at": self.auto_dispatched_at,
             "hold_merge": self.hold_merge,
+            "merge_state": self.merge_state,
             "plan": self.plan,
-            "todo_id": self.todo_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -420,11 +418,10 @@ class WorkItem:
             report_path=data.get("report_path", ""),
             auto=bool(data.get("auto", False)),
             approved_by=str(data.get("approved_by", "") or ""),
-            auto_batch_id=str(data.get("auto_batch_id", "") or ""),
             auto_dispatched_at=str(data.get("auto_dispatched_at", "") or ""),
             hold_merge=bool(data.get("hold_merge", False)),
+            merge_state=str(data.get("merge_state", "") or ""),
             plan=str(data.get("plan", "") or ""),
-            todo_id=str(data.get("todo_id", "") or ""),
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),

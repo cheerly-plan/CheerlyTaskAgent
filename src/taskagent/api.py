@@ -24,13 +24,12 @@ from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .repoprofile import RepoProfileStore, ensure_profiles
 from .report import parent_title_of, render_report
-from .review import build_diff
+from .review import build_diff, diff_stat
 from .route import RouteHistory, route_item
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
 from .tapd import TapdClient, TapdConfig, TapdError, TapdItem, is_closed_status
-from .todos import TodoStore
 
 logger = logging.getLogger("taskagent")
 
@@ -199,7 +198,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings.worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     store = TaskStore(settings.tasks_dir)
-    todo_store = TodoStore(settings.data_dir / "todos")
     gitmap = GitProjectRegistry(list(settings.project_roots))
     gitmap.scan()
     project_store = ProjectMappingStore(
@@ -283,7 +281,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
         on_finished=backfill_tapd,
-        todos=todo_store,
     )
     # A server restart kills in-flight asyncio tasks; reap any work item that
     # was persisted as queued/running so it no longer shows "执行中" forever.
@@ -292,16 +289,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
 
     # 自动执行引擎：只在两个触发点工作——TAPD 定时拉取、任务中心手动勾选。
-    automation = AutomationEngine(
-        scheduler=scheduler, store=store, todos=todo_store, events=events,
-    )
-    scheduler.on_auto_done = automation.on_item_done
-    backfilled = scheduler.backfill_todos()
-    if backfilled:
-        logger.info("启动补偿：为 %d 条已完成的自动任务补生成待办", backfilled)
-    closed_batches = automation.recover_batches()
-    if closed_batches:
-        logger.info("启动补偿：收口 %d 个未完成批次", closed_batches)
+    automation = AutomationEngine(scheduler=scheduler, store=store, events=events)
 
     # ── TAPD (authoritative source) ────────────────────────────────────────────
     _tapd_last_sync: dict[str, str] = {"modified": ""}  # incremental cursor, in-memory
@@ -669,7 +657,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ctx = SimpleNamespace(
         settings=settings, store=store, gitmap=gitmap, projects=projects,
         browser=browser, events=events, executor=executor, executors=executor_registry,
-        scheduler=scheduler, todos=todo_store,
+        scheduler=scheduler,
     )
 
     # 前端由 `web/` 的 Vite 工程构建到 web_dir；产物不入仓，因此首次运行需先 build。
@@ -849,56 +837,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "offset": max(0, offset),
         }
 
-    # ── 我的待办（自动执行结果的合并评审）────────────────────────────────────
-    @app.get("/api/todos")
-    def api_todos(status: str = "", limit: int = 200) -> dict[str, Any]:
-        safe_limit = max(1, min(1000, limit))
-        rows = todo_store.list(status=status or None, limit=safe_limit)
-        return {
-            "todos": [t.summary_row() for t in rows],
-            "counts": todo_store.counts(),
-            "batches": [b.to_dict() for b in todo_store.list_batches(limit=10)],
-        }
+    # ── 自动合并：冲突任务重试合并 / 查看 diff ─────────────────────────────
+    @app.post("/api/items/{item_id}/merge")
+    async def api_merge_item(item_id: str) -> dict[str, Any]:
+        """重试原子合并：无冲突才写回主仓库工作区（不 commit）。"""
+        try:
+            item = await asyncio.to_thread(scheduler.merge_item, item_id)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        return item.to_dict()
 
-    @app.get("/api/todos/{todo_id}")
-    def api_todo(todo_id: str) -> dict[str, Any]:
-        todo = todo_store.get(todo_id)
-        if todo is None:
-            raise HTTPException(404, "todo not found")
-        item = store.get(todo.item_id)
-        return {"todo": todo.to_dict(), "item": item.summary() if item else None}
-
-    @app.get("/api/todos/{todo_id}/diff")
-    def api_todo_diff(todo_id: str) -> dict[str, Any]:
-        todo = todo_store.get(todo_id)
-        if todo is None:
-            raise HTTPException(404, "todo not found")
-        item = store.get(todo.item_id)
+    @app.get("/api/items/{item_id}/diff")
+    def api_item_diff(item_id: str) -> dict[str, Any]:
+        item = store.get(item_id)
         if item is None or item.result is None:
-            raise HTTPException(400, "任务结果不存在，无法查看 diff")
+            raise HTTPException(404, "任务或执行结果不存在")
         worktree = item.result.worktree or ""
+        changed = list(item.result.changed_files)
         return {
-            "diff": build_diff(worktree, list(item.result.changed_files)),
-            "stat": todo.diff_stat,
+            "diff": build_diff(worktree, changed),
+            "stat": diff_stat(worktree, changed),
             "worktree": worktree,
         }
-
-    @app.post("/api/todos/{todo_id}/merge")
-    async def api_todo_merge(todo_id: str) -> dict[str, Any]:
-        """把待办对应的改动合并回主仓库工作区（三方安全同步；不 commit）。"""
-        try:
-            todo = await asyncio.to_thread(scheduler.merge_todo, todo_id)
-        except ValueError as error:
-            raise HTTPException(400, str(error)) from error
-        return todo.to_dict()
-
-    @app.post("/api/todos/{todo_id}/discard")
-    async def api_todo_discard(todo_id: str) -> dict[str, Any]:
-        try:
-            todo = await asyncio.to_thread(scheduler.discard_todo, todo_id)
-        except ValueError as error:
-            raise HTTPException(400, str(error)) from error
-        return todo.to_dict()
 
     @app.post("/api/tasks/auto-run")
     async def api_auto_run(body: AutoRunBody) -> dict[str, Any]:
@@ -1209,12 +1169,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "item not found")
         if not item.is_terminal():
             scheduler.cancel(item_id)
-        # 已合并的待办保留（它是合并记录）；未合并的直接清掉，避免留下无法操作
-        # 的孤儿待办（worktree 仍在 data/worktrees 下，可人工清理）。
-        if item.todo_id:
-            todo = todo_store.get(item.todo_id)
-            if todo is not None and todo.status != "merged":
-                todo_store.delete(item.todo_id)
         path = settings.tasks_dir / f"{item_id}.json"
         if path.is_file():
             path.unlink()

@@ -11,7 +11,7 @@ import {CornerDownRight, FileText, FolderGit2, GitBranch} from 'lucide-react';
 
 import {Table, TableBody, TableHeader, TableRow} from '@/components/ui/table';
 import {Badge} from '@/components/ui/badge';
-import {KindBadge, Mono, StatusBadge} from '@/components/status-bits';
+import {KindBadge, MergeBadge, Mono, StatusBadge} from '@/components/status-bits';
 import {SelectField} from '@/components/select-field';
 import {TaskActions, type ActionSelection} from '@/components/task-actions';
 import type {BackendInfo, ExecMode, ItemAction, ModelChoice, ProjectMapping, WorkItem} from '@/lib/api';
@@ -309,7 +309,12 @@ export function TaskTable({
       column.accessor('status', {
         header: '状态',
         enableSorting: true,
-        cell: (info) => <StatusBadge status={info.row.original.status} />,
+        cell: (info) => (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <StatusBadge status={info.row.original.status} />
+            <MergeBadge state={info.row.original.merge_state} />
+          </div>
+        ),
       }),
       column.accessor('created_at', {
         header: '创建时间',

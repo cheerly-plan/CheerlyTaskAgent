@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {Plus, Square, Trash2, FileText, Play} from 'lucide-react';
+import {Plus, Square, Trash2, FileText, GitMerge, Play} from 'lucide-react';
 
 import {Button} from '@/components/ui/button';
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
@@ -54,6 +54,7 @@ export function TaskActions({
   const retryable = ['failed', 'cancelled'].includes(item.status);
   const terminal = TERMINAL_STATUSES.includes(item.status) && !dryDone && !retryable;
   const running = ACTIVE_STATUSES.includes(item.status);
+  const mergeBlocked = item.merge_state === 'blocked';
 
   const backend = backends.find((entry) => entry.id === item.executor);
   const canPickModel = backend?.model_selection !== false;
@@ -73,6 +74,19 @@ export function TaskActions({
       className="flex flex-nowrap items-center justify-end gap-1.5 whitespace-nowrap"
       onClick={(event) => event.stopPropagation()}
     >
+      {mergeBlocked ? (
+        <IconTip label="重试合并">
+          <Button
+            size="icon-sm"
+            variant="outline"
+            onClick={() => onAction('merge', item.id)}
+            aria-label="重试把隔离 worktree 的改动合并到主仓库工作区"
+          >
+            <GitMerge />
+          </Button>
+        </IconTip>
+      ) : null}
+
       {container ? null : dryDone ? (
         <IconTip label="执行 apply">
           <Button

@@ -8,13 +8,14 @@ DSH `read-only`），不会产生任何文件改动。
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import ItemKind, ProjectMapping, WorkItem
 from .report import extract_conclusion
-from .review import extract_json_object
 
 _KIND_LABEL = {
     ItemKind.BUG: "缺陷修复",
@@ -34,6 +35,34 @@ class Plan:
         if not self.steps:
             return ""
         return "\n".join(f"{i + 1}. {step}" for i, step in enumerate(self.steps))
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Pull one JSON object out of an LLM reply (fenced, raw, or embedded)."""
+    for block in reversed(re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL)):
+        try:
+            value = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, dict):
+            return value
+    decoder = json.JSONDecoder()
+    for match in reversed(list(re.finditer(r"\{", text))[-80:]):
+        try:
+            value, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
 
 
 def _repo_brief(mapping: ProjectMapping, *, dirs: int = 12) -> str:
@@ -91,7 +120,7 @@ def parse_plan(raw: str, candidates: list[ProjectMapping]) -> Plan | None:
     if not raw:
         return None
     text = extract_conclusion(raw, limit=200_000).text or ""
-    data = extract_json_object(text)
+    data = _extract_json_object(text)
     if not data:
         return None
     repo = str(data.get("repo") or "").strip()

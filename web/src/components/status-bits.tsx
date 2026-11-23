@@ -18,6 +18,12 @@ export function StatusBadge({status, className}: {status: Status; className?: st
   );
 }
 
+export function MergeBadge({state}: {state?: string}) {
+  if (state === 'blocked') return <Badge variant="destructive">合并冲突</Badge>;
+  if (state === 'merged') return <Badge variant="success">已合并</Badge>;
+  return null;
+}
+
 export function KindBadge({kind}: {kind: Kind}) {
   return <Badge variant={kindVariant[kind] ?? 'outline'}>{kindLabel[kind] ?? kind}</Badge>;
 }
