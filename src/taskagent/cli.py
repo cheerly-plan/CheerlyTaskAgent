@@ -34,7 +34,10 @@ def _build(settings: Settings):
         executors=registry,
         events=events,
         settings=SchedulerSettings(
-            max_concurrent=settings.max_concurrent, reports_dir=settings.reports_dir
+            max_concurrent=settings.max_concurrent, reports_dir=settings.reports_dir,
+            gc_enabled=settings.gc_enabled,
+            backup_retention_days=settings.backup_retention_days,
+            backup_max_per_task=settings.backup_max_per_task,
         ),
         projects=projects,
     )

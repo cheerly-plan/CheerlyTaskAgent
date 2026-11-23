@@ -251,6 +251,7 @@ class WorkItem:
     hold_merge: bool = False
     merge_state: str = ""            # "" | "merged" | "blocked"（自动合并结果）
     plan: str = ""                   # LLM/规则规划出的执行步骤，注入提示词
+    parent_context: str = ""         # 父需求标题+描述快照，执行时注入子任务提示词
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -378,6 +379,7 @@ class WorkItem:
             "hold_merge": self.hold_merge,
             "merge_state": self.merge_state,
             "plan": self.plan,
+            "parent_context": self.parent_context,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -399,6 +401,7 @@ class WorkItem:
             kind=ItemKind(data.get("kind", ItemKind.TASK.value)),
             source=SourceType(data.get("source", SourceType.MANUAL.value)),
             source_ref=data.get("source_ref", ""),
+            tapd_workspace_id=str(data.get("tapd_workspace_id", "") or ""),
             git_url=data.get("git_url", ""),
             parent_ref=data.get("parent_ref", "") or "",
             parent_title=str(data.get("parent_title", "") or ""),
@@ -425,6 +428,7 @@ class WorkItem:
             hold_merge=bool(data.get("hold_merge", False)),
             merge_state=str(data.get("merge_state", "") or ""),
             plan=str(data.get("plan", "") or ""),
+            parent_context=str(data.get("parent_context", "") or ""),
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),

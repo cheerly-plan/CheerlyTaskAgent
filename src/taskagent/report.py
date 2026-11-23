@@ -99,6 +99,31 @@ def parent_title_of(item: WorkItem, store) -> str:
     return ""
 
 
+def parent_context_of(item: WorkItem, store, *, limit: int = 2000) -> str:
+    """子任务提示词里的父需求上下文：标题 + 截断描述。
+
+    父未入库时退回工单自带的 parent_title 快照；两者都为空则不注入。只取
+    直接父一层，描述超长截断，避免挤占子任务上下文。
+    """
+    if not item.parent_ref:
+        return ""
+    parent = None
+    for candidate in store.list(limit=100000):
+        if candidate.source_ref == item.parent_ref:
+            parent = candidate
+            break
+    title = (parent.title if parent else "") or item.parent_title
+    if not title:
+        return ""
+    description = ((parent.description if parent else "") or "").strip()
+    if len(description) > limit:
+        description = description[:limit].rstrip() + "（父需求描述已截断）"
+    context = f"你正在实现一个更大需求下的子任务。\n父需求：{title}"
+    if description:
+        context += f"\n父需求描述：{description}"
+    return context
+
+
 def _clip(text: str, raw: str, limit: int) -> str:
     if len(text) > limit:
         return text[:limit].rstrip() + f"\n\n…（原始输出共 {len(raw)} 字符，已截断；完整内容见工单数据）"

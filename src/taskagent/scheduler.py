@@ -10,6 +10,7 @@ import asyncio
 import logging
 import secrets
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,7 +31,7 @@ from .models import (
     WorkItem,
 )
 from .projectmap import ProjectRegistry
-from .report import parent_title_of, write_report
+from .report import parent_context_of, parent_title_of, write_report
 from .sources import RawItem, parse_raw
 from .store import TaskStore
 
@@ -40,6 +41,11 @@ class SchedulerSettings:
     max_concurrent: int = 1          # codebuddy is heavy; run one at a time by default
     retry_delays: tuple[float, ...] = (2.0, 8.0)
     reports_dir: Path = Path("data/reports")
+    # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
+    # sync-backups are capped by age + count.
+    gc_enabled: bool = True
+    backup_retention_days: int = 7
+    backup_max_per_task: int = 5
 
 
 class Scheduler:
@@ -75,6 +81,12 @@ class Scheduler:
         self.commit_rules_file = commit_rules_file
         self.on_finished = on_finished
         self._sem = asyncio.Semaphore(self.settings.max_concurrent)
+        # One lock per repository path: same-repo auto tasks run one at a time
+        # so they never branch from the same stale base and race to merge.
+        self._repo_locks: dict[str, asyncio.Lock] = {}
+        # 同父任务的串行锁：同一 parent_ref 的自动任务一次只跑一个，即便它们
+        # 映射到了不同仓库（父子编排硬约束）。
+        self._parent_locks: dict[str, asyncio.Lock] = {}
         self._cancel_flags: dict[str, bool] = {}
         self._seen_keys: dict[str, str] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -507,6 +519,8 @@ class Scheduler:
         files = len(item.result.synced_files) + len(item.result.sync_deleted)
         if ok:
             item.stage = f"完成（已合并 {files} 个文件到工作区）"
+            # Changes are in the main repo — the worktree has served its purpose.
+            self._gc_after_success(item, backend)
         else:
             conflicts = len(item.result.sync_conflicts)
             item.stage = (
@@ -528,6 +542,77 @@ class Scheduler:
                 logger.warning("合并成功后状态回填失败 %s：%s", item.id, error)
         return item
 
+    # ── workspace / backup GC ─────────────────────────────────────────────────
+    def _gc_backups(self, backend) -> int:
+        """Prune one backend's sync-backups; GC is best effort, never fatal."""
+        if not self.settings.gc_enabled:
+            return 0
+        collect = getattr(backend, "gc_backups", None)
+        if collect is None:
+            return 0
+        try:
+            out = collect(
+                retention_days=self.settings.backup_retention_days,
+                max_per_task=self.settings.backup_max_per_task,
+            )
+            return int(out.get("removed") or 0) if isinstance(out, dict) else 0
+        except (OSError, ValueError, TypeError):
+            logger.warning("清理同步备份失败", exc_info=True)
+            return 0
+
+    def _drop_worktree(self, item: WorkItem, backend, *, result=None) -> None:
+        """Delete a worktree that is no longer needed (merged / abandoned)."""
+        if not self.settings.gc_enabled:
+            return
+        cleanup = getattr(backend, "cleanup_worktree", None)
+        if cleanup is None:
+            return
+        outcome = result if result is not None else item.result
+        worktree = outcome.worktree if outcome is not None else None
+        if not worktree:
+            return
+        try:
+            cleanup(worktree, str(item.repo.path) if item.repo else None)
+        except OSError:
+            logger.warning("清理 worktree 失败：%s", worktree, exc_info=True)
+            return
+        if not Path(worktree).expanduser().exists():
+            outcome.worktree = None
+
+    def _gc_after_success(self, item: WorkItem, backend) -> None:
+        """After a successful merge: drop the worktree and prune backups."""
+        self._drop_worktree(item, backend)
+        self._gc_backups(backend)
+
+    def gc_artifacts(self) -> dict[str, int]:
+        """Sweep worktrees/backups left behind by earlier runs (startup-safe).
+
+        Only worktrees of items already merged or abandoned are removed; a
+        blocked merge keeps its worktree so a human can still retry
+        :meth:`merge_item`. Returns counts for logging/observability.
+        """
+        stats = {"worktrees": 0, "backups": 0}
+        if not self.settings.gc_enabled:
+            return stats
+        for item in self.store.list(limit=100000):
+            if item.merge_state != "merged" and item.status != ItemStatus.CANCELLED:
+                continue
+            if not item.result or not item.result.worktree:
+                continue
+            backend = self.executors.resolve(item.executor)
+            if backend is None:
+                continue
+            before = item.result.worktree
+            self._drop_worktree(item, backend)
+            if item.result.worktree is None and before:
+                stats["worktrees"] += 1
+                self.store.save(item)
+        for backend_id in self.executors.ids():
+            backend = self.executors.get(backend_id)
+            if backend is not None:
+                stats["backups"] += self._gc_backups(backend)
+        return stats
+
     def cancel(self, item_id: str) -> int:
         item = self.store.get(item_id)
         if item is None:
@@ -538,6 +623,11 @@ class Scheduler:
         item.status = ItemStatus.CANCELLED
         item.stage = "已取消"
         item.finished_at = _utcnow()
+        # 放弃任务：删掉隔离 worktree 并顺带收敛备份，避免磁盘只增不减。
+        backend = self.executors.resolve(item.executor)
+        if backend is not None:
+            self._drop_worktree(item, backend)
+            self._gc_backups(backend)
         self.store.save(item)
         self.events.publish(Event("item_cancelled", item.id, {}))
         return 1
@@ -633,12 +723,54 @@ class Scheduler:
                 self.settings.max_concurrent = value
                 self._sem = asyncio.Semaphore(value)
 
+    def _repo_lock(self, item: WorkItem | None) -> asyncio.Lock | None:
+        """Lock that serializes auto tasks targeting one local repository.
+
+        Auto tasks branch from the repo's current state and the scheduler
+        merges their result back atomically. Two of them on the same repo at
+        once means the first merge moves the base out from under the second,
+        which only discovers the conflict after burning a full agent run.
+        Cross-repo tasks get different locks and stay parallel. Manual runs
+        are left alone: they don't drive the scheduler's atomic merge.
+        """
+        if item is None or not item.auto or item.repo is None or not item.repo.path:
+            return None
+        key = str(Path(item.repo.path).expanduser().resolve())
+        lock = self._repo_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._repo_locks[key] = lock
+        return lock
+
+    def _parent_lock(self, item: WorkItem | None) -> asyncio.Lock | None:
+        """锁住同一父需求下的所有自动任务，避免兄弟子任务并行落同一仓库。"""
+        if item is None or not item.auto or not item.parent_ref:
+            return None
+        key = item.parent_ref
+        lock = self._parent_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._parent_locks[key] = lock
+        return lock
+
     # ── execution ──────────────────────────────────────────────────────────────
     async def _execute(self, item_id: str) -> None:
-        async with self._sem:
+        probe = self.store.get(item_id)
+        repo_lock = self._repo_lock(probe)
+        parent_lock = self._parent_lock(probe)
+        async with AsyncExitStack() as stack:
+            # 固定顺序：父锁 → 仓库锁 → 全局槽位。同父/同仓任务串行，跨父跨仓
+            # 仍可并行；先拿局部锁再拿全局槽位，等待时不占并发额度。
+            if parent_lock is not None:
+                await stack.enter_async_context(parent_lock)
+            if repo_lock is not None:
+                await stack.enter_async_context(repo_lock)
+            await stack.enter_async_context(self._sem)
             item = self.store.get(item_id)
             if item is None or item.is_terminal():
                 return
+            # 子任务执行前补齐父需求上下文，build_prompt 会把它注入提示词。
+            item.parent_context = parent_context_of(item, self.store)
 
             def progress(value: float, stage: str) -> None:
                 current = self.store.get(item_id)
@@ -690,6 +822,8 @@ class Scheduler:
                     if merged:
                         files = len(result.synced_files) + len(result.sync_deleted)
                         item.stage = f"完成（已自动合并 {files} 个文件到工作区）"
+                        # Merge landed: reclaim the isolated worktree now.
+                        self._gc_after_success(item, backend)
                     else:
                         conflicts = len(result.sync_conflicts)
                         item.stage = (

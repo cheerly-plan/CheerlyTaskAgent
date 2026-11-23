@@ -281,6 +281,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=SchedulerSettings(
             max_concurrent=int(initial_ui.get("max_concurrent") or settings.max_concurrent),
             reports_dir=settings.reports_dir,
+            gc_enabled=settings.gc_enabled,
+            backup_retention_days=settings.backup_retention_days,
+            backup_max_per_task=settings.backup_max_per_task,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
@@ -291,6 +294,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     recovered = scheduler.recover_interrupted()
     if recovered:
         logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
+    # P0-3: sweep worktrees/backups left by earlier runs so disk use is bounded.
+    swept = scheduler.gc_artifacts()
+    if swept["worktrees"] or swept["backups"]:
+        logger.info(
+            "启动清理：移除 worktree %d 个、过期备份 %d 份",
+            swept["worktrees"], swept["backups"],
+        )
     # 启动时整理一次父子关系：把历史遗留的父需求纠正为容器（不映射、不执行）。
     try:
         scheduler.link_parent_relations()

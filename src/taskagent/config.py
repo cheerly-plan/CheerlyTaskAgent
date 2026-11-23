@@ -197,6 +197,11 @@ class Settings:
     commit_rules_file: Path | None = None  # extra commit-ignore patterns (one per line)
     auto_sync: bool = True  # copy apply changes back into the main repo worktree
     available_models: tuple[str, ...] = ()  # allowed model ids for per-task selection
+    # Workspace/backup GC (P0-3): worktrees of merged/abandoned tasks are
+    # removed and sync-backups are pruned so long-running servers don't bloat.
+    gc_enabled: bool = True
+    backup_retention_days: int = 7    # keep snapshots newer than N days (0 = no age limit)
+    backup_max_per_task: int = 5      # keep at most N snapshots per task (0 = no count limit)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -233,6 +238,14 @@ class Settings:
                 m.strip()
                 for m in os.environ.get("TASKAGENT_MODELS", "").split(",")
                 if m.strip()
+            ),
+            gc_enabled=os.environ.get("TASKAGENT_GC_ENABLED", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            backup_retention_days=max(
+                0, int(os.environ.get("TASKAGENT_BACKUP_RETENTION_DAYS", "7"))
+            ),
+            backup_max_per_task=max(
+                0, int(os.environ.get("TASKAGENT_BACKUP_MAX_PER_TASK", "5"))
             ),
         )
 

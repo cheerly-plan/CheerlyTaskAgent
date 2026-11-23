@@ -149,6 +149,15 @@ def build_prompt(item: WorkItem) -> str:
         f"来源：{item.source.value} {item.source_ref}\n\n"
         f"描述：\n{item.description}\n"
         "--- TASK END ---\n\n"
+    )
+    # 父子需求：子任务执行时带上父需求标题 + 描述，避免只看到局部需求。
+    if item.parent_context:
+        text += (
+            "--- 所属父需求（上下文）---\n"
+            f"{item.parent_context}\n"
+            "--- 父需求结束 ---\n\n"
+        )
+    text += (
         "要求：\n"
         "1. 先阅读仓库结构与相关代码，定位需要改动的位置。\n"
         "2. 做出最小必要的修改；不要提交 git，不要 push，不要改无关文件。\n"
@@ -1492,6 +1501,92 @@ class CodeBuddyExecutor(Executor):
         if backup_used:
             result["sync_backup_dir"] = str(backup_root)
         return result
+
+    # ── workspace / backup GC ─────────────────────────────────────────────────
+    def cleanup_worktree(self, worktree: str | Path, repo_path: str | None = None) -> bool:
+        """Delete an isolated worktree once its result is merged or abandoned.
+
+        Handles both flavours built by :meth:`_create_worktree`: a real
+        ``git worktree`` (deregistered first so its branch can be reused) and a
+        plain snapshot sandbox (just a directory). Returns True when the path
+        is gone. Failures are swallowed — GC must never break a merge.
+        """
+        import subprocess
+
+        wt = Path(worktree).expanduser()
+        if not wt.exists():
+            return True
+        repo = Path(repo_path).expanduser() if repo_path else None
+        # Drop git's .git/worktrees metadata; a leftover registration would
+        # keep the branch "checked out" and force future runs into the slower
+        # snapshot fallback (branch -b would collide).
+        if repo is not None and repo.is_dir():
+            try:
+                subprocess.run(
+                    ["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)],
+                    capture_output=True, check=False,
+                )
+            except OSError:
+                pass
+        if wt.exists():
+            shutil.rmtree(wt, ignore_errors=True)
+        if repo is not None and repo.is_dir():
+            try:
+                subprocess.run(
+                    ["git", "-C", str(repo), "branch", "-D", f"taskagent/{wt.name}"],
+                    capture_output=True, check=False,
+                )
+            except OSError:
+                pass
+        return not wt.exists()
+
+    def gc_backups(self, *, retention_days: int, max_per_task: int) -> dict[str, int]:
+        """Prune ``sync-backups`` by age and by count, newest first.
+
+        Snapshot folders are named ``%Y%m%d-%H%M%S`` by :meth:`sync_to_repo`.
+        ``retention_days <= 0`` / ``max_per_task <= 0`` disable that rule.
+        Returns ``{"removed": n}`` and never raises — GC is best effort.
+        """
+        root = self.backups_dir
+        removed = 0
+        if not root.is_dir() or (retention_days <= 0 and max_per_task <= 0):
+            return {"removed": removed}
+        cutoff = time.time() - retention_days * 86400 if retention_days > 0 else None
+        try:
+            task_dirs = [d for d in root.iterdir() if d.is_dir()]
+        except OSError:
+            return {"removed": removed}
+
+        for task_dir in task_dirs:
+            try:
+                snapshots = [d for d in task_dir.iterdir() if d.is_dir()]
+            except OSError:
+                continue
+            kept: list[tuple[float, Path]] = []
+            for snap in snapshots:
+                try:
+                    stamp = time.mktime(time.strptime(snap.name, "%Y%m%d-%H%M%S"))
+                except (ValueError, OverflowError):
+                    stamp = None
+                if cutoff is not None and stamp is not None and stamp < cutoff:
+                    shutil.rmtree(snap, ignore_errors=True)
+                    if not snap.exists():
+                        removed += 1
+                    continue
+                kept.append((stamp if stamp is not None else 0.0, snap))
+            if max_per_task > 0 and len(kept) > max_per_task:
+                kept.sort(key=lambda pair: pair[0], reverse=True)
+                for _, snap in kept[max_per_task:]:
+                    shutil.rmtree(snap, ignore_errors=True)
+                    if not snap.exists():
+                        removed += 1
+            # Remove an emptied per-task folder; never touch non-empty ones.
+            try:
+                if not any(task_dir.iterdir()):
+                    task_dir.rmdir()
+            except OSError:
+                pass
+        return {"removed": removed}
 
 
 # ── Additional CLI backends ───────────────────────────────────────────────────

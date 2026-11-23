@@ -7,7 +7,7 @@ import pytest
 
 from taskagent.automation import AutomationEngine
 from taskagent.events import EventBus
-from taskagent.executor import CodeBuddyExecutor, ExecutorRegistry
+from taskagent.executor import CodeBuddyExecutor, ExecutorRegistry, build_prompt
 from taskagent.gitmap import GitProjectRegistry
 from taskagent.models import (
     ItemStatus,
@@ -16,7 +16,8 @@ from taskagent.models import (
     RunResult,
     WorkItem,
 )
-from taskagent.planner import parse_plan, plan_repo
+from taskagent.planner import build_short_plan, parse_plan, plan_repo
+from taskagent.report import parent_context_of
 from taskagent.review import build_diff, diff_stat
 from taskagent.scheduler import Scheduler, SchedulerSettings
 from taskagent.store import TaskStore
@@ -182,6 +183,59 @@ async def test_dispatch_starts_selected_ready_items(tmp_path: Path, real_repo: P
     assert calls == [item.id]
 
 
+async def test_dispatch_ready_item_passes_short_plan(tmp_path: Path, real_repo: Path):
+    scheduler, store, _, _ = _scheduler(tmp_path)
+    engine = AutomationEngine(scheduler=scheduler, store=store, events=scheduler.events)
+    item = _ready_item(store, real_repo, "自动跑我")
+    plans: list[str] = []
+
+    def fake_run_auto(item_id: str, *, plan: str = ""):
+        plans.append(plan)
+        fresh = store.get(item_id)
+        fresh.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
+        store.save(fresh)
+
+    scheduler.run_auto = fake_run_auto  # type: ignore[method-assign]
+    result = await engine.dispatch([item.id])
+
+    assert result["started"] == [item.id]
+    assert plans and "自动跑我" in plans[0] and "1." in plans[0]
+
+
+async def test_dispatch_single_repo_needs_no_llm(tmp_path: Path, real_repo: Path):
+    from taskagent.projectmap import ProjectMappingStore, ProjectRegistry
+
+    scheduler, store, _, _ = _scheduler(tmp_path)
+    registry = ProjectRegistry(ProjectMappingStore(tmp_path / "projects.json"))
+    registry.add({
+        "id": "single", "name": "single", "path": str(real_repo),
+        "tapd_workspace_ids": ["ws-1"],
+    })
+    scheduler.projects = registry
+    engine = AutomationEngine(scheduler=scheduler, store=store, events=scheduler.events)
+
+    item = WorkItem.create(
+        title="单仓任务", description="x", kind="bug",
+        source="tapd", source_ref="tapd:story:1",
+    )
+    item.tapd_workspace_id = "ws-1"
+    store.save(item)
+    plans: list[str] = []
+
+    def fake_run_auto(item_id: str, *, plan: str = ""):
+        plans.append(plan)
+        fresh = store.get(item_id)
+        fresh.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
+        store.save(fresh)
+
+    scheduler.run_auto = fake_run_auto  # type: ignore[method-assign]
+    result = await engine.dispatch([item.id])
+
+    assert result["started"] == [item.id]
+    assert plans and "单仓任务" in plans[0]
+    assert store.get(item.id).plan  # 计划已落库
+
+
 async def test_dispatch_skips_unknown_unmapped_and_dispatched(tmp_path: Path, real_repo: Path):
     scheduler, store, _, _ = _scheduler(tmp_path)
     engine = AutomationEngine(scheduler=scheduler, store=store, events=scheduler.events)
@@ -233,6 +287,7 @@ async def test_plan_repo_single_candidate_skips_llm(tmp_path: Path):
         llm=None, enabled=True, timeout_s=5, max_candidates=3,
     )
     assert plan is not None and plan.repo == "only" and plan.source == "rule"
+    assert plan.steps and "1." in plan.to_prompt()  # 单仓也生成短计划
 
 
 async def test_plan_repo_degrades_when_backend_llm_fails(tmp_path: Path):
@@ -287,6 +342,36 @@ async def test_plan_repo_uses_backend_llm(tmp_path: Path):
     assert plan is not None
     assert plan.repo == "web" and plan.source == "llm"
     assert plan.to_prompt() == "1. 改页面"
+
+
+def test_short_plan_has_steps_without_llm():
+    item = WorkItem.create(title="修复登录", description="bug", kind="bug")
+    plan = build_short_plan(item)
+    assert plan.steps and "修复登录" in plan.steps[0]
+    assert "1." in plan.to_prompt()
+
+
+def test_prompt_injects_parent_context(tmp_path: Path):
+    store = TaskStore(tmp_path / "tasks")
+    parent = WorkItem.create(
+        title="账号体系", description="统一登录与权限", source="tapd",
+        source_ref="tapd:story:10",
+    )
+    store.save(parent)
+    child = WorkItem.create(
+        title="登录按钮", description="改前端", parent_ref=parent.source_ref,
+    )
+
+    context = parent_context_of(child, store)
+    assert "父需求：账号体系" in context
+    assert "父需求描述：统一登录与权限" in context
+
+    child.parent_context = context
+    child.plan = "1. 改按钮"
+    prompt = build_prompt(child)
+    assert "所属父需求（上下文）" in prompt
+    assert "父需求：账号体系" in prompt
+    assert "已确认的执行方案" in prompt
 
 # ── 父需求容器：只做分组头，不映射、不执行 ───────────────────────────────────
 def test_parent_import_is_container_and_not_executable(tmp_path: Path):

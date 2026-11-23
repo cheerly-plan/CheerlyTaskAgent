@@ -21,7 +21,7 @@ from typing import Any
 from .events import Event
 from .llm import AgentLLM, AgentModel, resolve_agent_model
 from .models import ItemStatus, WorkItem
-from .planner import Plan, plan_repo
+from .planner import Plan, build_short_plan, plan_repo
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,9 @@ class AutomationEngine:
             if reason:
                 skipped.append({"id": item_id, "reason": reason})
                 continue
-            plan_text = ""
+            # 所有自动任务都有一份短计划：单仓/已映射任务不需要 LLM，但计划
+            # 仍要生成并落库（由 scheduler.run_auto 写入 item.plan）。
+            plan_text = build_short_plan(item).to_prompt()
             if item.status == ItemStatus.DISCOVERED:
                 candidates = self._candidates(item)
                 if not candidates:
@@ -85,11 +87,14 @@ class AutomationEngine:
                 except ValueError as error:
                     skipped.append({"id": item_id, "reason": f"规划结果无法应用：{error}"})
                     continue
-                plan_text = plan.to_prompt()
+                plan_text = plan.to_prompt() or build_short_plan(item).to_prompt()
                 item = self.store.get(item_id)
                 if item is None:
                     skipped.append({"id": item_id, "reason": "任务已不存在"})
                     continue
+                # 规划结果统一落库，避免 LLM 返回空步骤时计划为空。
+                item.plan = plan_text
+                self.store.save(item)
             try:
                 self.scheduler.run_auto(item.id, plan=plan_text)
                 started.append(item.id)
@@ -142,10 +147,12 @@ class AutomationEngine:
         self, item: WorkItem, candidates, agent: AgentModel | None = None
     ) -> Plan | None:
         agent = agent or self._agent_model()
-        if agent is None:
+        # 单候选仓库走规则版短计划，不需要 LLM；只有多候选才依赖模型。
+        if agent is None and len(candidates) > 1:
             return None
+        llm = AgentLLM(agent) if agent is not None else None
         return await plan_repo(
-            item, candidates, llm=AgentLLM(agent), enabled=True,
+            item, candidates, llm=llm, enabled=agent is not None,
             timeout_s=PLANNER_TIMEOUT_S, max_candidates=PLANNER_MAX_CANDIDATES,
         )
 

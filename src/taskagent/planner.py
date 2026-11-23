@@ -40,6 +40,33 @@ class Plan:
         return "\n".join(f"{i + 1}. {step}" for i, step in enumerate(self.steps))
 
 
+def build_short_plan(item: WorkItem) -> Plan:
+    """规则版短计划：单仓/已映射任务也必须有一份可落库的执行步骤。
+
+    不调用 LLM、不依赖候选仓库，保证每条自动任务都能拿到确定性的计划文本。
+    """
+    title = item.title.strip() or "该任务"
+    if item.kind == ItemKind.BUG:
+        steps = [
+            f"阅读需求「{title}」与相关代码，定位问题根因",
+            "做最小必要修改，不碰无关文件",
+            "运行相关测试，确认修复且无回归",
+        ]
+    elif item.kind == ItemKind.FEATURE:
+        steps = [
+            f"阅读需求「{title}」与相关代码，明确改动范围",
+            "实现新能力并完成必要接线",
+            "运行相关测试，确认功能可用",
+        ]
+    else:
+        steps = [
+            f"阅读需求「{title}」与相关代码，定位改动点",
+            "完成必要修改，不碰无关文件",
+            "运行相关测试并总结结果",
+        ]
+    return Plan(repo="", reason="规则生成的短计划", steps=steps, source="rule")
+
+
 def _extract_json_object(text: str) -> dict | None:
     """Pull one JSON object out of an LLM reply (fenced, raw, or embedded)."""
     for block in reversed(re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL)):
@@ -158,7 +185,11 @@ async def plan_repo(
     if not candidates:
         return None
     if len(candidates) == 1:
-        return Plan(repo=candidates[0].name, reason="该项目只关联了一个本地仓库", source="rule")
+        # 单仓也要生成一份短计划，而不是空步骤直接跳过规划。
+        plan = build_short_plan(item)
+        plan.repo = candidates[0].name
+        plan.reason = "该项目只关联了一个本地仓库"
+        return plan
     if not enabled or llm is None:
         return None
     subset = candidates[: max(1, max_candidates)]
