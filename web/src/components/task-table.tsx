@@ -344,7 +344,7 @@ export function TaskTable({
               backends={backends}
               onProbe={onProbe}
               showModelSelect={false}
-              maxVisibleActions={2}
+              maxVisibleActions={3}
             />
           );
         },

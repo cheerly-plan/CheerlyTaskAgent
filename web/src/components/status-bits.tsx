@@ -19,8 +19,8 @@ export function StatusBadge({status, className}: {status: Status; className?: st
 }
 
 export function MergeBadge({state}: {state?: string}) {
+  // 成功合并是正常结果，不再额外打「已合并」；只有没合进去的才需要提示。
   if (state === 'blocked') return <Badge variant="destructive">合并冲突</Badge>;
-  if (state === 'merged') return <Badge variant="success">已合并</Badge>;
   return null;
 }
 
