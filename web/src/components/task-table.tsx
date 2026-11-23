@@ -344,9 +344,11 @@ export function TaskTable({
               backends={backends}
               onProbe={onProbe}
               showModelSelect={false}
+              maxVisibleActions={2}
             />
           );
         },
+        size: 124,
       }),
     ],
     [column, mappings, models, backends, selections, onMap, onSelect, onAction, onProbe],
@@ -451,7 +453,7 @@ export function TaskTable({
                         'px-2 py-2 align-middle',
                         cell.column.id === 'title' && 'pl-4',
                         cell.column.id === 'actions' &&
-                          'sticky right-0 z-[1] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]',
+                          'sticky right-0 z-[1] w-[124px] min-w-[124px] max-w-[124px] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]',
                       )}
                     >
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
