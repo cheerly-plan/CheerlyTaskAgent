@@ -242,9 +242,6 @@ export function TodosPage() {
             我的待办
             {pendingCount > 0 && <Badge variant="secondary">{pendingCount}</Badge>}
           </h2>
-          <p className="mt-1 text-xs text-faint">
-            自动执行的结果先留在隔离 worktree，不写主仓库、不提交；在这里评审后点「合并」才会写回工作区。
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={refreshing}>
@@ -275,11 +272,6 @@ export function TodosPage() {
           <EmptyState
             icon={GitMerge}
             title={filter === 'pending' ? '没有待合并的自动执行结果' : '这里还没有记录'}
-            action={
-              <span className="text-[11.5px] text-faint">
-                TAPD 定时拉取的任务会自动执行；手动数据在任务中心勾选后点「自动执行」。
-              </span>
-            }
           />
         </Card>
       ) : (

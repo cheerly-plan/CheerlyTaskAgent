@@ -379,7 +379,7 @@ export function ReportPage({layout, onLayoutChange, onClose}: ReportPageProps) {
           </div>
         ) : !summary ? (
           <div className="m-5 rounded-xl border border-border bg-card px-5 py-10 text-center text-[12.5px] text-faint">
-            这份工单还没有执行报告。执行一次 dry-run 或 apply 后即可查看。
+            这份工单还没有执行报告。
           </div>
         ) : (
           <>
@@ -416,7 +416,6 @@ export function ReportPage({layout, onLayoutChange, onClose}: ReportPageProps) {
                     <WorkbenchSection
                       sectionKey="overview"
                       title="概览"
-                      sub="需求与关键指标"
                       collapsed={Boolean(collapsed.overview)}
                       onToggle={() => toggleSection(setCollapsed, 'overview')}
                       register={(el) => (sectionRefs.current.overview = el)}
@@ -467,7 +466,6 @@ export function ReportPage({layout, onLayoutChange, onClose}: ReportPageProps) {
                     <WorkbenchSection
                       sectionKey="output"
                       title="执行输出"
-                      sub="最终结论与完整输出"
                       collapsed={Boolean(collapsed.output)}
                       onToggle={() => toggleSection(setCollapsed, 'output')}
                       register={(el) => (sectionRefs.current.output = el)}
@@ -493,7 +491,6 @@ export function ReportPage({layout, onLayoutChange, onClose}: ReportPageProps) {
                     <WorkbenchSection
                       sectionKey="meta"
                       title="工单元信息"
-                      sub="点击任意值复制"
                       collapsed={Boolean(collapsed.meta)}
                       onToggle={() => toggleSection(setCollapsed, 'meta')}
                       register={(el) => (sectionRefs.current.meta = el)}
@@ -816,9 +813,8 @@ function ReportToc({
             );
           })}
         </nav>
-        <div className="mt-3 border-t border-border px-2 pt-2.5 text-[10px] leading-[1.6] text-faint">
-          点击目录跳转 · 滚动自动高亮
-          <div className="mt-2 h-1 overflow-hidden rounded-full bg-secondary">
+        <div className="mt-3 border-t border-border px-2 pt-2.5">
+          <div className="h-1 overflow-hidden rounded-full bg-secondary">
             <div className="h-full rounded-full bg-gradient-to-r from-primary to-[#0e9f9c] transition-[width] duration-150" style={{width: `${progress}%`}} />
           </div>
         </div>
@@ -999,9 +995,7 @@ function OverviewBody({summary, descriptionHtml}: {summary: Summary; description
         <div className="report-body rounded-xl border border-border/60 bg-[#fafbff] px-3.5 py-3 text-[12px] leading-[1.8] text-[#5b5f78]">
           <div dangerouslySetInnerHTML={{__html: descriptionHtml}} />
         </div>
-      ) : (
-        <p className="text-[12px] text-faint">这份工单没有填写需求描述。</p>
-      )}
+      ) : null}
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {fields.length ? (
           fields.map((field) => (
@@ -1261,7 +1255,7 @@ function OutputBody({
         {tone === 'danger' ? <AlertTriangle className="mt-0.5 size-4 shrink-0" /> : <Info className="mt-0.5 size-4 shrink-0" />}
         <div>
           <b className="block text-[12.5px]">{summary.verdict}</b>
-          {summary.attention[0]?.detail ?? (summary.diagnostics.length ? summary.diagnostics.join(' · ') : '执行器返回的最终结论如下。')}
+          {summary.attention[0]?.detail ?? summary.diagnostics.join(' · ')}
         </div>
       </div>
       <div className="mt-3.5 text-[11.5px] font-bold text-muted-foreground">验证结果</div>
@@ -1312,9 +1306,6 @@ function CommandsBody({
   if (!appendices.length) return <EmptyState icon={FileText}>本次执行没有记录命令或提示词</EmptyState>;
   return (
     <>
-      <p className="mb-1 text-[11.5px] leading-[1.7] text-muted-foreground">
-        命令已做提示词脱敏；点击右上角可复制完整内容。长内容默认折叠，展开后可全文查阅。
-      </p>
       {appendices.map((appendix, index) => (
         <CodeBlock
           key={`${appendix.title}-${index}`}
@@ -1413,7 +1404,6 @@ function MetaBody({summary, itemExecutor}: {summary: Summary; itemExecutor?: str
           </button>
         ))}
       </div>
-      <p className="mt-3 text-[10.5px] leading-[1.6] text-faint">所有值点击即可复制 · 查询更多追溯信息请下载完整 .md</p>
     </>
   );
 }

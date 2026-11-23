@@ -186,7 +186,6 @@ export function TasksPage() {
             variant="outline"
             onClick={() => setAutoRunOpen(true)}
             disabled={autoRunCandidates.length === 0}
-            title={autoRunCandidates.length === 0 ? '没有已映射仓库的待执行任务' : '选择要自动执行的任务'}
           >
             <Bot />
             自动执行

@@ -455,10 +455,7 @@ export function TapdSourceCard({
             onCheckedChange={(checked) => patchTapd('auto_pull', checked)}
             aria-label="启用定时拉取"
           />
-          <div>
-            <h4 className="text-xs font-semibold text-foreground/80">定时拉取</h4>
-            <p className="mt-0.5 text-[11px] text-faint">拉到的新工单会直接自动执行，结果进「我的待办」</p>
-          </div>
+          <h4 className="text-xs font-semibold text-foreground/80">定时拉取</h4>
         </div>
         <Field label="间隔（分钟）" className="mb-0">
           <Input
