@@ -70,9 +70,6 @@ export function ModelsPage() {
           模型配置
         </h3>
         <div className="flex flex-wrap items-center gap-2">
-          <label htmlFor="agent-model" className="text-xs text-faint">
-            后端 Agent 使用
-          </label>
           <SelectField
             id="agent-model"
             size="sm"
