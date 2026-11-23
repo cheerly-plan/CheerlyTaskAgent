@@ -239,6 +239,15 @@ class WorkItem:
     result: RunResult | None = None
     commit: CommitResult | None = None
     report_path: str = ""
+    # ── 自动执行 / 待办评审 ────────────────────────────────────────────────
+    # 自动链路（非人工点击）派发的任务：auto=True、approved_by="auto"。
+    auto: bool = False
+    approved_by: str = ""            # user | auto（谁批准的 apply）
+    auto_batch_id: str = ""          # 所属自动批次，用于「一系列任务跑完」汇总
+    auto_dispatched_at: str = ""     # 已自动派发时间；非空即不再重复出队
+    hold_merge: bool = False         # True = 成功后不自动同步回主仓，进「我的待办」等待人工合并
+    plan: str = ""                   # LLM/规则规划出的执行步骤，注入提示词
+    todo_id: str = ""                # 关联的待办条目
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -326,6 +335,11 @@ class WorkItem:
             "error": self.error,
             "commit": self.commit.to_dict() if self.commit else None,
             "report_path": self.report_path,
+            "auto": self.auto,
+            "approved_by": self.approved_by,
+            "auto_batch_id": self.auto_batch_id,
+            "hold_merge": self.hold_merge,
+            "todo_id": self.todo_id,
             "created_at": self.created_at,
         }
 
@@ -356,6 +370,13 @@ class WorkItem:
             "result": self.result.to_dict() if self.result else None,
             "commit": self.commit.to_dict() if self.commit else None,
             "report_path": self.report_path,
+            "auto": self.auto,
+            "approved_by": self.approved_by,
+            "auto_batch_id": self.auto_batch_id,
+            "auto_dispatched_at": self.auto_dispatched_at,
+            "hold_merge": self.hold_merge,
+            "plan": self.plan,
+            "todo_id": self.todo_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -397,6 +418,13 @@ class WorkItem:
             result=result,
             commit=commit,
             report_path=data.get("report_path", ""),
+            auto=bool(data.get("auto", False)),
+            approved_by=str(data.get("approved_by", "") or ""),
+            auto_batch_id=str(data.get("auto_batch_id", "") or ""),
+            auto_dispatched_at=str(data.get("auto_dispatched_at", "") or ""),
+            hold_merge=bool(data.get("hold_merge", False)),
+            plan=str(data.get("plan", "") or ""),
+            todo_id=str(data.get("todo_id", "") or ""),
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),

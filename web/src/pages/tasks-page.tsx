@@ -1,7 +1,8 @@
 import * as React from 'react';
-import {ArrowDown, ArrowUp, LayoutGrid, List, Plus, RefreshCw, Search, Wand2, X} from 'lucide-react';
+import {ArrowDown, ArrowUp, Bot, LayoutGrid, List, Plus, RefreshCw, Search, Wand2, X} from 'lucide-react';
 
 import {useApp} from '@/app-context';
+import {AutoRunDialog} from '@/components/dialogs/auto-run-dialog';
 import {EmptyState} from '@/components/status-bits';
 import {TaskCard} from '@/components/task-card';
 import {
@@ -64,6 +65,7 @@ export function TasksPage() {
     openNewTask,
     reloadItems,
     autoMapItems,
+    autoRunItems,
     ensureBackendProbe,
   } = useApp();
 
@@ -72,6 +74,7 @@ export function TasksPage() {
   const [keyword, setKeyword] = React.useState('');
   const [view, setView] = React.useState<ViewMode>('table');
   const [refreshing, setRefreshing] = React.useState(false);
+  const [autoRunOpen, setAutoRunOpen] = React.useState(false);
 
   const tapd = settings?.data_source?.tapd ?? settings?.tapd;
   const tapdReady = Boolean(tapd?.workspace_id && tapd?.api_user && tapd?.api_password);
@@ -125,6 +128,19 @@ export function TasksPage() {
     setKeyword('');
   };
 
+  const autoRunCandidates = React.useMemo(
+    () =>
+      activeItems.filter(
+        (item) =>
+          !item.is_container &&
+          !(item.children_ids?.length ?? 0) &&
+          ((item.status === 'ready' && Boolean(item.repo)) ||
+            // TAPD 项目绑了多个仓库时任务会停在 discovered，交给 LLM 规划仓库。
+            (item.status === 'discovered' && Boolean(item.tapd_workspace_id))),
+      ),
+    [activeItems],
+  );
+
   const countText =
     visible.length === activeItems.length
       ? `${activeItems.length} 个工作项`
@@ -164,6 +180,16 @@ export function TasksPage() {
           >
             <RefreshCw />
             全量重拉
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setAutoRunOpen(true)}
+            disabled={autoRunCandidates.length === 0}
+            title={autoRunCandidates.length === 0 ? '没有已映射仓库的待执行任务' : '选择要自动执行的任务'}
+          >
+            <Bot />
+            自动执行
           </Button>
           <Button size="sm" onClick={openNewTask}>
             <Plus />
@@ -360,6 +386,12 @@ export function TasksPage() {
         ) : null}
       </Card>
 
+      <AutoRunDialog
+        open={autoRunOpen}
+        onOpenChange={setAutoRunOpen}
+        items={autoRunCandidates}
+        onConfirm={(ids) => void autoRunItems(ids)}
+      />
     </div>
   );
 }

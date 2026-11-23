@@ -12,12 +12,15 @@ import {HistoryPage} from '@/pages/history-page';
 import {MappingsPage} from '@/pages/mappings-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
+import {TodosPage} from '@/pages/todos-page';
 import {ReportOverlay} from '@/components/report-overlay';
 import {Toaster} from '@/components/ui/sonner';
 import {TooltipProvider} from '@/components/ui/tooltip';
 
 function Shell() {
-  const {conn, connText, openNewTask, page, setPage, reportView, closeReport} = useApp();
+  const {conn, connText, openNewTask, page, setPage, reportView, closeReport, todoCounts} = useApp();
+
+  const pendingTodos = (todoCounts.pending ?? 0) + (todoCounts.blocked ?? 0);
 
   const goPage = (next: PageKey) => {
     if (next !== 'report') closeReport();
@@ -60,11 +63,12 @@ function Shell() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} />
+        <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} todoCount={pendingTodos} />
         <div className="relative flex min-h-0 flex-1">
           <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
             {background === 'dashboard' ? <DashboardPage /> : null}
             {background === 'tasks' ? <TasksPage /> : null}
+            {background === 'todos' ? <TodosPage /> : null}
             {background === 'history' ? <HistoryPage /> : null}
             {background === 'mapping' ? <MappingsPage /> : null}
             {background === 'sources' ? <DataSourcesPage /> : null}

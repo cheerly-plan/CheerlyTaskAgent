@@ -22,6 +22,8 @@ import {
   type TapdImportSelection,
   type TapdPreviewResult,
   type TapdWorkspace,
+  type TodoBatch,
+  type TodoRow,
   type UISettings,
   type WorkItem,
 } from '@/lib/api';
@@ -53,6 +55,14 @@ interface AppContextValue {
   defaultModel: string;
   backends: BackendInfo[];
   settings: UISettings | null;
+  todos: TodoRow[];
+  todoCounts: Record<string, number>;
+  todoBatches: TodoBatch[];
+  todosLoading: boolean;
+  reloadTodos: () => Promise<void>;
+  mergeTodo: (id: string) => Promise<void>;
+  discardTodo: (id: string) => Promise<void>;
+  autoRunItems: (ids: string[]) => Promise<void>;
   conn: ConnState;
   connText: string;
   loading: boolean;
@@ -123,6 +133,7 @@ const EMPTY_REPORT: ReportViewState = {
 const PAGE_LABEL: Record<PageKey, string> = {
   dashboard: '概览',
   tasks: '任务中心',
+  todos: '我的待办',
   history: '历史记录',
   mapping: '项目映射',
   sources: '数据源',
@@ -147,6 +158,10 @@ export function AppProvider({
   const [defaultModel, setDefaultModel] = React.useState('');
   const [backends, setBackends] = React.useState<BackendInfo[]>([]);
   const [settings, setSettings] = React.useState<UISettings | null>(null);
+  const [todos, setTodos] = React.useState<TodoRow[]>([]);
+  const [todoCounts, setTodoCounts] = React.useState<Record<string, number>>({});
+  const [todoBatches, setTodoBatches] = React.useState<TodoBatch[]>([]);
+  const [todosLoading, setTodosLoading] = React.useState(false);
   const [conn, setConn] = React.useState<ConnState>('connecting');
   const [loading, setLoading] = React.useState(true);
   const [selections, setSelections] = React.useState<Record<string, ActionSelection>>({});
@@ -288,6 +303,85 @@ export function AppProvider({
     }
   }, []);
 
+  const reloadTodos = React.useCallback(async () => {
+    try {
+      const data = await endpoints.todos();
+      setTodos(data.todos ?? []);
+      setTodoCounts(data.counts ?? {});
+      setTodoBatches(data.batches ?? []);
+    } catch (error) {
+      toast.error('加载待办失败：' + (error as Error).message);
+    }
+  }, []);
+
+  const mergeTodo = React.useCallback(
+    async (id: string) => {
+      const target = todos.find((entry) => entry.id === id);
+      const ok = await confirm(
+        `合并会把「${target?.title || id}」的改动写入 ${target?.repo || '主仓库'} 的工作区（不提交、不推送）。确认合并？`,
+      );
+      if (!ok) return;
+      setTodosLoading(true);
+      try {
+        const result = await endpoints.mergeTodo(id);
+        await reloadTodos();
+        if (result.status === 'merged') {
+          toast.success('已合并到主仓库工作区（未提交）');
+        } else {
+          toast.warning('合并未完全成功，请查看冲突详情');
+        }
+      } catch (error) {
+        toast.error('合并失败：' + (error as Error).message);
+      } finally {
+        setTodosLoading(false);
+      }
+    },
+    [confirm, reloadTodos, todos],
+  );
+
+  const discardTodo = React.useCallback(
+    async (id: string) => {
+      const target = todos.find((entry) => entry.id === id);
+      const ok = await confirm(`放弃「${target?.title || id}」的改动并删除隔离 worktree？此操作不可撤销。`);
+      if (!ok) return;
+      setTodosLoading(true);
+      try {
+        await endpoints.discardTodo(id);
+        await reloadTodos();
+        toast.success('已放弃该待办');
+      } catch (error) {
+        toast.error('取消失败：' + (error as Error).message);
+      } finally {
+        setTodosLoading(false);
+      }
+    },
+    [confirm, reloadTodos, todos],
+  );
+
+  const autoRunItems = React.useCallback(
+    async (ids: string[]) => {
+      if (!ids.length) return;
+      try {
+        const result = await endpoints.autoRun(ids);
+        await Promise.all([reloadItems(), reloadTodos()]);
+        if (result.started.length) {
+          toast.success(`已启动 ${result.started.length} 个自动执行任务，结果会进入「我的待办」`);
+        } else {
+          toast.info('没有任务被启动');
+        }
+        if (result.skipped.length) {
+          toast.warning(
+            `${result.skipped.length} 个任务被跳过：` +
+              result.skipped.map((entry) => entry.reason).join('；'),
+          );
+        }
+      } catch (error) {
+        toast.error('启动自动执行失败：' + (error as Error).message);
+      }
+    },
+    [reloadItems, reloadTodos],
+  );
+
   const reloadConfig = React.useCallback(async () => {
     try {
       const config = await endpoints.config();
@@ -306,9 +400,9 @@ export function AppProvider({
   React.useEffect(() => {
     (async () => {
       await reloadConfig();
-      await Promise.all([reloadMappings(), reloadItems(), reloadHistory(), reloadSettings()]);
+      await Promise.all([reloadMappings(), reloadItems(), reloadHistory(), reloadSettings(), reloadTodos()]);
     })().finally(() => setLoading(false));
-  }, [reloadConfig, reloadItems, reloadHistory, reloadMappings, reloadSettings]);
+  }, [reloadConfig, reloadItems, reloadHistory, reloadMappings, reloadSettings, reloadTodos]);
 
   React.useEffect(() => {
     const cid = (settings?.tapd?.company_id || '').trim();
@@ -325,8 +419,9 @@ export function AppProvider({
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     source.onmessage = (event) => {
       if (event.data === '[DONE]') return;
+      let payload: {replay?: boolean; type?: string} = {};
       try {
-        const payload = JSON.parse(event.data) as {replay?: boolean};
+        payload = JSON.parse(event.data) as {replay?: boolean; type?: string};
         if (payload?.replay) return;
       } catch {
       }
@@ -335,13 +430,17 @@ export function AppProvider({
         refreshTimer = null;
         void reloadItems();
         void reloadHistory();
+        // 待办只关心自动执行相关事件，避免每个进度事件都多打一次 /api/todos。
+        if (/^(todo_|batch_ready|auto_|item_planned)/.test(payload.type ?? '')) {
+          void reloadTodos();
+        }
       }, 120);
     };
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       source.close();
     };
-  }, [reloadItems, reloadHistory]);
+  }, [reloadItems, reloadHistory, reloadTodos]);
 
   const probedBackends = React.useRef(new Set<string>());
   const ensureBackendProbe = React.useCallback(
@@ -762,6 +861,14 @@ export function AppProvider({
     defaultModel,
     backends,
     settings,
+    todos,
+    todoCounts,
+    todoBatches,
+    todosLoading,
+    reloadTodos,
+    mergeTodo,
+    discardTodo,
+    autoRunItems,
     conn,
     connText,
     loading,

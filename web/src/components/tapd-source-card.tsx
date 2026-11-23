@@ -457,6 +457,7 @@ export function TapdSourceCard({
           />
           <div>
             <h4 className="text-xs font-semibold text-foreground/80">定时拉取</h4>
+            <p className="mt-0.5 text-[11px] text-faint">拉到的新工单会直接自动执行，结果进「我的待办」</p>
           </div>
         </div>
         <Field label="间隔（分钟）" className="mb-0">

@@ -205,6 +205,7 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
         f"| 模型 | {item.model or '执行器默认'} |",
         f"| git 地址 | {item.git_url or '—'} |",
         f"| 映射仓库 | {repo.path if repo else '未映射'} |",
+        f"| 批准来源 | {'自动执行' if item.approved_by == 'auto' else '人工'} |",
         "",
     ]
     if item.description:
@@ -227,6 +228,16 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             lines += [f"> ⚠️ 执行错误：{result.error}", ""]
         if result.changed_files:
             lines += ["### 改动文件", ""] + [f"- `{name}`" for name in result.changed_files] + [""]
+
+        # 自动链路：结果留在隔离 worktree，等人在「我的待办」里点合并。
+        if item.hold_merge:
+            lines += [
+                "### 合并状态",
+                "",
+                "> 这是自动执行的结果，**没有写入主仓库工作区**。"
+                + (f"已生成待办 `{item.todo_id}`，请在「我的待办」里评审后合并。" if item.todo_id else "尚未生成待办。"),
+                "",
+            ]
 
         # Auto-sync outcome: which files landed in the main repo, what was
         # mirrored as a deletion, and where originals were backed up.

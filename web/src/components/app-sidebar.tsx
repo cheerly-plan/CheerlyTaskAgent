@@ -1,4 +1,4 @@
-import {LayoutDashboard, List, FolderGit2, History, Inbox, Settings2} from 'lucide-react';
+import {LayoutDashboard, List, FolderGit2, History, Inbox, ListChecks, Settings2} from 'lucide-react';
 
 import {cn} from '@/lib/utils';
 
@@ -10,7 +10,15 @@ const CONN_STYLE: Record<ConnState, {className: string; dot: string}> = {
   reconnecting: {className: 'text-warning-foreground bg-warning-muted', dot: '#d98a0b'},
 };
 
-export type PageKey = 'dashboard' | 'tasks' | 'history' | 'mapping' | 'sources' | 'settings' | 'report';
+export type PageKey =
+  | 'dashboard'
+  | 'tasks'
+  | 'todos'
+  | 'history'
+  | 'mapping'
+  | 'sources'
+  | 'settings'
+  | 'report';
 
 export function navKeyOf(page: PageKey, reportFrom?: PageKey): PageKey {
   return page === 'report' && reportFrom && reportFrom !== 'report' ? reportFrom : page;
@@ -19,6 +27,7 @@ export function navKeyOf(page: PageKey, reportFrom?: PageKey): PageKey {
 export const NAV_ITEMS: {key: PageKey; label: string; icon: typeof List}[] = [
   {key: 'dashboard', label: '概览', icon: LayoutDashboard},
   {key: 'tasks', label: '任务中心', icon: List},
+  {key: 'todos', label: '我的待办', icon: ListChecks},
   {key: 'history', label: '历史记录', icon: History},
   {key: 'mapping', label: '项目映射', icon: FolderGit2},
   {key: 'sources', label: '数据源', icon: Inbox},
@@ -29,9 +38,10 @@ interface AppSidebarProps {
   page: PageKey;
   onPage: (page: PageKey) => void;
   reportFrom?: PageKey;
+  todoCount?: number;
 }
 
-export function AppSidebar({page, onPage, reportFrom}: AppSidebarProps) {
+export function AppSidebar({page, onPage, reportFrom, todoCount = 0}: AppSidebarProps) {
   const activeKey = navKeyOf(page, reportFrom);
   return (
     <aside className="hidden w-[220px] shrink-0 flex-col border-r border-border bg-card lg:flex">
@@ -53,6 +63,11 @@ export function AppSidebar({page, onPage, reportFrom}: AppSidebarProps) {
             >
               <item.icon className="size-4 shrink-0" />
               <span className="truncate">{item.label}</span>
+              {item.key === 'todos' && todoCount > 0 && (
+                <span className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10.5px] font-semibold leading-none text-primary-foreground">
+                  {todoCount}
+                </span>
+              )}
             </button>
           );
         })}

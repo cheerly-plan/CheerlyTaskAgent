@@ -17,6 +17,7 @@ export interface WorkItem {
   kind: Kind;
   source: string;
   source_ref?: string;
+  tapd_workspace_id?: string;
   git_url?: string;
   parent_ref?: string;
   parent_title?: string;
@@ -189,6 +190,74 @@ export interface UISettings {
   data_source: DataSource;
 }
 
+export type ImpactLevel = 'none' | 'low' | 'medium' | 'high' | 'unknown';
+export type TodoStatus = 'pending' | 'merged' | 'discarded' | 'blocked';
+
+export interface TodoMergeResult {
+  synced_files?: string[];
+  deleted?: string[];
+  skipped?: string[];
+  conflicts?: string[];
+  backup_dir?: string | null;
+  error?: string | null;
+}
+
+export interface TodoRow {
+  id: string;
+  item_id: string;
+  batch_id: string;
+  title: string;
+  repo: string;
+  repo_path: string;
+  status: TodoStatus;
+  summary: string;
+  impact_level: ImpactLevel;
+  impact_areas: string[];
+  impact_notes: string;
+  can_merge: boolean;
+  blockers: string[];
+  confidence: number;
+  changed_files: string[];
+  diff_stat: {files?: number; added?: number; removed?: number};
+  review_source: 'llm' | 'rule' | string;
+  created_at: string;
+  merged_at: string;
+  merge: TodoMergeResult;
+}
+
+export interface TodoDetail extends TodoRow {
+  changes: string[];
+  review_raw: string;
+  updated_at: string;
+}
+
+export interface TodoBatch {
+  id: string;
+  started_at: string;
+  finished_at: string;
+  item_ids: string[];
+  total: number;
+  succeeded: number;
+  failed: number;
+  todo_count: number;
+  mergeable: number;
+  high_impact: number;
+  repos: string[];
+  summary: string;
+}
+
+export interface TodosPayload {
+  todos: TodoRow[];
+  counts: Record<string, number>;
+  batches: TodoBatch[];
+}
+
+export interface AutoRunResult {
+  batch_id: string;
+  started: string[];
+  skipped: {id: string; reason: string}[];
+}
+
 export interface BrowseEntry {
   name: string;
   path: string;
@@ -279,6 +348,22 @@ export const endpoints = {
 
   settings: () => api<UISettings>('/api/settings'),
   saveSettings: (body: UISettings) => api<UISettings>('/api/settings', jsonInit('PUT', body)),
+
+  // 我的待办：自动执行结果的合并评审队列。
+  todos: (status?: string) =>
+    api<TodosPayload>(`/api/todos${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  todoDetail: (id: string) =>
+    api<{todo: TodoDetail; item: WorkItem | null}>(`/api/todos/${encodeURIComponent(id)}`),
+  todoDiff: (id: string) =>
+    api<{diff: string; stat: Record<string, number>; worktree: string}>(
+      `/api/todos/${encodeURIComponent(id)}/diff`,
+    ),
+  mergeTodo: (id: string) =>
+    api<TodoDetail>(`/api/todos/${encodeURIComponent(id)}/merge`, {method: 'POST'}),
+  discardTodo: (id: string) =>
+    api<TodoDetail>(`/api/todos/${encodeURIComponent(id)}/discard`, {method: 'POST'}),
+  // 任务中心手动触发：只自动执行勾选的任务。
+  autoRun: (ids: string[]) => api<AutoRunResult>('/api/tasks/auto-run', jsonInit('POST', {ids})),
 
   mappings: () => api<{mappings: ProjectMapping[]}>('/api/mappings'),
   createMapping: (body: MappingDraft) => api<ProjectMapping>('/api/mappings', jsonInit('POST', body)),

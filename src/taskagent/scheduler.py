@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,8 +32,17 @@ from .models import (
 )
 from .projectmap import ProjectRegistry
 from .report import parent_title_of, write_report
+from .review import build_review, diff_stat, review_fields
 from .sources import RawItem, parse_raw
 from .store import TaskStore
+from .todos import (
+    TODO_BLOCKED,
+    TODO_DISCARDED,
+    TODO_MERGED,
+    TODO_PENDING,
+    TodoEntry,
+    TodoStore,
+)
 
 
 @dataclass
@@ -54,10 +65,16 @@ class Scheduler:
         commit_rules_file: Path | None = None,
         on_finished: Callable[[WorkItem, bool], None] | None = None,
         executors: ExecutorRegistry | None = None,
+        todos: TodoStore | None = None,
+        on_auto_done: Callable[[str], None] | None = None,
     ) -> None:
         self.store = store
         self.gitmap = gitmap
         self.projects = projects
+        # 「我的待办」存储：自动执行成功且 hold_merge 的结果落到这里等人合并。
+        self.todos = todos
+        # 自动任务结束后通知引擎收口批次（由 API 注入，测试可不传）。
+        self.on_auto_done = on_auto_done
         # Accept either a full registry or a single executor (legacy/tests).
         if executors is not None:
             self.executors = executors
@@ -392,6 +409,212 @@ class Scheduler:
         self.events.publish(Event("item_queued", item_id, {"exec_mode": item.exec_mode}))
         return item
 
+    # ── 自动执行 / 我的待办 ───────────────────────────────────────────────────
+    def run_auto(self, item_id: str, *, batch_id: str = "", plan: str = "") -> WorkItem:
+        """Dispatch a READY item from the automation engine (no human click).
+
+        The approval is granted *inside* the gate path only: callers outside the
+        automation engine still have to pass ``approved=true`` themselves. The
+        result is held for review (``hold_merge``), so nothing is written into
+        the main working tree until a human clicks 合并.
+        """
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        if item.repo is None:
+            raise ValueError("no local repo mapped; map the item first")
+        item.auto = True
+        item.approved_by = "auto"
+        item.hold_merge = True
+        item.exec_mode = "apply"
+        if batch_id:
+            item.auto_batch_id = batch_id
+        if plan:
+            item.plan = plan
+        item.auto_dispatched_at = _utcnow()
+        self.store.save(item)
+        self.events.publish(
+            Event("auto_queued", item_id, {
+                "batch_id": item.auto_batch_id, "repo": item.repo.name,
+                "planner": bool(plan),
+            })
+        )
+        return self.run(item_id, exec_mode="apply", approved=True, _model_supplied=False)
+
+    def _create_todo(self, item: WorkItem) -> TodoEntry | None:
+        """Turn a successful held-for-review run into a 我的待办 entry."""
+        if self.todos is None or item.result is None:
+            return None
+        result = item.result
+        if not (item.hold_merge and result.ok and not result.dry_run):
+            return None
+        existing = (
+            self.todos.get(item.todo_id) if item.todo_id else self.todos.find_by_item(item.id)
+        )
+        if existing is not None:
+            if item.todo_id != existing.id:
+                item.todo_id = existing.id
+                self.store.save(item)
+            return existing
+
+        changed = list(result.changed_files)
+        review_data = build_review(result.stdout or "", changed)
+        fields = review_fields(item, review_data)
+        blockers = list(fields.pop("blockers", []))
+        can_merge = bool(fields.pop("can_merge", True))
+
+        # 确定性否决优先于模型建议：没有改动 / worktree 丢了 / 没有仓库，
+        # 这些都不该显示成「可以合并」。
+        if not changed:
+            can_merge = False
+            blockers.append("没有产生任何改动")
+        worktree = result.worktree or ""
+        if not worktree or not Path(worktree).expanduser().is_dir():
+            can_merge = False
+            blockers.append("隔离 worktree 不存在，无法合并")
+        if item.repo is None:
+            can_merge = False
+            blockers.append("没有映射到本地仓库")
+        blockers = list(dict.fromkeys(blockers))
+
+        todo = TodoEntry(
+            id=TodoStore.new_todo_id(),
+            item_id=item.id,
+            batch_id=item.auto_batch_id,
+            title=item.title,
+            repo=item.repo.name if item.repo else "",
+            repo_path=item.repo.path if item.repo else "",
+            status=TODO_PENDING,
+            can_merge=can_merge and not blockers,
+            blockers=blockers,
+            diff_stat=diff_stat(worktree, changed),
+            **fields,
+        )
+        self.todos.save(todo)
+        item.todo_id = todo.id
+        self.store.save(item)
+        self.events.publish(Event("todo_created", item.id, {"todo": todo.summary_row()}))
+        return todo
+
+    def backfill_todos(self) -> int:
+        """启动补偿：自动跑成功但（进程中断等）没生成待办的任务补一条。"""
+        if self.todos is None:
+            return 0
+        created = 0
+        for item in self.store.list(limit=5000):
+            if not (item.hold_merge and item.result and item.result.ok and not item.result.dry_run):
+                continue
+            if item.todo_id and self.todos.get(item.todo_id):
+                continue
+            if self.todos.find_by_item(item.id):
+                continue
+            if self._create_todo(item):
+                created += 1
+        return created
+
+    def merge_todo(self, todo_id: str) -> TodoEntry:
+        """Merge a todo's worktree changes into the main repo *working tree*.
+
+        Reuses the executor's three-way safe sync (never commits/pushes). A
+        conflict or path problem leaves the todo blocked instead of pretending
+        it merged; already-synced files are backed up before overwrite.
+        """
+        if self.todos is None:
+            raise ValueError("todo store not configured")
+        todo = self.todos.get(todo_id)
+        if todo is None:
+            raise ValueError(f"unknown todo {todo_id!r}")
+        if todo.status == TODO_DISCARDED:
+            raise ValueError("待办已放弃，不能合并")
+        if todo.status == TODO_MERGED:
+            raise ValueError("待办已合并")
+        item = self.store.get(todo.item_id)
+        if item is None or item.result is None or not item.result.ok:
+            raise ValueError("任务结果不存在或未成功，无法合并")
+        if item.result.dry_run:
+            raise ValueError("dry-run 没有可合并的代码")
+        if item.repo is None:
+            raise ValueError("任务没有映射仓库")
+        worktree = Path(item.result.worktree or "").expanduser()
+        if not worktree.is_dir():
+            raise ValueError("隔离 worktree 不存在（可能已被清理），无法合并")
+        backend = self.executors.resolve(item.executor)
+        if backend is None:
+            raise ValueError("没有可用的执行后端")
+
+        sync = backend.sync_to_repo(
+            worktree, item.repo.path, item_id=item.id,
+            changed=list(item.result.changed_files),
+        )
+        result = item.result
+        result.synced_files = list(sync.get("synced_files") or [])
+        result.sync_deleted = list(sync.get("sync_deleted") or [])
+        result.sync_skipped = list(sync.get("sync_skipped") or [])
+        result.sync_conflicts = list(sync.get("sync_conflicts") or [])
+        backup = sync.get("sync_backup_dir")
+        result.sync_backup_dir = backup if isinstance(backup, str) else None
+        error = sync.get("sync_error")
+        result.sync_error = error if isinstance(error, str) else None
+        item.result = result
+        self.store.save(item)
+
+        ok = bool(sync.get("ok")) and not result.sync_error and not result.sync_conflicts
+        todo.merge = {
+            "synced_files": list(result.synced_files),
+            "deleted": list(result.sync_deleted),
+            "skipped": list(result.sync_skipped),
+            "conflicts": list(result.sync_conflicts),
+            "backup_dir": result.sync_backup_dir,
+            "error": result.sync_error,
+        }
+        todo.status = TODO_MERGED if ok else TODO_BLOCKED
+        todo.merged_at = _utcnow() if ok else ""
+        if ok:
+            # 冲突解决后重试成功：旧的阻塞项已经不再成立，清掉避免误导。
+            todo.blockers = []
+            todo.can_merge = True
+        else:
+            reason = result.sync_error or (
+                f"{len(result.sync_conflicts)} 个文件冲突未写入" if result.sync_conflicts
+                else "同步失败"
+            )
+            todo.blockers = list(dict.fromkeys([*todo.blockers, reason]))
+            todo.can_merge = False
+        self.todos.save(todo)
+        self.events.publish(
+            Event("todo_merged" if ok else "todo_blocked", item.id, {"todo": todo.summary_row()})
+        )
+        return todo
+
+    def discard_todo(self, todo_id: str) -> TodoEntry:
+        """Drop a todo and best-effort delete its isolated worktree."""
+        if self.todos is None:
+            raise ValueError("todo store not configured")
+        todo = self.todos.get(todo_id)
+        if todo is None:
+            raise ValueError(f"unknown todo {todo_id!r}")
+        if todo.status == TODO_MERGED:
+            raise ValueError("已合并的待办不能放弃")
+        item = self.store.get(todo.item_id)
+        worktree = None
+        if item is not None and item.result and item.result.worktree:
+            worktree = Path(item.result.worktree).expanduser()
+            if worktree.is_dir():
+                removed = False
+                if item.repo is not None:
+                    proc = subprocess.run(
+                        ["git", "-C", item.repo.path, "worktree", "remove", "--force", str(worktree)],
+                        capture_output=True, check=False, timeout=30,
+                    )
+                    removed = proc.returncode == 0
+                if not removed:
+                    shutil.rmtree(worktree, ignore_errors=True)
+        todo.status = TODO_DISCARDED
+        todo.merged_at = ""
+        self.todos.save(todo)
+        self.events.publish(Event("todo_discarded", todo.item_id, {"todo": todo.summary_row()}))
+        return todo
+
     def cancel(self, item_id: str) -> int:
         item = self.store.get(item_id)
         if item is None:
@@ -499,6 +722,24 @@ class Scheduler:
 
     # ── execution ──────────────────────────────────────────────────────────────
     async def _execute(self, item_id: str) -> None:
+        # 无论成功、失败、取消还是重试，结束后都通知引擎检查批次是否收口。
+        try:
+            await self._execute_inner(item_id)
+        finally:
+            self._notify_auto_done(item_id)
+
+    def _notify_auto_done(self, item_id: str) -> None:
+        if self.on_auto_done is None:
+            return
+        item = self.store.get(item_id)
+        if item is None or not item.auto or not item.auto_batch_id:
+            return
+        try:
+            self.on_auto_done(item_id)
+        except Exception as error:  # noqa: BLE001 - 批次收口失败不该影响执行结果
+            logger.warning("批次收口失败 %s：%s", item_id, error)
+
+    async def _execute_inner(self, item_id: str) -> None:
         async with self._sem:
             item = self.store.get(item_id)
             if item is None or item.is_terminal():
@@ -548,6 +789,8 @@ class Scheduler:
                 item.status = ItemStatus.SUCCEEDED
                 if result.dry_run:
                     item.stage = "完成（dry-run）"
+                elif item.hold_merge:
+                    item.stage = "完成（已进入我的待办，待合并）"
                 elif result.sync_error:
                     # Apply itself worked, but the mirror into the main repo
                     # failed — surface it so the user doesn't assume the code
@@ -581,6 +824,14 @@ class Scheduler:
                 item.stage = "失败"
                 item.error = result.error
             item.finished_at = _utcnow()
+            # 自动执行的结果先落待办（解析 LLM 的内嵌评审），再写报告，
+            # 这样报告里能带上「已进入我的待办」与合并建议。
+            if result.ok and not result.dry_run and item.hold_merge:
+                try:
+                    self._create_todo(item)
+                except Exception as error:  # noqa: BLE001 - 待办失败不该吞掉执行结果
+                    logger.warning("生成待办失败 %s：%s", item_id, error)
+                    item.stage = "完成（生成待办失败，请查看日志）"
             item.report_path = write_report(
                 item, self.settings.reports_dir, parent_title_of(item, self.store)
             )

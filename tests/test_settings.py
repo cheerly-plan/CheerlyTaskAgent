@@ -191,3 +191,19 @@ def test_load_ui_settings_resolves_bundled_cli(monkeypatch, tmp_path):
 
     s = Settings(data_dir=tmp_path / "data")
     assert s.load_ui_settings()["backends"]["dsh"]["command"] == str(fake)
+
+
+def test_auto_run_endpoint_selects_only_requested(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from taskagent.api import create_app
+
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        # 空选择直接 400；未知 id 如实回「任务不存在」。
+        assert client.post("/api/tasks/auto-run", json={"ids": []}).status_code == 400
+        result = client.post("/api/tasks/auto-run", json={"ids": ["missing"]}).json()
+        assert result["started"] == []
+        assert result["skipped"][0]["reason"] == "任务不存在"
+        # 自动执行不再是一段可配置的全局设置。
+        assert "automation" not in client.get("/api/settings").json()
