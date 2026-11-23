@@ -141,10 +141,13 @@ export function TasksPage() {
     [activeItems],
   );
 
+  // 父需求容器只做分组头，不计入“工作项”数量。
+  const leafActive = activeItems.filter((item) => !item.is_container).length;
+  const leafVisible = visible.filter((item) => !item.is_container).length;
   const countText =
-    visible.length === activeItems.length
-      ? `${activeItems.length} 个工作项`
-      : `${visible.length} / ${activeItems.length} 个工作项`;
+    leafVisible === leafActive
+      ? `${leafActive} 个工作项`
+      : `${leafVisible} / ${leafActive} 个工作项`;
 
   const refresh = async () => {
     setRefreshing(true);

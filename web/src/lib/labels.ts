@@ -26,7 +26,7 @@ export const statusVariant: Record<Status, BadgeProps['variant']> = {
   queued: 'warning',
   running: 'info',
   succeeded: 'success',
-  failed: 'destructive',
+  failed: 'destructive-muted',
   skipped: 'muted',
   cancelled: 'muted',
 };
@@ -53,6 +53,8 @@ export function isArchived(item: {
   // 自动合并冲突的任务虽然执行成功，但代码没进主仓——留在任务中心待处理，
   // 不能当历史归档掉。
   if (item.merge_state === 'blocked') return false;
+  // 失败任务也留在任务中心，方便直接重试，不进历史。
+  if (item.status === 'failed') return false;
   return item.exec_mode === 'apply' && TERMINAL_STATUSES.includes(item.status);
 }
 

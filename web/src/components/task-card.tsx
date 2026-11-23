@@ -61,8 +61,14 @@ export function TaskCard({
           </div>
         </div>
         <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-          <MergeBadge state={item.merge_state} />
-          <StatusBadge status={item.status} />
+          {isContainer ? (
+            <Badge variant="secondary">父需求</Badge>
+          ) : (
+            <>
+              <MergeBadge state={item.merge_state} />
+              <StatusBadge status={item.status} />
+            </>
+          )}
         </span>
       </div>
 

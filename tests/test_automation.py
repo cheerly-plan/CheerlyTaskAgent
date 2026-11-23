@@ -233,3 +233,49 @@ async def test_plan_repo_single_candidate_skips_llm(tmp_path: Path):
         backend=None, enabled=True, timeout_s=5, max_candidates=3,
     )
     assert plan is not None and plan.repo == "only" and plan.source == "rule"
+
+# ── 父需求容器：只做分组头，不映射、不执行 ───────────────────────────────────
+def test_parent_import_is_container_and_not_executable(tmp_path: Path):
+    from taskagent.models import CONTAINER_STAGE, SourceType
+    from taskagent.sources import RawItem
+
+    scheduler, _store, _, _ = _scheduler(tmp_path)
+    raw = RawItem(
+        source=SourceType.TAPD, title="父需求", body="x",
+        source_ref="tapd:story:100", is_parent=True,
+    )
+    item, created = scheduler.import_raw(raw)
+    assert created
+    assert item.is_container is True
+    assert item.repo is None
+    assert item.status == ItemStatus.DISCOVERED
+    assert item.stage == CONTAINER_STAGE
+    with pytest.raises(ValueError, match="容器"):
+        scheduler.run(item.id, exec_mode="apply", approved=True)
+    with pytest.raises(ValueError, match="容器"):
+        scheduler.map_manually(item.id, "whatever")
+
+
+def test_link_parent_relations_normalises_existing_container(tmp_path: Path, real_repo: Path):
+    from taskagent.models import CONTAINER_STAGE
+
+    scheduler, store, _, _ = _scheduler(tmp_path)
+    parent = WorkItem.create(title="父需求", description="x", source_ref="tapd:story:200")
+    parent.repo = LocalRepo(path=str(real_repo), origin="", name=real_repo.name)
+    parent.status = ItemStatus.READY
+    parent.stage = "已映射仓库"
+    store.save(parent)
+    child = WorkItem.create(
+        title="子需求", description="x",
+        source_ref="tapd:story:201", parent_ref=parent.source_ref,
+    )
+    store.save(child)
+
+    scheduler.link_parent_relations()
+    fixed = store.get(parent.id)
+    assert fixed is not None
+    assert fixed.is_container is True
+    assert fixed.repo is None
+    assert fixed.status == ItemStatus.DISCOVERED
+    assert fixed.stage == CONTAINER_STAGE
+    assert fixed.children_ids == [child.source_ref]

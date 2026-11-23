@@ -644,3 +644,46 @@ def test_preview_and_import_split_archived_from_created(tmp_path, monkeypatch):
         assert result["created"] == 1
         assert result["archived"] == 1
         assert result["updated"] == 0
+
+
+def test_sync_and_preview_skip_parent_stories(tmp_path, monkeypatch):
+    """父需求（TAPD children_id 非空）不进任务库，也不出现在预览里。"""
+    from taskagent import tapd as tapd_module
+
+    settings = Settings(data_dir=tmp_path, project_roots=())
+    ui = settings.load_ui_settings()
+    ui["tapd"].update(
+        {"enabled": False, "workspace_id": "9", "api_user": "u", "api_password": "p"}
+    )
+    settings.save_ui_settings(ui)
+
+    parent = TapdItem(
+        entity_type="story", id="36", workspace_id="9",
+        title="父需求", description="", status="planning", owner="",
+        priority="", iteration_id="", created="", modified="2026-01-01 10:00:00",
+        children_ids=["58"],
+    )
+    child = TapdItem(
+        entity_type="story", id="58", workspace_id="9",
+        title="子需求", description="", status="planning", owner="",
+        priority="", iteration_id="", created="", modified="2026-01-01 10:00:00",
+        parent_id="36", parent_title="父需求",
+    )
+
+    def fake_fetch_all(self, *, modified_since="", limit=200, max_pages=5):
+        result = tapd_module.TapdResult()
+        result.items = [parent, child]
+        return result
+
+    monkeypatch.setattr(tapd_module.TapdClient, "fetch_all", fake_fetch_all)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        client.post("/api/tapd/sync", json={"force": True})
+        refs = [item["source_ref"] for item in client.get("/api/items").json()["items"]]
+        assert "tapd:story:36" not in refs
+        assert "tapd:story:58" in refs
+
+        preview = client.post("/api/tapd/preview", json={"force": True}).json()
+        preview_refs = [item["source_ref"] for item in preview["items"]]
+        assert "tapd:story:36" not in preview_refs
+        assert "tapd:story:58" in preview_refs

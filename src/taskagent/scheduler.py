@@ -22,6 +22,7 @@ from .executor import Executor, ExecutorRegistry
 from .gitmap import GitProjectRegistry
 from .models import (
     ARCHIVED_SOURCE_STAGE,
+    CONTAINER_STAGE,
     CommitResult,
     ItemKind,
     ItemStatus,
@@ -135,6 +136,23 @@ class Scheduler:
                     existing.parent_ref = probe.parent_ref
                     self.store.save(existing)
                     self.events.publish(Event("item_updated", existing.id, {"item": existing.summary()}))
+                # 来源明确带子需求：旧记录可能已按普通任务映射失败，这里纠正为容器。
+                if probe.is_container and not archived and existing.status != ItemStatus.SKIPPED:
+                    fixed = False
+                    if not existing.is_container:
+                        existing.is_container = True
+                        fixed = True
+                    if existing.repo is not None:
+                        existing.repo = None
+                        fixed = True
+                    if existing.status != ItemStatus.DISCOVERED:
+                        existing.status = ItemStatus.DISCOVERED
+                        fixed = True
+                    if existing.stage != CONTAINER_STAGE:
+                        existing.stage = CONTAINER_STAGE
+                        fixed = True
+                    if fixed:
+                        self.store.save(existing)
                 # 来源从已关闭回到活跃（如 reopened）：复活到任务中心，重新映射。
                 if (
                     not archived
@@ -167,6 +185,11 @@ class Scheduler:
             item.stage = stage_hint
         if archived:
             pass  # 已归档条目不映射、不进执行队列
+        elif item.is_container:
+            # 父需求只做分组头：不映射、不进入执行队列。
+            item.status = ItemStatus.DISCOVERED
+            item.repo = None
+            item.stage = CONTAINER_STAGE
         elif repo_name:
             # 显式指定（来自 TAPD workspace 绑定的本地项目），优先于文本匹配
             repo = self.projects.resolve_name(repo_name) if self.projects else None
@@ -212,6 +235,17 @@ class Scheduler:
                 parent.is_container = True
                 changed = True
                 containers += 1
+            # 容器只做分组：即便它之前被当成普通任务映射过，也纠正回不可执行态。
+            if parent.status != ItemStatus.SKIPPED:
+                if parent.status != ItemStatus.DISCOVERED:
+                    parent.status = ItemStatus.DISCOVERED
+                    changed = True
+                if parent.repo is not None:
+                    parent.repo = None
+                    changed = True
+                if parent.stage != CONTAINER_STAGE:
+                    parent.stage = CONTAINER_STAGE
+                    changed = True
             if parent.children_ids != child_refs:
                 parent.children_ids = child_refs
                 changed = True
@@ -302,6 +336,8 @@ class Scheduler:
         item = self.store.get(item_id)
         if item is None:
             raise ValueError(f"unknown item {item_id!r}")
+        if item.is_container:
+            raise ValueError("父需求容器只用于分组，不需要映射仓库")
         # project mapping first, then git scan
         repo = self.projects.resolve_name(repo_name) if self.projects else None
         repo = repo or self.gitmap.resolve(name=repo_name)
@@ -354,6 +390,8 @@ class Scheduler:
         item = self.store.get(item_id)
         if item is None:
             raise ValueError(f"unknown item {item_id!r}")
+        if item.is_container:
+            raise ValueError("父需求容器只用于分组，不进入执行队列")
         rearmable = item.is_dry_run_done() or item.is_retryable()
         if item.is_terminal() and not rearmable:
             raise ValueError(f"item {item_id} is already {item.status.value}")

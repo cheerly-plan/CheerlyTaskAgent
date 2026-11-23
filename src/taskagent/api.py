@@ -287,6 +287,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     recovered = scheduler.recover_interrupted()
     if recovered:
         logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
+    # 启动时整理一次父子关系：把历史遗留的父需求纠正为容器（不映射、不执行）。
+    try:
+        scheduler.link_parent_relations()
+    except Exception:
+        logger.warning("启动父子关系整理失败", exc_info=True)
 
     # 自动执行引擎：只在两个触发点工作——TAPD 定时拉取、任务中心手动勾选。
     automation = AutomationEngine(scheduler=scheduler, store=store, events=events)
@@ -318,6 +323,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         created = skipped = archived = 0
         created_ids: list[str] = []
         for item in result.items:
+            # 父需求只是分组信息，不导入成本地任务；子需求靠 parent_title 分组。
+            if getattr(item, "children_ids", None):
+                skipped += 1
+                continue
             raw = RawItem.from_tapd(item)
             # TAPD workspace 绑定的本地项目优先（两处配置统一维护）
             wid = item.workspace_id or client.config.primary_workspace_id
@@ -441,6 +450,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 父标题索引：TAPD 不保证返回 parent_name，用本次拉到的父需求标题补齐。
         title_by_ref = {item.ref: item.title for item in result.items if item.ref}
         for item in result.items:
+            # 父需求不出现在预览/导入列表里。
+            if getattr(item, "children_ids", None):
+                continue
             raw = RawItem.from_tapd(item)
             if raw.parent_ref and not raw.parent_title:
                 raw.parent_title = title_by_ref.get(raw.parent_ref, "")
@@ -595,6 +607,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             item = client.fetch_one(entity_type, object_id)
         except TapdError as error:
             return {"created": 0, "skipped": 0, "archived": 0, "error": str(error)}
+        # Webhook 也可能推送父需求事件；同样不建单。
+        if getattr(item, "children_ids", None):
+            return {"created": 0, "skipped": 1, "archived": 0, "ignored": True}
         raw = RawItem.from_tapd(item)
         wid = item.workspace_id or client.config.primary_workspace_id
         bound = scheduler.projects.find_all_by_workspace(wid) if scheduler.projects else []

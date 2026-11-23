@@ -41,6 +41,7 @@ class RawItem:
     parent_ref: str = ""       # 父需求 source_ref；顶层为空
     parent_title: str = ""     # 父需求标题（导入时快照，父未入库也能展示归属）
     children_ids: list[str] = field(default_factory=list)  # 子需求 source_ref 列表
+    is_parent: bool = False  # 来源明确表示它带子需求（TAPD children_id 非空）
 
     @classmethod
     def from_email(
@@ -84,6 +85,9 @@ class RawItem:
             git_url_hint=getattr(item, "git_url_hint", ""),
             parent_ref=getattr(item, "parent_ref", "") or "",
             parent_title=getattr(item, "parent_title", "") or "",
+            # TAPD 的 children_id 是裸 id，不能直接当 source_ref 用；但“它是不是父”
+            # 这个事实是确定的，导入时据此直接标容器，避免先映射失败再补救。
+            is_parent=bool(getattr(item, "children_ids", []) or []),
         )
 
 
@@ -143,6 +147,7 @@ def parse_raw(raw: RawItem, *, exec_mode: str = "dry-run") -> WorkItem:
         dedupe_key=dedupe,
         exec_mode=exec_mode,
         parent_ref=raw.parent_ref,
+        is_container=raw.is_parent,
     )
 
 

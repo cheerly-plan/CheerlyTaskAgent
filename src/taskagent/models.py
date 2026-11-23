@@ -50,6 +50,9 @@ TERMINAL_STATUSES = {
 # 标记「来源已关闭而自动归档」的工单，用于来源重新活跃（如 reopened）时识别并复活。
 ARCHIVED_SOURCE_STAGE = "来源已关闭，仅归档供历史查看"
 
+# 父需求容器：只用于任务中心的树形分组，不映射仓库、不进执行队列。
+CONTAINER_STAGE = "父需求容器（用于分组，不进入执行队列）"
+
 
 class SourceType(str, Enum):
     EMAIL = "email"
