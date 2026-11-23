@@ -6,6 +6,7 @@ import {Field, SelectField} from '@/components/select-field';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
+import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
 import {Switch} from '@/components/ui/switch';
 import type {BackendConfig, ModelChoice, UISettings} from '@/lib/api';
 import {
@@ -121,139 +122,135 @@ export function SettingsPage() {
         </div>
 
         {backendEntries.length === 0 ? null : (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <table className="w-full border-collapse text-[12.5px]">
-                <thead className="sticky top-0 z-10 bg-card">
-                  <tr className="border-b border-border text-left text-[11.5px] text-faint">
-                    <th className="px-4 py-2.5 font-medium">名称</th>
-                    <th className="px-4 py-2.5 font-medium">CLI 命令 / 路径</th>
-                    <th className="w-[220px] px-4 py-2.5 font-medium">默认模型</th>
-                    <th className="px-4 py-2.5 font-medium">超时（秒）</th>
-                    <th className="w-[136px] px-4 py-2.5 font-medium">执行后同步</th>
-                    <th className="px-4 py-2.5 font-medium">状态</th>
-                    <th className="px-4 py-2.5 text-right font-medium">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {backendEntries.map(([id]) => {
-                    const current = getBackend(id);
-                    const displayName = current.label || id;
-                    const info = backendInfos.find((entry) => entry.id === id);
-                    const canPickModel = info?.model_selection !== false;
-                    const pinnedName = (info?.models ?? []).find((model) => model.current)?.id ?? '';
-                    const cliDefault = cliDefaultLabel(modelsByBackend[id] ?? []);
-                    const backendModels = modelsByBackend[id] ?? [];
-                    const customModels = backendModels.filter((model) => model.custom);
-                    return (
-                      <tr key={id} className="border-b border-border/70 align-top last:border-0">
-                        <td className="px-4 py-3">
-                          <Input
-                            className="h-8"
-                            value={current.label}
-                            onChange={(event) => patchBackend(id, 'label', event.target.value)}
+            <Table className="min-w-[960px] text-[12.5px]" containerClassName="min-h-0 flex-1">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-[220px]">名称</TableHead>
+                  <TableHead>CLI 命令 / 路径</TableHead>
+                  <TableHead className="w-[220px]">默认模型</TableHead>
+                  <TableHead className="w-[120px]">超时（秒）</TableHead>
+                  <TableHead className="w-[160px]">执行后同步</TableHead>
+                  <TableHead className="w-[110px]">状态</TableHead>
+                  <TableHead className="w-[72px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {backendEntries.map(([id]) => {
+                  const current = getBackend(id);
+                  const displayName = current.label || id;
+                  const info = backendInfos.find((entry) => entry.id === id);
+                  const canPickModel = info?.model_selection !== false;
+                  const pinnedName = (info?.models ?? []).find((model) => model.current)?.id ?? '';
+                  const cliDefault = cliDefaultLabel(modelsByBackend[id] ?? []);
+                  const backendModels = modelsByBackend[id] ?? [];
+                  const customModels = backendModels.filter((model) => model.custom);
+                  return (
+                    <TableRow key={id} className="[&>td]:align-top">
+                      <TableCell>
+                        <Input
+                          className="h-8"
+                          value={current.label}
+                          onChange={(event) => patchBackend(id, 'label', event.target.value)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          className="h-8 font-mono"
+                          value={current.command}
+                          onChange={(event) => patchBackend(id, 'command', event.target.value)}
+                        />
+                      </TableCell>
+                      <TableCell className="w-[220px] max-w-[220px]">
+                        {canPickModel ? (
+                          <SelectField
+                            size="sm"
+                            className="w-full"
+                            value={canonicalModelId(backendModels, current.model)}
+                            options={[
+                              {value: '', label: cliDefault},
+                              ...sortModelsByCategory(backendModels).map((model) => ({
+                                value: model.id,
+                                label: model.label ?? model.id,
+                                group: modelCategory(model),
+                              })),
+                              ...(current.model && !backendModels.some((model) => modelMatches(model, current.model))
+                                ? [{value: current.model, label: current.model}]
+                                : []),
+                            ]}
+                            onOpenChange={(open) => {
+                              if (open) ensureBackendProbe(id);
+                            }}
+                            onChange={(value) => patchBackend(id, 'model', value)}
                           />
-                        </td>
-                        <td className="px-4 py-3">
-                          <Input
-                            className="h-8 font-mono"
-                            value={current.command}
-                            onChange={(event) => patchBackend(id, 'command', event.target.value)}
-                          />
-                        </td>
-                        <td className="w-[220px] max-w-[220px] px-4 py-3">
-                          {canPickModel ? (
-                            <SelectField
-                              size="sm"
-                              className="w-full"
-                              value={canonicalModelId(backendModels, current.model)}
-                              options={[
-                                {value: '', label: cliDefault},
-                                ...sortModelsByCategory(backendModels).map((model) => ({
-                                  value: model.id,
-                                  label: model.label ?? model.id,
-                                  group: modelCategory(model),
-                                })),
-                                ...(current.model && !backendModels.some((model) => modelMatches(model, current.model))
-                                  ? [{value: current.model, label: current.model}]
-                                  : []),
-                              ]}
-                              onOpenChange={(open) => {
-                                if (open) ensureBackendProbe(id);
-                              }}
-                              onChange={(value) => patchBackend(id, 'model', value)}
-                            />
-                          ) : (
-                            <div
-                              className="flex h-8 w-full items-center gap-1.5 rounded-md border border-dashed border-border bg-[#fbfbfd] px-2 text-xs text-faint"
-                            >
-                              <Lock className="size-3 shrink-0" />
-                              <span className="truncate">
-                                profile 决定{pinnedName ? ` · ${pinnedName}` : ''}
-                              </span>
-                            </div>
-                          )}
-                          {canPickModel && backendModels.length > 0 ? (
-                            <div
-                              className="mt-1 flex items-center gap-1 text-[11px] text-faint"
-                            >
-                              <Sparkles className={customModels.length ? 'size-3 text-[#6d3fc0]' : 'size-3'} />
-                              <span>
-                                内置 {backendModels.length - customModels.length} · 自定义{' '}
-                                {customModels.length}
-                              </span>
-                            </div>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          <Input
-                            className="h-8 w-24"
-                            type="number"
-                            min={1}
-                            value={current.timeout_s}
-                            onChange={(event) => patchBackend(id, 'timeout_s', Number(event.target.value))}
-                          />
-                        </td>
-                        <td className="w-[136px] px-4 py-3">
-                          <div className="flex h-8 items-center gap-2">
-                            <Switch
-                              className="shrink-0"
-                              checked={current.auto_sync}
-                              onCheckedChange={(checked) => patchBackend(id, 'auto_sync', checked)}
-                              aria-label={`${displayName} 执行后同步`}
-                            />
-                            <span className="w-16 shrink-0 whitespace-nowrap text-xs text-foreground/70">
-                              {current.auto_sync ? '回写主仓库' : '仅 worktree'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex h-8 items-center gap-2">
-                            <Switch
-                              checked={current.enabled}
-                              onCheckedChange={(checked) => patchBackend(id, 'enabled', checked)}
-                              aria-label={`${current.enabled ? '停用' : '启用'} ${displayName}`}
-                            />
-                            <span className={cn('whitespace-nowrap text-xs', current.enabled ? 'text-foreground/80' : 'text-faint')}>
-                              {current.enabled ? '启用' : '停用'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <Button
-                            variant="danger"
-                            size="icon-sm"
-                            onClick={() => removeBackend(id)}
-                            aria-label={`删除 ${displayName}`}
+                        ) : (
+                          <div
+                            className="flex h-8 w-full items-center gap-1.5 rounded-md border border-dashed border-border bg-[#fbfbfd] px-2 text-xs text-faint"
                           >
-                            <Trash2 />
-                          </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                            <Lock className="size-3 shrink-0" />
+                            <span className="truncate">
+                              profile 决定{pinnedName ? ` · ${pinnedName}` : ''}
+                            </span>
+                          </div>
+                        )}
+                        {canPickModel && backendModels.length > 0 ? (
+                          <div className="mt-1 flex items-center gap-1 text-[11px] text-faint">
+                            <Sparkles className={customModels.length ? 'size-3 text-[#6d3fc0]' : 'size-3'} />
+                            <span>
+                              内置 {backendModels.length - customModels.length} · 自定义{' '}
+                              {customModels.length}
+                            </span>
+                          </div>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          className="h-8 w-20 tabular-nums"
+                          type="number"
+                          min={1}
+                          value={current.timeout_s}
+                          onChange={(event) => patchBackend(id, 'timeout_s', Number(event.target.value))}
+                        />
+                      </TableCell>
+                      <TableCell className="w-[160px]">
+                        <div className="flex h-8 items-center gap-2">
+                          <Switch
+                            className="shrink-0"
+                            checked={current.auto_sync}
+                            onCheckedChange={(checked) => patchBackend(id, 'auto_sync', checked)}
+                            aria-label={`${displayName} 执行后同步`}
+                          />
+                          <span className="w-16 shrink-0 whitespace-nowrap text-xs text-foreground/70">
+                            {current.auto_sync ? '回写主仓库' : '仅 worktree'}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex h-8 items-center gap-2">
+                          <Switch
+                            checked={current.enabled}
+                            onCheckedChange={(checked) => patchBackend(id, 'enabled', checked)}
+                            aria-label={`${current.enabled ? '停用' : '启用'} ${displayName}`}
+                          />
+                          <span className={cn('whitespace-nowrap text-xs', current.enabled ? 'text-foreground/80' : 'text-faint')}>
+                            {current.enabled ? '启用' : '停用'}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="danger"
+                          size="icon-sm"
+                          onClick={() => removeBackend(id)}
+                          aria-label={`删除 ${displayName}`}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
         )}
       </Card>
 

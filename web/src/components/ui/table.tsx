@@ -8,7 +8,7 @@ interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
 
 const Table = React.forwardRef<HTMLTableElement, TableProps>(
   ({ className, containerClassName, ...props }, ref) => (
-    <div className={cn("relative w-full overflow-auto", containerClassName)}>
+    <div className={cn("scrollbar-thin relative w-full overflow-auto", containerClassName)}>
       <table
         ref={ref}
         className={cn("w-full caption-bottom text-sm", className)}
@@ -25,7 +25,7 @@ const TableHeader = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <thead
     ref={ref}
-    className={cn("[&_tr]:border-b sticky top-0 z-10 bg-card", className)}
+    className={cn("sticky top-0 z-10 bg-[#fafafd] [&_tr]:border-b [&_tr]:hover:bg-transparent", className)}
     {...props}
   />
 ))
@@ -65,7 +65,7 @@ const TableRow = React.forwardRef<
   <tr
     ref={ref}
     className={cn(
-      "border-b border-[#f1f1f6] transition-colors hover:bg-[#fafafe] data-[state=selected]:bg-muted",
+      "group border-b border-[#eef0f6] transition-colors hover:bg-[#f8f7fd] data-[state=selected]:bg-muted",
       className
     )}
     {...props}
@@ -80,7 +80,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-9 whitespace-nowrap border-b border-border bg-[#fafafd] px-3 text-left align-middle text-[11.5px] font-semibold tracking-wide text-[#8a8c9c] [&:has([role=checkbox])]:pr-0",
+      "h-10 whitespace-nowrap border-b border-border bg-[#fafafd] px-4 text-left align-middle text-[11.5px] font-semibold tracking-[0.01em] text-[#878a9e] [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}
@@ -95,7 +95,7 @@ const TableCell = React.forwardRef<
   <td
     ref={ref}
     className={cn(
-      "px-3 py-3 align-middle text-[13px] text-foreground/85 [&:has([role=checkbox])]:pr-0",
+      "px-4 py-3 align-middle text-[13px] text-foreground/85 [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}

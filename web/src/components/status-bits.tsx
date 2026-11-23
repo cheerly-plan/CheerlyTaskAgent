@@ -31,12 +31,15 @@ export function KindBadge({kind}: {kind: Kind}) {
 export function Mono({
   children,
   className,
+  title,
 }: {
   children: React.ReactNode;
   className?: string;
+  title?: string;
 }) {
   return (
     <code
+      title={title}
       className={cn(
         'rounded-md bg-secondary/90 px-1.5 py-0.5 font-mono text-[11.5px] text-foreground/80',
         className,

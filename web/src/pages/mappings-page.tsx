@@ -124,13 +124,13 @@ export function MappingsPage() {
         <Table className="min-w-[980px]" containerClassName="min-h-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="pl-5">项目名</TableHead>
-              <TableHead>本地路径</TableHead>
-              <TableHead>仓库信息 / 备注</TableHead>
-              <TableHead>仓库画像</TableHead>
-              <TableHead>TAPD 项目</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead className="pr-5 text-right">操作</TableHead>
+              <TableHead className="w-[180px] pl-5">项目名</TableHead>
+              <TableHead className="w-[260px]">本地路径</TableHead>
+              <TableHead className="w-[280px]">仓库信息 / 备注</TableHead>
+              <TableHead className="w-[150px]">仓库画像</TableHead>
+              <TableHead className="w-[150px]">TAPD 项目</TableHead>
+              <TableHead className="w-[110px]">状态</TableHead>
+              <TableHead className="w-[96px] pr-5 text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -138,13 +138,14 @@ export function MappingsPage() {
               <TableRow key={mapping.id}>
                 <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
                 <TableCell>
-                  <Mono className="block max-w-[200px] truncate">
+                  <Mono className="block max-w-[240px] truncate" title={mapping.path}>
                     {mapping.path}
                   </Mono>
                 </TableCell>
                 <TableCell>
                   <span
-                    className="block max-w-[220px] truncate text-[12.5px] text-foreground/70"
+                    className="block max-w-[260px] truncate text-[12.5px] text-foreground/70"
+                    title={mapping.note || undefined}
                   >
                     {mapping.note || '—'}
                   </span>

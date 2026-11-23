@@ -7,7 +7,14 @@ import {
   useReactTable,
   type SortingState,
 } from '@tanstack/react-table';
-import {CornerDownRight, FileText, FolderGit2, GitBranch} from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  CornerDownRight,
+  FileText,
+  GitBranch,
+} from 'lucide-react';
 
 import {Table, TableBody, TableHeader, TableRow} from '@/components/ui/table';
 import {Badge} from '@/components/ui/badge';
@@ -68,9 +75,8 @@ function RepoCell({
     .map((mapping) => ({value: mapping.name, label: mapping.name}));
   if (!canEditConfig(item) || !options.length) {
     return item.repo ? (
-      <Badge variant="outline" className="gap-1">
-        <FolderGit2 />
-        {item.repo}
+      <Badge variant="outline" className="max-w-full min-w-0">
+        <span className="truncate">{item.repo}</span>
       </Badge>
     ) : (
       <span className="text-xs text-faint">未映射</span>
@@ -79,7 +85,7 @@ function RepoCell({
   return (
     <SelectField
       size="sm"
-      className="w-[120px]"
+      className="w-[112px]"
       value={item.repo ?? ''}
       options={options}
       onChange={(value) => onMap(item.id, value)}
@@ -106,7 +112,7 @@ function ModeCell({
   return (
     <SelectField
       size="sm"
-      className="w-[92px]"
+      className="w-[80px]"
       value={mode}
       options={options}
       onChange={onSelect}
@@ -158,7 +164,7 @@ function ModelCell({
   return (
     <SelectField
       size="sm"
-      className="w-[140px]"
+      className="w-[156px]"
       value={selected}
       options={options}
       onChange={(value) => onSelect('model', value)}
@@ -183,14 +189,26 @@ function ModelTag({
   const modelId = item.model || effectiveDefaultModelId(list, backend?.default_model);
   const custom = list.some((model) => modelMatches(model, modelId) && model.custom);
   const label = resolvedModelLabel(list, modelId);
-  if (custom) {
-    return (
-      <Badge variant="purple" className="max-w-[170px]">
-        <span className="truncate">{label} · 自定义</span>
-      </Badge>
-    );
-  }
-  return <Mono>{label}</Mono>;
+  return (
+    <div
+      className="flex min-w-0 items-center gap-1.5"
+      title={custom ? `${label}（自定义）` : label}
+    >
+      <span
+        className={cn(
+          'truncate text-[12.5px]',
+          custom ? 'font-medium text-[#6d3fc0]' : 'text-foreground/75',
+        )}
+      >
+        {label}
+      </span>
+      {custom ? (
+        <span className="shrink-0 rounded bg-[#efe9fb] px-1 py-0.5 text-[10px] font-medium leading-none text-[#6d3fc0]">
+          自定义
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 export function TaskTable({
@@ -221,6 +239,7 @@ export function TaskTable({
       column.accessor('title', {
         header: '标题',
         enableSorting: true,
+        size: 320,
         cell: (info) => {
           const item = info.row.original;
           const isChild = Boolean(item.parent_ref);
@@ -238,7 +257,10 @@ export function TaskTable({
               >
                 {isContainer ? <GitBranch className="size-3.5" /> : <FileText className="size-3.5" />}
               </span>
-              <span className="min-w-0 truncate font-medium text-foreground group-hover:text-primary">
+              <span
+                className="min-w-0 truncate font-medium text-foreground group-hover:text-primary"
+                title={item.title}
+              >
                 {item.title}
               </span>
             </div>
@@ -248,11 +270,13 @@ export function TaskTable({
       column.accessor('kind', {
         header: '类型',
         enableSorting: true,
+        size: 64,
         cell: (info) => <KindBadge kind={info.row.original.kind} />,
       }),
       column.accessor('source', {
         header: '来源',
         enableSorting: true,
+        size: 68,
         cell: (info) => (
           <span className="text-[12.5px] text-foreground/70">
             {sourceLabel[info.row.original.source] ?? info.row.original.source ?? '—'}
@@ -262,6 +286,7 @@ export function TaskTable({
       column.accessor('repo', {
         header: '项目',
         enableSorting: true,
+        size: 136,
         cell: (info) => {
           const item = info.row.original;
           return item.is_container ? (
@@ -284,7 +309,7 @@ export function TaskTable({
             />
           );
         },
-        size: 108,
+        size: 96,
       }),
       column.display({
         id: 'model',
@@ -304,11 +329,12 @@ export function TaskTable({
             />
           );
         },
-        size: 176,
+        size: 192,
       }),
       column.accessor('status', {
         header: '状态',
         enableSorting: true,
+        size: 84,
         cell: (info) =>
           info.row.original.is_container ? (
             <Badge variant="secondary">父需求</Badge>
@@ -322,6 +348,7 @@ export function TaskTable({
       column.accessor('created_at', {
         header: '创建时间',
         enableSorting: true,
+        size: 120,
         cell: (info) => (
           <span className="whitespace-nowrap text-[12px] tabular-nums text-faint">
             {shortTime(info.row.original.created_at)}
@@ -348,7 +375,7 @@ export function TaskTable({
             />
           );
         },
-        size: 124,
+        size: 128,
       }),
     ],
     [column, mappings, models, backends, selections, onMap, onSelect, onAction, onProbe],
@@ -380,7 +407,7 @@ export function TaskTable({
   }, [tableRows]);
 
   return (
-    <Table className="min-w-[980px]" containerClassName={containerClassName}>
+    <Table className="w-full min-w-[1120px] table-fixed" containerClassName={containerClassName}>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           {leafHeaders.map((header) => {
@@ -390,23 +417,38 @@ export function TaskTable({
               <th
                 key={header.id}
                 aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none'}
-                style={{width: header.getSize() === 150 ? undefined : header.getSize()}}
+                style={
+                  header.column.id === 'title'
+                    ? undefined
+                    : {width: header.getSize(), minWidth: header.getSize()}
+                }
                 className={cn(
-                  'h-9 px-2 text-left align-middle text-[11.5px] font-medium text-faint',
-                  header.column.id === 'title' && 'pl-4',
+                  'h-10 whitespace-nowrap border-b border-border bg-[#fafafd] px-2 text-left align-middle text-[11.5px] font-semibold tracking-[0.01em] text-[#878a9e]',
+                  header.column.id === 'title' && 'min-w-[220px] pl-4',
                   header.column.id === 'actions' &&
-                    'sticky right-0 z-20 border-l border-border/70 bg-[#fafafd] pr-4 text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]',
+                    'sticky right-0 z-20 w-[128px] min-w-[128px] border-l border-border/70 pr-4 text-right shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.18)]',
                 )}
               >
                 {canSort ? (
                   <button
                     type="button"
                     onClick={header.column.getToggleSortingHandler()}
-                    className="inline-flex items-center gap-1 rounded px-1 py-0.5 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded px-0.5 py-0.5 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
                   >
                     {flexRender(header.column.columnDef.header, header.getContext())}
-                    <span className={cn('text-[9px] leading-none', sorted ? 'opacity-100' : 'opacity-35')}>
-                      {sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : '⇅'}
+                    <span
+                      className={cn(
+                        'inline-flex items-center',
+                        sorted ? 'text-primary/80' : 'text-faint/60',
+                      )}
+                    >
+                      {sorted === 'asc' ? (
+                        <ArrowUp className="size-3" />
+                      ) : sorted === 'desc' ? (
+                        <ArrowDown className="size-3" />
+                      ) : (
+                        <ArrowUpDown className="size-3" />
+                      )}
                     </span>
                   </button>
                 ) : (
@@ -453,7 +495,7 @@ export function TaskTable({
                         'px-2 py-2 align-middle',
                         cell.column.id === 'title' && 'pl-4',
                         cell.column.id === 'actions' &&
-                          'sticky right-0 z-[1] w-[124px] min-w-[124px] max-w-[124px] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)] group-hover:bg-[#fafafe]',
+                          'sticky right-0 z-[1] w-[128px] min-w-[128px] max-w-[128px] border-l border-border/70 bg-card pr-4 shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.18)] group-hover:bg-[#f8f7fd]',
                       )}
                     >
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
