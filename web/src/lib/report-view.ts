@@ -221,6 +221,64 @@ function markSyncSections(lines: string[], consumed: Set<number>, inDetails: boo
   }
 }
 
+/** 报告附录：<details> 折叠块里的原始输出 / 命令 / 提示词。 */
+export interface ReportAppendix {
+  title: string;
+  body: string;
+  lang: 'text' | 'bash' | 'sh';
+}
+
+export interface ReportExtras {
+  output: ReportAppendix[];
+  commands: ReportAppendix[];
+  /** 从执行器结论里解析出的「文件 → 改动原因」。 */
+  reasons: Record<string, string[]>;
+  /** 「已写入工作区」列表。 */
+  written: string[];
+}
+
+function unwrapFence(body: string): string {
+  const match = body.match(/^\s*```[a-z]*\s*\n([\s\S]*?)\n```\s*$/i);
+  return (match ? match[1] : body).trim();
+}
+
+/**
+ * 从报告 Markdown 中抽出附录与 Supplementary 信息。
+ * 后端把长文本塞进 `<details>`，而前端工作台需要把它们拆到独立章节里渲染。
+ */
+export function extractReportExtras(markdown: string): ReportExtras {
+  const text = String(markdown || '');
+  const extras: ReportExtras = {output: [], commands: [], reasons: {}, written: []};
+  const detailRe = /<details(?:\s[^>]*)?>\s*<summary>([\s\S]*?)<\/summary>\s*([\s\S]*?)\s*<\/details>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = detailRe.exec(text))) {
+    const title = match[1].replace(/<[^>]+>/g, '').trim();
+    const body = unwrapFence(match[2]);
+    if (!body) continue;
+    const lang: ReportAppendix['lang'] = /命令|shell|bash|\.sh/i.test(title) ? 'bash' : 'text';
+    const appendix = {title, body, lang};
+    if (/执行输出|执行过程|最终结论/.test(title)) extras.output.push(appendix);
+    else extras.commands.push(appendix);
+  }
+
+  // 执行器结论里的「改动文件与原因」：每行 `- `path`：原因`。
+  const reasonHead = text.match(/^#{2,4}\s*改动文件与原因\s*$/m);
+  if (reasonHead) {
+    const rest = text.slice((reasonHead.index ?? 0) + reasonHead[0].length);
+    const tail = rest.split(/^#{1,4}\s/m)[0] ?? '';
+    for (const line of tail.split('\n')) {
+      const item = line.match(/^\s*[-*]\s+`?([^`：:]+?)`?\s*[：:]\s*(.+)$/);
+      if (item) extras.reasons[item[1].trim()] = [item[2].trim()];
+    }
+  }
+
+  const written = text.match(/已写入工作区：\s*\n((?:\s*[-*]\s+`[^`]+`[^\n]*\n?)+)/);
+  if (written) {
+    extras.written = [...written[1].matchAll(/^\s*[-*]\s+`([^`]+)`/gm)].map((entry) => entry[1].trim());
+  }
+  return extras;
+}
+
 export function moduleOf(file: string): string {
   const clean = file.replace(/\s*[（(][^）)]*[）)]\s*$/, '').trim();
   const parts = clean.split('/');

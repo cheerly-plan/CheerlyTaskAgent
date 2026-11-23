@@ -9,10 +9,10 @@ import {SelectField} from '@/components/select-field';
 import {DashboardPage} from '@/pages/dashboard-page';
 import {DataSourcesPage} from '@/pages/data-sources-page';
 import {HistoryPage} from '@/pages/history-page';
-import {ReportPage} from '@/pages/report-page';
 import {MappingsPage} from '@/pages/mappings-page';
 import {SettingsPage} from '@/pages/settings-page';
 import {TasksPage} from '@/pages/tasks-page';
+import {ReportOverlay} from '@/components/report-overlay';
 import {Toaster} from '@/components/ui/sonner';
 import {TooltipProvider} from '@/components/ui/tooltip';
 
@@ -23,6 +23,15 @@ function Shell() {
     if (next !== 'report') closeReport();
     setPage(next);
   };
+
+  // 报告打开时，背景仍是来源页（报告以叠加层呈现，不再整页替换）。
+  // backFrom 为空或异常时兜底到任务中心，避免背景空白。
+  const background: PageKey =
+    page === 'report' && reportView.backFrom && reportView.backFrom !== 'report'
+      ? reportView.backFrom
+      : page === 'report'
+        ? 'tasks'
+        : page;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -52,15 +61,18 @@ function Shell() {
 
       <div className="flex min-h-0 flex-1">
         <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} />
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
-          {page === 'dashboard' ? <DashboardPage /> : null}
-          {page === 'tasks' ? <TasksPage /> : null}
-          {page === 'history' ? <HistoryPage /> : null}
-          {page === 'mapping' ? <MappingsPage /> : null}
-          {page === 'sources' ? <DataSourcesPage /> : null}
-          {page === 'settings' ? <SettingsPage /> : null}
-          {page === 'report' ? <ReportPage /> : null}
-        </main>
+        {/* 叠加层只覆盖主内容区，侧边栏始终可见、可点击切换 */}
+        <div className="relative flex min-h-0 flex-1">
+          <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
+            {background === 'dashboard' ? <DashboardPage /> : null}
+            {background === 'tasks' ? <TasksPage /> : null}
+            {background === 'history' ? <HistoryPage /> : null}
+            {background === 'mapping' ? <MappingsPage /> : null}
+            {background === 'sources' ? <DataSourcesPage /> : null}
+            {background === 'settings' ? <SettingsPage /> : null}
+          </main>
+          {page === 'report' ? <ReportOverlay /> : null}
+        </div>
       </div>
 
       <Toaster position="top-right" richColors closeButton />

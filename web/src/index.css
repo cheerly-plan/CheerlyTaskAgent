@@ -143,14 +143,34 @@
   .report-body .md-table td {
     @apply break-words;
   }
+  .report-body .md-code-wrap {
+    @apply relative my-3;
+  }
+  .report-body .md-code-wrap .md-code {
+    @apply my-0;
+  }
+  .report-body .md-copy-btn {
+    @apply absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-border bg-card/95 px-2 py-1 font-sans text-[10.5px] font-medium text-muted-foreground opacity-0 shadow-sm transition-all;
+  }
+  .report-body .md-code-wrap:hover .md-copy-btn,
+  .report-body .md-copy-btn:focus-visible {
+    opacity: 1;
+  }
+  .report-body .md-copy-btn:hover {
+    @apply text-foreground;
+  }
   .report-body .md-code {
     @apply my-3 whitespace-pre-wrap break-words rounded-xl border border-[#ededf3] bg-[#f7f7fb] px-4 py-3 font-mono text-[11.5px] leading-[1.75] text-[#3b3e52];
+  }
+  /* 原始 Markdown 全文视图 */
+  .report-raw-md {
+    @apply max-h-[560px] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border bg-[#fafafd] px-4 py-3.5 font-mono text-[11.5px] leading-[1.7] text-foreground/80;
   }
   /* 只有超长原始输出才限高、内部滚动，避免整页被它拉得极长 */
   .report-body .md-code-scroll {
     @apply max-h-[420px] overflow-auto;
   }
-  /* 固定展开的附加信息块（执行命令 / 提示词）：小标签 + 代码块，无折叠交互 */
+  /* 固定展开的附加信息块（执行输出摘要 / 执行命令 / 提示词）：小标签 + 内容，无折叠交互 */
   .report-body .md-block {
     @apply my-5;
   }
@@ -159,6 +179,16 @@
   }
   .report-body .md-block .md-code {
     @apply mt-0;
+  }
+  /* 附加块里的 markdown 小节标题（执行器原始输出里的 ## 改动文件与原因 / 验证结果 等）
+     不是整页级章节，降级成与块标签同族的小标题，避免套用 h3 的大字号与下划线。 */
+  .report-body .md-block h3,
+  .report-body details h3 {
+    @apply mb-2 mt-5 border-0 pb-0 text-[12px] font-semibold tracking-[0.04em] text-foreground first:mt-0;
+  }
+  .report-body .md-block h4,
+  .report-body details h4 {
+    @apply mb-1.5 mt-4 text-[12px] font-semibold text-foreground/90;
   }
 
   .report-body details {
@@ -181,6 +211,16 @@
     @apply pb-3;
   }
 }
+/* 报告全文查找：CSS Custom Highlight API 的高亮样式 */
+::highlight(report-find) {
+  background-color: rgba(245, 158, 11, 0.32);
+  color: inherit;
+}
+::highlight(report-find-current) {
+  background-color: rgba(91, 84, 196, 0.45);
+  color: #fff;
+}
+
 /* 图表悬停列的斜纹高亮（recharts 会覆盖 Cell 的 fill，改用 CSS 背景实现） */
 @layer utilities {
   .chart-bar-active {
