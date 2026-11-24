@@ -62,7 +62,7 @@ function Shell() {
 
       <div className="flex min-h-0 flex-1">
         <AppSidebar page={page} onPage={goPage} reportFrom={reportView.backFrom} />
-        <div className="relative flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 min-w-0 flex-1">
           <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-5 py-5 lg:px-6">
             {background === 'dashboard' ? <DashboardPage /> : null}
             {background === 'tasks' ? <TasksPage /> : null}

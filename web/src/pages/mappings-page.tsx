@@ -189,24 +189,28 @@ export function MappingsPage() {
           title="暂无项目映射"
         />
       ) : (
-        <Table className="min-w-[1100px]" containerClassName="min-h-0 min-w-0 flex-1">
+        <Table className="min-w-[1090px] table-fixed" containerClassName="min-h-0 min-w-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-[140px] pl-5">项目名</TableHead>
-              <TableHead className="w-[200px]">本地路径</TableHead>
-              <TableHead className="w-[180px]">仓库信息 / 备注</TableHead>
-              <TableHead className="w-[110px]">仓库画像</TableHead>
+              <TableHead className="w-[180px]">本地路径</TableHead>
+              <TableHead className="w-[160px]">仓库信息 / 备注</TableHead>
+              <TableHead className="w-[100px]">仓库画像</TableHead>
               <TableHead className="w-[110px]">验证配置</TableHead>
               <TableHead className="w-[120px]">TAPD 项目</TableHead>
-              <TableHead className="w-[100px]">交付</TableHead>
-              <TableHead className="w-[84px]">状态</TableHead>
+              <TableHead className="w-[90px]">交付</TableHead>
+              <TableHead className="w-[104px]">状态</TableHead>
               <TableHead className="sticky right-0 z-20 w-[80px] bg-[#fafafd] pr-5 text-right shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.18)]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {mappings.map((mapping) => (
               <TableRow key={mapping.id}>
-                <TableCell className="pl-5 font-semibold text-foreground">{mapping.name}</TableCell>
+                <TableCell className="pl-5">
+                  <span className="block truncate font-semibold text-foreground" title={mapping.name}>
+                    {mapping.name}
+                  </span>
+                </TableCell>
                 <TableCell>
                   <Mono className="block max-w-[200px] truncate" title={mapping.path}>
                     {mapping.path}
@@ -263,8 +267,11 @@ export function MappingsPage() {
                     return (
                       <div className="flex flex-wrap items-center gap-1.5">
                         {missing.length ? (
-                          <Badge variant="destructive-muted">
-                            缺 {missing.join('、')}
+                          <Badge
+                            variant="destructive-muted"
+                            title={`缺少验证类别：${missing.join('、')}`}
+                          >
+                            缺 {missing.length} 类
                           </Badge>
                         ) : (
                           <Badge variant={verify.stale ? 'warning' : 'success'}>
