@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 
 from . import dialect, dsh_profile
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
+from .spec import spec_text
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,14 @@ def build_prompt(item: WorkItem) -> str:
             f"{item.parent_context}\n"
             "--- 父需求结束 ---\n\n"
         )
+    # 任务规格：目标 / 验收标准 / 约束 / 风险。没有规格时退回纯任务描述。
+    spec = spec_text(item.spec)
+    if spec:
+        text += (
+            "--- 任务规格（完成后应逐条成立）---\n"
+            f"{spec}\n"
+            "--- 规格结束 ---\n\n"
+        )
     text += (
         "要求：\n"
         "1. 先阅读仓库结构与相关代码，定位需要改动的位置。\n"
@@ -277,6 +286,14 @@ def build_prompt(item: WorkItem) -> str:
             "\n--- 已确认的执行方案（来自规划阶段）---\n"
             f"{item.plan}\n"
             "--- 方案结束 ---\n"
+        )
+    # 反馈循环：上一轮验证/评审没过时，把具体问题放在最后，避免被长任务描述淹没。
+    feedback = (item.feedback or "").strip()
+    if feedback:
+        text += (
+            "\n--- 上一轮未通过（本轮必须修复）---\n"
+            f"{feedback[:4000]}\n"
+            "--- 反馈结束 ---\n"
         )
     return text
 

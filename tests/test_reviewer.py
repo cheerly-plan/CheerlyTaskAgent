@@ -245,3 +245,19 @@ def test_report_renders_review_verdict_issues_and_risks():
     assert "空指针" in text
     assert "security" in text
     assert "转人工审批" in text
+
+
+def test_review_prompt_includes_acceptance_criteria():
+    item = _item()
+    item.spec = {
+        "goal": "实现评审模块",
+        "acceptance": ["评审结果写入报告", "block 能挡住合并"],
+        "constraints": ["不改执行器"],
+        "risk": "medium",
+        "source": "rule",
+    }
+    prompt = build_review_prompt(item, "+x", diff_lines=1)
+    assert "任务规格" in prompt
+    assert "评审结果写入报告" in prompt
+    assert "block 能挡住合并" in prompt
+    assert "逐条核对" in prompt

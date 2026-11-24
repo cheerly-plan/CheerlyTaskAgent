@@ -161,6 +161,9 @@ class RunResult:
     # the result because the worktree is deleted on a successful merge, while
     # the TAPD comment still needs to show *what* changed.
     diff: str = ""
+    # Number of agent runs in this execution (1 = single-shot, >1 = the
+    # feedback loop retried after verification/review asked for changes).
+    rounds: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +184,7 @@ class RunResult:
             "sync_error": self.sync_error,
             "verification": self.verification,
             "diff": self.diff,
+            "rounds": self.rounds,
         }
 
 
@@ -261,6 +265,8 @@ class WorkItem:
     merge_state: str = ""            # "" | "merged" | "blocked"（自动合并结果）
     plan: str = ""                   # LLM/规则规划出的执行步骤，注入提示词
     parent_context: str = ""         # 父需求标题+描述快照，执行时注入子任务提示词
+    spec: dict[str, Any] = field(default_factory=dict)  # TaskSpec（目标/验收/约束/风险）
+    feedback: str = ""               # 上一轮验证/评审未通过的原因，注入下一轮提示词
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -389,6 +395,8 @@ class WorkItem:
             "merge_state": self.merge_state,
             "plan": self.plan,
             "parent_context": self.parent_context,
+            "spec": dict(self.spec),
+            "feedback": self.feedback,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -438,6 +446,8 @@ class WorkItem:
             merge_state=str(data.get("merge_state", "") or ""),
             plan=str(data.get("plan", "") or ""),
             parent_context=str(data.get("parent_context", "") or ""),
+            spec=dict(data.get("spec") or {}),
+            feedback=str(data.get("feedback", "") or ""),
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),

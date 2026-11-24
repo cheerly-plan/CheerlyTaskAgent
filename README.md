@@ -63,7 +63,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 - **git 映射（回退）**：扫描本地仓库 `origin`，归一化 `https://` / `git@` / `ssh://` / 裸 `host/owner/repo` 统一匹配；项目映射未命中时才走 git 扫描，也可在界面手动指定仓库。
 - **幂等**：`source_ref`（`tapd:<type>:<id>`）做去重键，同一个 TAPD 工单重复同步不会重复建单。
 - **安全**：默认 dry-run；apply 用 `git worktree` 隔离 + 显式审批 + 提示词注入防护；命令用 argv 列表拼接（非 shell），任务文本无法注入 shell 命令。
-- **验证门禁（自动链路，MVP）**：自动执行在原子合并前，会在隔离 worktree 里跑该仓库的检查。**未配置、空改动、删除/重写/重命名测试/快照文件、任一检查失败或超时都会拦截**——主仓一个文件都不写，任务置为失败留在任务中心可重试，worktree 保留供排查。仓库没配置检查时默认 fail-closed（`TASKAGENT_VERIFY=0` 可临时关闭并记录为「验证已禁用」）。测试/快照文件**允许新增，也允许在已有测试文件里纯插入用例**（`git diff -U0` 无删除行；插入 `@skip`/`@skipif`/`@xfail` 装饰器或 `pytestmark`/`collect_ignore` 会被拒）：新增的测试不参与阻塞判定——test 类检查在临时评分 worktree（基线测试 + agent 的非测试改动，`data/verification-grading/`）里跑，新增测试再在真实 worktree 跑一遍，结果记为 `new_tests` 告警写入报告，不阻塞合并；删除、重写或重命名已有测试仍需人工「强制合并」。四类 `test / lint / typecheck / build` 必须齐全：每类要么有检查、要么在 `na` 里显式写理由，缺一类直接拦。检查进程只透传 `PATH/HOME/LANG` 等白名单环境，测试读不到服务端 API Key；`PYTHONPATH` 指向被验证 worktree 的 `src/` 与根目录，避免 `.venv` 里的 editable 安装把检查引回主仓；输出会脱敏后落盘，验证日志按 7 天/2000 个文件自动回收。改动**受保护文件**（测试配置、CI、`package.json`/`pyproject.toml`、锁文件、`.env*`、Dockerfile 等）直接拦；改动文件数/行数有上限；失败检查可重试一次；失败项会在基线（worktree HEAD，即 agent 改之前）复跑，`baseline=advisory` 时既有失败放行并告警、`strict`（默认）时仍拦、`off` 关闭基线。检查命令**像仓库画像一样自动生成**：启动和新增项目映射时，按 `pyproject.toml`、`package.json` scripts、`go.mod`、`Cargo.toml`、`Makefile` 探测 test/lint/typecheck/build 命令并写入 `data/verify.json`（只加不改，手工配置保留）；仓库文件变化后到「项目映射」点「重建画像与验证」手动重建（会覆盖已有条目）。`GET /api/verify-config` 返回每个仓库的检查与 `stale` 标记，`POST /api/verify-config/rebuild` 强制重建。`link_dirs` 把主仓的 `.venv` / `web/node_modules` 软链进 worktree，让检查能直接跑：
+- **验证门禁（所有 apply）**：人工 / 自动 apply 在原子合并前，都会在隔离 worktree 里跑该仓库的检查。**未配置、空改动、删除/重写/重命名测试/快照文件、任一检查失败或超时都会拦截**——主仓一个文件都不写，任务置为失败留在任务中心可重试，worktree 保留供排查。仓库没配置检查时默认 fail-closed（`TASKAGENT_VERIFY=0` 可临时关闭并记录为「验证已禁用」）。测试/快照文件**允许新增，也允许在已有测试文件里纯插入用例**（`git diff -U0` 无删除行；插入 `@skip`/`@skipif`/`@xfail` 装饰器或 `pytestmark`/`collect_ignore` 会被拒）：新增的测试不参与阻塞判定——test 类检查在临时评分 worktree（基线测试 + agent 的非测试改动，`data/verification-grading/`）里跑，新增测试再在真实 worktree 跑一遍，结果记为 `new_tests` 告警写入报告，不阻塞合并；删除、重写或重命名已有测试仍需人工「强制合并」。四类 `test / lint / typecheck / build` 必须齐全：每类要么有检查、要么在 `na` 里显式写理由，缺一类直接拦。检查进程只透传 `PATH/HOME/LANG` 等白名单环境，测试读不到服务端 API Key；`PYTHONPATH` 指向被验证 worktree 的 `src/` 与根目录，避免 `.venv` 里的 editable 安装把检查引回主仓；输出会脱敏后落盘，验证日志按 7 天/2000 个文件自动回收。改动**受保护文件**（测试配置、CI、`package.json`/`pyproject.toml`、锁文件、`.env*`、Dockerfile 等）直接拦；改动文件数/行数有上限；失败检查可重试一次；失败项会在基线（worktree HEAD，即 agent 改之前）复跑，`baseline=advisory` 时既有失败放行并告警、`strict`（默认）时仍拦、`off` 关闭基线。检查命令**像仓库画像一样自动生成**：启动和新增项目映射时，按 `pyproject.toml`、`package.json` scripts、`go.mod`、`Cargo.toml`、`Makefile` 探测 test/lint/typecheck/build 命令并写入 `data/verify.json`（只加不改，手工配置保留）；仓库文件变化后到「项目映射」点「重建画像与验证」手动重建（会覆盖已有条目）。`GET /api/verify-config` 返回每个仓库的检查与 `stale` 标记，`POST /api/verify-config/rebuild` 强制重建。`link_dirs` 把主仓的 `.venv` / `web/node_modules` 软链进 worktree，让检查能直接跑：
 
     ```json
     {"repos": {"CheerlyTaskAgent": {
@@ -85,6 +85,9 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
     }}}
     ```
 - **N/A 与人工兜底**：N/A 在「项目映射 → 验证配置 → 编辑 N/A」维护，带理由、过期时间、批准人与时间；过期后自动失效，需要重新批准。验证失败的任务支持「重新验证」（只重跑检查、不重跑 agent，通过后自动合并）和「强制合并」（显式跳过门禁，报告记录 override）。可选 `rlimits`（`cpu_s` / `memory_mb` / `file_size_mb`，POSIX）限制检查进程资源；网络隔离未提供。
+- **任务规格（TaskSpec）**：建单即生成规则版规格——目标、可判真伪的验收标准、约束、风险等级、测试建议（`data/tasks/<id>.json` 的 `spec` 字段）；自动链路执行前再用「模型配置」里的后端 Agent LLM 升级为更贴合工单的规格（失败保留规则版，规划不阻塞执行）。规格同时进入**执行提示词**（编码前先看目标与验收标准）、**评审提示词**（逐条核对）和**报告**。
+- **执行-反馈循环**：自动任务门禁/评审未通过时，把失败检查输出、评审问题、状态提示写成一份「上一轮未通过」的反馈，注入下一轮提示词，在**同一个 worktree** 继续修（不从头重做），最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2）。不可修复的状态（仓库没配置检查、验证类别不齐、评审要求人工审批）立即停止，不浪费轮次；人工 apply 固定 1 轮，保持「点一次跑一次」。报告记录 `rounds` 与最后一轮反馈。
+- **LLM 评审门禁**：合并前把 **diff + 任务规格**交给后端 Agent 的 LLM 评审，产出 `approve / comment / block` + 问题清单 + 风险标签。`block` 直接挡合并；大 diff、敏感文件（`.env`/CI/依赖清单/迁移等）、高风险标签或高严重度问题**转人工审批**（任务留在任务中心）；`comment` 作为警告放行。模型未配置或调用失败时降级为「未评审」，不改变原有验证门禁；`TASKAGENT_REVIEW=0` 可临时关闭。
 - **自动同步（三方比较，防覆盖）**：apply 先建隔离 worktree，并把主仓库当前工作区的未提交改动叠加进去作为基线，所以 codebuddy 改的是你眼前的最新代码，而不是过期的已提交版本（叠加失败会安全回退到纯 HEAD 基线）。apply 成功后，codebuddy 的改动文件自动同步回主仓库工作区（无需手动从 worktree 拷贝），看板即显示「完成（已同步 N 个文件）」。对每个文件以 worktree 的 HEAD 为 base，与主仓库当前版本、codebuddy 结果做三方比较：**仅当主仓库自 base 以来未改动才直接覆盖**；若主仓库也已改动，先尝试三方合并（`git merge-file`，仅在无冲突时写入），否则**不覆盖**，把双方版本备份为 `.main` / `.codebuddy` 并在报告中列出冲突，看板显示「N 个文件冲突未覆盖」。这样过期 worktree 不会回滚主仓库里更新的改动。同步只碰改动文件、按忽略规则过滤（`.env`/`data/`/venv 等不同步）、拒绝路径逃逸；备份在 `<data_dir>/sync-backups/<item>/<时间>/`；失败写进报告但不否定 apply 结果。用 `TASKAGENT_AUTO_SYNC=0` 可关闭，回到纯隔离模式。
 - **可观测**：SSE 实时推送导入/映射/排队/执行/进度/成功/失败/重试；每单都有 Markdown 报告（含自动同步明细与备份位置）。
 
@@ -101,7 +104,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 1. **任务列表**：右上角「+ 新建任务」按钮打开**纯手动**录入弹窗；「自动执行」按钮打开勾选弹窗，只跑选中的待执行任务（未映射的 TAPD 多仓任务会先让 LLM 选仓库；无冲突自动合并，冲突的任务带「合并冲突」标记和「合并」重试按钮）。外部来源（TAPD）在「数据源」Tab 接入。列表默认表格视图，按来源 / 状态 / 项目筛选；**点击表头**即可按标题 / 类型 / 来源 / 项目 / 状态 / 创建时间升序或降序（再次点击切换方向，卡片视图用工具栏的「排序」下拉 + 方向按钮）；点击条目查看报告（无报告时显示工单详情），配套重试、apply、取消、删除、按任务切换模型等操作，可切换卡片视图。**TAPD 父需求不导入**：定时拉取、预览、导入与 Webhook 都会跳过父需求（`children_id` 非空）；子需求按 `parent_title` 自动分组，分组头显示父标题与子需求数量。
 2. **项目映射**：以配置表格统一管理项目名 / 别名 / 本地路径 / 仓库信息，支持「选择文件夹」逐级点选、「扫描文件夹」批量勾选与手动新增、编辑、启停、删除。
 3. **数据源**：唯一的外部来源接入中心，即 **TAPD 卡**——配置 API 凭证 / 项目（手填多个 ID 或从拉取的项目列表多选）/ 关联的本地项目 / Webhook 地址与 secret / 拉取类型 / 回填状态 / 定时开关，提供「拉取项目」「立即同步」。凭证明文保存在本机 `data/settings.json`，密码留空表示保持原值；配置即时生效，无需重启。
-4. **模型配置**：维护**后端 Agent 自己使用的 LLM**（OpenAI 兼容接口）——名称、模型 ID、供应商、Base URL、API Key、启停，并指定 Agent 默认使用哪一个。这份配置存进 `data/settings.json`，只服务调度台后端的「动脑」调用（目前是多候选仓库时的规划选仓库，后续的报告总结/评审也走这里）；**与执行端 CLI 完全解耦**：任务模型下拉仍由 codebuddy / DSH 各自发现，CLI 子进程环境也不再读这份配置。API Key 直接保存在本机 `data/settings.json`（界面掩码，留空表示保持原值）；保存后即时生效。
+4. **模型配置**：维护**后端 Agent 自己使用的 LLM**（OpenAI 兼容接口）——名称、模型 ID、供应商、Base URL、API Key、启停，并指定 Agent 默认使用哪一个。这份配置存进 `data/settings.json`，只服务调度台后端的「动脑」调用（多候选仓库规划选仓、任务规格生成、LLM 代码评审都用它）；**与执行端 CLI 完全解耦**：任务模型下拉仍由 codebuddy / DSH 各自发现，CLI 子进程环境也不再读这份配置。API Key 直接保存在本机 `data/settings.json`（界面掩码，留空表示保持原值）；保存后即时生效。
 5. **系统设置**：「执行后端」完全由配置驱动——可自由增删后端，每个后端含名称、启用开关、CLI 命令/路径、默认模型、超时、执行后同步；没有后端时任务会因缺少执行器而失败。「调度策略」设定新建任务的默认后端（同时也是缺失/禁用后端的运行时兜底）、并发数与自动同步。新装默认种入 CodeBuddy CLI / DSH 两个普通种子，均可删除、可禁用，无特权。后端都遵循同一非交互 CLI 协议（`-p --permission-mode`），建任务时可选任一已启用后端，任务按自身 `executor` 字段分派。部分参数（如 CLI 路径）保存后需重启服务生效。
 
 ## 配置
@@ -116,6 +119,9 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 | `TASKAGENT_MODELS` | 空（用后端动态探测的全部） | 允许选择的模型 id，逗号分隔，用于收窄下拉候选 |
 | `CODEBUDDY_TIMEOUT` | `600` | 单次执行超时秒数 |
 | `TASKAGENT_MAX_CONCURRENT` | `1` | 并发执行数（codebuddy 较重，默认串行） |
+| `TASKAGENT_MAX_ROUNDS` | `2` | 自动任务执行-反馈循环轮数（1 = 关闭循环；人工 apply 固定 1 轮） |
+| `TASKAGENT_VERIFY` | `1` | 设 `0` 临时关闭验证门禁（报告记为「验证已禁用」） |
+| `TASKAGENT_REVIEW` | `1` | 设 `0` 临时关闭 LLM 评审门禁 |
 | `TASKAGENT_PROJECT_MAP_FILE` | `<data_dir>/projects.json` | 项目映射列表 JSON 路径；默认空列表，由界面手动维护 |
 | `TASKAGENT_FS_ROOT` | `~`（主目录） | 文件夹浏览器/扫描器的只读边界，防止越界浏览 |
 | `TASKAGENT_AUTO_SYNC` | `1`（开启） | apply 成功后是否自动把改动同步回主仓库工作区；设 `0` 关闭 |
@@ -167,10 +173,15 @@ src/taskagent/
 ├── projects.seed.json  映射种子（默认空，列表由界面手动维护）
 ├── sources.py      TAPD/手动 → RawItem 解析
 ├── tapd.py         TAPD Open API 客户端：Basic Auth 拉取需求/缺陷 + 状态回填/评论
+├── spec.py         TaskSpec：规则版/LLM 版任务规格（目标/验收标准/约束/风险）
+├── loop.py         有界执行-反馈循环（失败原因注入下一轮提示词）
+├── reviewer.py     LLM 代码评审 + 风险升级（并入门禁）
+├── verification.py 验证门禁：四类检查、基线、受保护文件、评分 worktree
 ├── executor.py     Executor 统一接口 + 两类 CLI 执行器（codebuddy/dsh）+ dry-run/worktree 安全策略
 ├── backends.py     依据 UI 配置构建 ExecutorRegistry（每类一套配置）
 ├── scheduler.py    导入/映射/调度/幂等/重试/取消，按任务 executor 字段分派后端
-├── report.py       Markdown 报告生成
+├── report.py       Markdown 报告生成（含任务规格 / 评审 / 轮次）
+├── backfill.py     TAPD 状态回填 + 结果评论（文件/diff/评审摘要）
 ├── store.py        JSON 原子写持久化
 ├── events.py       事件总线 + SSE
 ├── api.py / cli.py

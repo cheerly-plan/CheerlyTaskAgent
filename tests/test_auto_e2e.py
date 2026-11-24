@@ -169,6 +169,11 @@ def test_verification_failure_blocks_merge(tmp_path: Path):
         assert not (repo / "util.py").exists()
         assert item["result"]["verification"]["state"] == "failed"
         assert item["result"]["worktree"]
+        # 自动链路会带着反馈再修一轮（TASKAGENT_MAX_ROUNDS 默认 2）。
+        assert item["result"]["rounds"] == 2
+        # 建单时就有规则版任务规格（目标/验收标准），不需要额外 LLM。
+        assert item["spec"]["source"] == "rule"
+        assert item["spec"]["acceptance"]
 
         report = client.get(f"/api/items/{item_id}/report").text
         assert "### 验证" in report

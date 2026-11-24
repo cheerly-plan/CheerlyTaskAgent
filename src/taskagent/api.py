@@ -304,7 +304,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gc_enabled=settings.gc_enabled,
             backup_retention_days=settings.backup_retention_days,
             backup_max_per_task=settings.backup_max_per_task,
+            # 评审与任务规格共用「模型配置」里的后端 Agent 模型；未配置时两者都降级。
             review_provider=lambda: review_llm(settings),
+            spec_provider=lambda: review_llm(settings),
+            max_rounds=settings.max_rounds,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,

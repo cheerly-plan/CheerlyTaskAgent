@@ -9,6 +9,7 @@ from typing import Any
 
 from .executor import build_prompt
 from .models import WorkItem
+from .spec import TaskSpec
 
 # Raw agent stdout is a verbose event stream (often >100k chars, including the
 # agent's own system prompt). Keep only conclusions in the report; the full
@@ -380,6 +381,27 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _spec_section(spec: dict[str, Any]) -> list[str]:
+    """任务规格：目标、验收标准、约束与风险（评审就是按这些逐条核对）。"""
+    parsed = TaskSpec.from_dict(spec)
+    if parsed is None:
+        return []
+    lines = ["## 任务规格", ""]
+    if parsed.goal:
+        lines += [f"> **目标**：{parsed.goal}", ""]
+    if parsed.acceptance:
+        lines += ["验收标准：", ""] + [
+            f"{index}. {text}" for index, text in enumerate(parsed.acceptance, 1)
+        ] + [""]
+    if parsed.constraints:
+        lines += ["约束：", ""] + [f"- {text}" for text in parsed.constraints] + [""]
+    meta = f"风险等级：**{parsed.risk}**；来源：{'LLM' if parsed.source == 'llm' else '规则'}"
+    if parsed.reason:
+        meta += f"（{parsed.reason}）"
+    lines += [f"> {meta}", ""]
+    return lines
+
+
 def render_report(item: WorkItem, parent_title: str = "") -> str:
     repo = item.repo
     result = item.result
@@ -405,6 +427,7 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
     ]
     if item.description:
         lines += ["## 需求描述", "", item.description.rstrip(), ""]
+    lines += _spec_section(item.spec)
 
     if result:
         verification = result.verification if isinstance(result.verification, dict) else {}
@@ -418,6 +441,7 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             f"| dry-run | {'是' if result.dry_run else '否'} |",
             f"| 耗时 | {result.duration_s:.2f}s |",
             f"| 改动文件 | {len(result.changed_files)} 个 |",
+            f"| 执行轮次 | {max(1, int(result.rounds or 1))} 轮 |",
             f"| worktree | {result.worktree or '—'} |",
             "",
         ]
@@ -428,6 +452,8 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
 
         if verification:
             lines += _verification_section(verification)
+        if item.feedback and int(result.rounds or 1) > 1:
+            lines += _collapsed("最后一轮反馈（未通过的原因）", item.feedback)
 
         # 所有 apply（人工/自动）：门禁通过后由 scheduler 做原子合并。
         if item.hold_merge:

@@ -116,6 +116,15 @@ def build_comment(item: WorkItem, *, ok: bool, budget: int = COMMENT_LIMIT) -> s
         lines.append("注意：本单验证未通过，已由人工强制合并（跳过门禁）。")
     if item.stage:
         lines.append(f"状态：{_one_line(item.stage, MAX_STAGE)}")
+    if result is not None and int(result.rounds or 1) > 1:
+        lines.append(f"执行轮次：{int(result.rounds)} 轮（含自动修复）")
+    review = verification.get("review") if isinstance(verification, dict) else None
+    if isinstance(review, dict) and review.get("state") == "done":
+        verdict = {"approve": "通过", "comment": "有建议", "block": "阻塞"}.get(
+            str(review.get("verdict") or ""), str(review.get("verdict") or "")
+        )
+        issues = len(review.get("issues") or [])
+        lines.append(f"评审：{verdict}（{issues} 个问题）")
 
     if files:
         lines.append(f"改动文件（{len(files)}）：")

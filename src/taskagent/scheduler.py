@@ -34,6 +34,7 @@ from .models import (
 from .projectmap import ProjectRegistry
 from .report import parent_context_of, parent_title_of, write_report
 from .sources import RawItem, parse_raw
+from .spec import rule_spec
 from .store import TaskStore
 
 
@@ -52,6 +53,13 @@ class SchedulerSettings:
     review_provider: Callable[[], Any] | None = None
     review_timeout_s: int = 120
     review_max_diff_lines: int = 2_000
+    # 任务规格（TaskSpec）：自动链路执行前用后端 Agent 模型把工单变成可验证目标。
+    # provider 与评审共用同一份「模型配置」；None = 只用规则版规格。
+    spec_provider: Callable[[], Any] | None = None
+    spec_timeout_s: int = 60
+    # 执行-反馈循环：自动任务门禁/评审未通过时，带着问题再修几轮。
+    # 1 = 关闭循环；人工 apply 固定 1 轮。
+    max_rounds: int = 2
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -239,6 +247,7 @@ class Scheduler:
         item = probe
         item.tapd_workspace_id = raw.tapd_workspace_id
         item.parent_title = raw.parent_title
+        item.spec = rule_spec(item).to_dict()
         if stage_hint and not archived:
             item.stage = stage_hint
         if archived:
@@ -349,6 +358,7 @@ class Scheduler:
         # Manual input is authoritative: keep the title and kind exactly as given.
         item.title = title.strip()
         item.kind = ItemKind(kind)
+        item.spec = rule_spec(item).to_dict()
         item.model = model or None
         if executor:
             item.executor = executor
@@ -465,6 +475,7 @@ class Scheduler:
             item.started_at = None
             item.finished_at = None
             item.attempt = 0
+            item.feedback = ""
             item.stage = f"已从 {previous} 转入重新执行"
         if item.repo is None:
             raise ValueError("no local repo mapped; map the item first")
@@ -907,6 +918,40 @@ class Scheduler:
             self._parent_locks[key] = lock
         return lock
 
+    # ── task spec ──────────────────────────────────────────────────────────────
+    def _spec_llm(self) -> Any | None:
+        """Backend-agent LLM used for TaskSpec generation (may be unconfigured)."""
+        provider = self.settings.spec_provider or self.settings.review_provider
+        if provider is None:
+            return None
+        try:
+            return provider()
+        except Exception as error:  # noqa: BLE001 - spec generation is best effort
+            logger.warning("读取规格模型失败：%s", error)
+            return None
+
+    async def _ensure_spec(self, item: WorkItem) -> None:
+        """Make sure the item has a TaskSpec; auto tasks get an LLM upgrade.
+
+        Rule specs are generated at import time and are always available. Auto
+        tasks try the backend-agent model once per execution; any failure keeps
+        the rule spec so planning can never block the run.
+        """
+        from .spec import plan_spec, rule_spec, spec_from_dict
+
+        existing = spec_from_dict(item.spec)
+        if item.auto and (existing is None or existing.source != "llm"):
+            llm = self._spec_llm()
+            if llm is not None:
+                generated = await plan_spec(
+                    item, llm=llm, timeout_s=self.settings.spec_timeout_s
+                )
+                if generated is not None:
+                    item.spec = generated.to_dict()
+                    return
+        if existing is None:
+            item.spec = rule_spec(item).to_dict()
+
     # ── verification gate ─────────────────────────────────────────────────────
     async def _review(self, item: WorkItem, result) -> Any | None:
         """LLM 评审 worktree 改动；未配置模型或任何异常都降级为「未评审」。"""
@@ -1022,13 +1067,53 @@ class Scheduler:
             item.status = ItemStatus.RUNNING
             item.attempt += 1
             item.started_at = item.started_at or _utcnow()
+            item.feedback = ""
+
+            # 任务规格：规则版兜底；自动任务升级为 LLM 版（失败保留规则版）。
+            if item.auto and (item.spec or {}).get("source") != "llm":
+                item.stage = "生成任务规格…"
+                self.store.save(item)
+                self.events.publish(Event("item_progress", item_id, {
+                    "progress": 0.05, "stage": item.stage,
+                }))
+            await self._ensure_spec(item)
             item.stage = f"开始执行（{backend.label}）"
             self.store.save(item)
             self.events.publish(Event("item_started", item_id, {
                 "attempt": item.attempt, "executor": backend.backend_id,
             }))
 
-            result = await backend.run(item, progress=progress, should_cancel=should_cancel)
+            def set_stage(text: str) -> None:
+                """Persist a round-stage update without clobbering cancel state."""
+                current = self.store.get(item_id)
+                if current is None or current.status != ItemStatus.RUNNING:
+                    return
+                current.stage = text
+                current.feedback = item.feedback
+                current.spec = dict(item.spec)
+                self.store.save(current)
+                self.events.publish(Event("item_progress", item_id, {
+                    "progress": 0.5, "stage": text,
+                }))
+
+            if item.hold_merge and item.exec_mode == "apply":
+                # 执行-反馈循环：门禁/评审未通过时带着具体问题再修几轮。
+                # 人工 apply 固定 1 轮，保持「点一次跑一次」的直觉。
+                from .loop import run_rounds
+
+                outcome = await run_rounds(
+                    item=item,
+                    backend=backend,
+                    gate=lambda target, res: self._verify(target, res),
+                    max_rounds=self.settings.max_rounds if item.auto else 1,
+                    progress=progress,
+                    should_cancel=should_cancel,
+                    stage=set_stage,
+                )
+                result = outcome.result
+            else:
+                result = await backend.run(item, progress=progress, should_cancel=should_cancel)
+            result.rounds = result.rounds or 1
 
             if should_cancel():
                 # cancel() 已经 signal 了活进程；此刻 backend.run() 已返回、
@@ -1058,11 +1143,14 @@ class Scheduler:
                     item.stage = "验证中…"
                     self.store.save(item)
                     self.events.publish(Event("item_verifying", item_id, {}))
-                    gate = await self._verify(item, result)
+                    gate = result.verification if isinstance(result.verification, dict) else {}
+                    if not gate:
+                        gate = await self._verify(item, result)
                     result.verification = gate
                     if not gate.get("ok"):
                         verify_failure = str(gate.get("reason") or "未知原因")
-                        item.stage = f"验证未通过：{verify_failure}"
+                        round_note = f"（第 {result.rounds} 轮）" if result.rounds > 1 else ""
+                        item.stage = f"验证未通过{round_note}：{verify_failure}"
                     else:
                         # 门禁通过：scheduler 负责原子合并，无冲突才写入主仓工作区。
                         merged = self._auto_merge(item, backend, result)

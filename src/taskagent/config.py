@@ -197,6 +197,8 @@ class Settings:
     commit_rules_file: Path | None = None  # extra commit-ignore patterns (one per line)
     auto_sync: bool = True  # copy apply changes back into the main repo worktree
     available_models: tuple[str, ...] = ()  # allowed model ids for per-task selection
+    # 自动链路的执行-反馈循环轮数（1 = 关闭；人工 apply 固定 1 轮）。
+    max_rounds: int = 2
     # Workspace/backup GC (P0-3): worktrees of merged/abandoned tasks are
     # removed and sync-backups are pruned so long-running servers don't bloat.
     gc_enabled: bool = True
@@ -219,6 +221,7 @@ class Settings:
             codebuddy_model=os.environ.get("CODEBUDDY_MODEL") or None,
             timeout_s=float(os.environ.get("CODEBUDDY_TIMEOUT", "600")),
             max_concurrent=max(1, int(os.environ.get("TASKAGENT_MAX_CONCURRENT", "1"))),
+            max_rounds=max(1, int(os.environ.get("TASKAGENT_MAX_ROUNDS", "2"))),
             project_map_file=(
                 Path(item).expanduser()
                 if (item := os.environ.get("TASKAGENT_PROJECT_MAP_FILE"))

@@ -58,6 +58,9 @@ flowchart LR
 |---|---|
 | `sources.py` | `RawItem`（TAPD/manual）→ `WorkItem`。规则：标题前缀判 bug/需求、关键词兜底、正则提取 git URL、去签名/引用。`TapdSource` 把 `TapdItem` 映射为 RawItem，source_ref=`tapd:<type>:<id>` 作幂等键。`RawItem.from_email` 仅作 demo/测试的轻量构造器保留。 |
 | `tapd.py` | TAPD 开放 API 客户端（权威源）：Basic Auth（应用ID:秘钥），公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`。`GET /stories`、`GET /bugs`（workspace_id + limit≤200 + page + modified>游标 + 可选 status）分页拉取并归一化为 `TapdItem`；`fetch_one()` 供 Webhook 回源拉单条；`list_projects(company_id)` 调 `/workspaces/projects`（只需企业 ID，不需要真人 nick）拉企业下项目列表，返回项带 `company_id` 并过滤掉企业自身 `category=organization`（避免把企业当成项目）供 UI 多选；`workspace_id` 支持逗号分隔多项目，`fetch()` 逐个工作区拉取并去重，`fetch_one()`（Webhook）逐个试；本地映射 `ProjectMapping.tapd_workspace_ids` 支持一个 TAPD 项目关联多个仓库（`find_all_by_workspace()`），单仓库直接指定 repo，多仓库只记录候选不做文本猜仓库，待后续按需求/代码决策；`POST /stories|/bugs` 回填 status + current_user，`POST /comments` 写报告评论。`TapdConfig.__post_init__` 统一 strip 所有字符串字段，防止复制凭证带入首尾空白导致 401。同步阻塞 IO，调用方用 `asyncio.to_thread`；未配置/网络错误进 `TapdResult.error` 不抛崩服务。 |
+| `spec.py` | 任务规格：规则版（目标/验收标准/约束/风险/测试建议，建单即生成）+ LLM 版（自动链路执行前用后端 Agent 模型升级，失败回退规则版）。规格进入执行提示词、评审提示词与报告，是「完成定义」的载体。 |
+| `loop.py` | 有界执行-反馈循环：每轮「执行 → 验证 + 评审」，未通过时把失败检查输出、评审问题与状态提示写成反馈注入下一轮；自动任务最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2），人工 apply 固定 1 轮；不可修复状态立即停止。 |
+| `reviewer.py` | LLM 代码评审 + 风险升级：diff + 任务规格 → approve/comment/block + 问题清单 + 风险标签；大 diff、敏感文件、高风险标签转人工；结论并入门禁（`apply_review`），模型未配置/失败降级为「未评审」。 |
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `projectmap.py` | 用户维护的「项目名/别名 → 本地文件夹」映射（`data/projects.json`），中文子串/英文词边界匹配、多命中取最长、可停用。`ProjectMapping` 带 `tapd_workspace_id`，`find_by_workspace()` 供 TAPD 建单时反查绑定的本地仓库——实现 TAPD 项目 ↔ 本地映射双向关联（数据源页与映射页改的是同一份数据）。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）；`ProjectMapping.tapd_workspace_id` 记录绑定的 TAPD 项目。 |
@@ -74,7 +77,9 @@ flowchart LR
 
 **手动新建**：`create_manual(title, description, kind, repo_name)` → 用户显式指定类型与项目 → 项目映射优先解析为 `LocalRepo` → 直接置 `ready`；`dedupe_key` 为随机值，因此同名手动任务不会互相去重。界面三个入口对应：创建草稿（`run_now=false`）、创建并 dry-run、创建并 apply（`approved=true`）。
 
-**执行**：`run(id, exec_mode, model)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`<backend> -p` 在 worktree cwd 执行，收集 stdout/改动文件。**模型**：`WorkItem.model` 为按任务选择的模型（`build_command` 里 `item.model or executor.model`），新建时可选、卡片上可随时切换；`model=None` 回退该后端的 `model` 字段。候选列表不再写死——由默认执行后端 `Executor.list_models()` 动态解析其 CLI `--help` 的 `--model` 参数实时获取，`TASKAGENT_MODELS` 环境变量可收窄候选；`/api/config` 的 `default_model` 即默认后端的 `model` 字段，新建任务据此回填（全局默认选了哪个就回填哪个）。apply 成功后 `sync_to_repo()` 把改动文件**自动同步回主仓库工作区**：归一化路径→忽略规则过滤（复用 commit 规则）→拒绝绝对路径/`..`/符号链接逃逸→覆盖或删除前先备份到 `<data_dir>/sync-backups/<item>/<时间>/`；结果写入 RunResult 与报告，失败不否定 apply 本身。`TASKAGENT_AUTO_SYNC=0` 可关闭。只重试可重试错误（timeout/429/5xx）。
+**任务规格**：建单时按规则生成 `TaskSpec`（目标/验收标准/约束/风险）；自动任务执行前尝试用后端 Agent 模型升级为更贴合工单的版本，失败保留规则版。规格进入 `build_prompt`、`build_review_prompt` 与报告。
+
+**执行**：`run(id, exec_mode, model)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`<backend> -p` 在 worktree cwd 执行，收集 stdout/改动文件。**模型**：`WorkItem.model` 为按任务选择的模型（`build_command` 里 `item.model or executor.model`），新建时可选、卡片上可随时切换；`model=None` 回退该后端的 `model` 字段。候选列表不再写死——由默认执行后端 `Executor.list_models()` 动态解析其 CLI `--help` 的 `--model` 参数实时获取，`TASKAGENT_MODELS` 环境变量可收窄候选；`/api/config` 的 `default_model` 即默认后端的 `model` 字段，新建任务据此回填（全局默认选了哪个就回填哪个）。apply 走**执行-反馈循环**（`loop.py`）：门禁/评审未通过且可修时，把失败检查输出与评审问题注入下一轮提示词，在同一个 worktree 继续修，自动任务最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2），人工 apply 固定 1 轮。合并由 scheduler 在循环结束后做一次原子合并：`sync_to_repo()` 把改动文件**自动同步回主仓库工作区**——归一化路径→忽略规则过滤（复用 commit 规则）→拒绝绝对路径/`..`/符号链接逃逸→覆盖或删除前先备份到 `<data_dir>/sync-backups/<item>/<时间>/`；结果写入 RunResult 与报告，失败不否定 apply 本身。`TASKAGENT_AUTO_SYNC=0` 可关闭。只重试可重试错误（timeout/429/5xx）。
 
 **恢复**：状态与报告落盘；进程重启后可从 `data/tasks` 重建；`running` 中断的项后续可加 lease 重派（当前为手动重跑）。
 
@@ -119,11 +124,13 @@ flowchart LR
 
 **已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、**TAPD 唯一外部数据源接入（Webhook + 定时拉取 + 幂等建单 + 状态/评论回填）**、**多执行后端（Executor 统一接口 + codebuddy/dsh 两类独立配置 + 任务按 executor 分派 + 模型动态探测）**、**方言策略库（四层封闭策略 + DSH 内置逃生 + 严格执行证据）**、**设置保存热生效**、**自动执行 + 原子自动合并（TAPD 定时拉取自动执行 / 任务中心勾选执行、LLM 规划选仓库、无冲突自动写入工作区、冲突时原子回滚并留在任务中心重试）**、测试全绿、mock 端到端闭环验证通过。
 
+**任务规格 / 执行-反馈循环 / LLM 评审**：`spec.py`（规则版建单即生成，自动任务 LLM 升级）、`loop.py`（有界反馈循环，默认 2 轮，失败原因回灌提示词）、`reviewer.py`（diff + 规格评审，block/大 diff/敏感文件/高风险转人工，并入门禁）。
+
 **下一步（按优先级）**：
 1. 申请 TAPD 应用凭证 + 项目授权（读 + 写权限），在「数据源」Tab 填入并开启；在 TAPD 后台配置 Webhook 事件订阅。
 2. 装 codebuddy CLI，先用 dry-run 审提示词，再对低风险仓库小范围 apply。
 3. 如需接内部自研工单 Web：有开放 API 则复用 TAPD 同一套适配器扩展；只能人工看页面则不适合自动化。
-4. 可选：接 LLM 做需求拆解与补丁审阅。
+4. 需求拆解（一个需求跨多仓/多任务）与交付闭环（commit / PR / CI）仍待补齐。
 
 ## 9. 待确认
 

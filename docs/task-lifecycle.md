@@ -1,27 +1,28 @@
 # 需求 / Bug 生命周期：从进入系统到「解决」
 
 > 口径：**以当前代码实现为准**（`src/taskagent/` + `web/`），不写未落地的设想。
-> 一句话：**工单进来 → 解析建单 → 映射仓库 → 隔离执行 → 验证门禁 → 原子合并 → 报告 + 回填**。
+> 一句话：**工单进来 → 解析建单 → 任务规格 → 映射仓库 → 隔离执行（可多轮修复）→ 验证门禁 + LLM 评审 → 原子合并 → 报告 + 回填**。
 > 相关文档：[架构设计](architecture.md)、[自动执行与选仓](auto-execution-and-plan-selection-design.md)、[父子需求](parent-child-requirements-design.md)。
 
 ---
 
 ## 0. 先定义「解决」
 
-本系统把一件事**做完**的判定是下面四条同时成立（而不是"agent 说它改好了"）：
+本系统把一件事**做完**的判定是下面五条同时成立（而不是"agent 说它改好了"）：
 
 | # | 条件 | 证据落点 |
 |---|---|---|
 | 1 | 执行器在隔离 worktree 里跑通，且确实产生了文件改动（dry-run 除外） | `WorkItem.result.changed_files` |
-| 2 | **apply 链路（人工 / 自动）**验证门禁通过（或被人工「强制合并」显式越过） | `result.verification.state / ok` |
-| 3 | 改动**原子地**写入主仓库工作区——要么全写、要么一个文件都不写 | `item.merge_state = merged / blocked` |
-| 4 | 报告落盘，TAPD 来源的工单状态回填成功 | `data/reports/<id>.md`；TAPD 状态 + 评论 |
+| 2 | 有可检查的任务规格（目标/验收标准），并由评审逐条核对 | `item.spec`；`result.verification.review` |
+| 3 | **apply 链路（人工 / 自动）**验证门禁通过（或被人工「强制合并」显式越过） | `result.verification.state / ok` |
+| 4 | 改动**原子地**写入主仓库工作区——要么全写、要么一个文件都不写 | `item.merge_state = merged / blocked` |
+| 5 | 报告落盘，TAPD 来源的工单状态回填成功 | `data/reports/<id>.md`；TAPD 状态 + 评论 |
 
 **「解决」≠「发布」**：系统**不 commit、不 push、不开 MR、不部署**。合并成功后代码只存在于你的主仓库工作区（`git status` 里能看到），review、提交、推送仍由人完成。
 
 | 系统负责 | 人负责 |
 |---|---|
-| 拉单、去重、分类、映射仓库、跑 agent、跑检查、写回工作区、出报告、回填 TAPD | 决定要不要跑、apply 的审批、冲突处理、强制合并、commit / push / 发布 |
+| 拉单、去重、分类、生成任务规格、映射仓库、跑 agent、跑检查、LLM 评审、写回工作区、出报告、回填 TAPD | 决定要不要跑、apply 的审批、冲突处理、强制合并、commit / push / 发布 |
 
 ---
 
@@ -51,25 +52,26 @@ flowchart TD
     MAP -->|"多仓未定 / 无映射"| DISC["discovered 待映射"]
     MAP -->|"父需求"| CONT["容器节点<br/>只分组不执行"]
 
-    READY --> TRIG{"派发方式"}
     DISC -->|"自动执行：规划选中仓库（LLM）"| READY
+    READY --> SPEC["任务规格 TaskSpec<br/>目标 / 验收标准 / 约束 / 风险<br/>规则版建单即有，自动任务可升级 LLM 版"]
+    SPEC --> TRIG{"派发方式"}
     TRIG -->|"人工 dry-run"| DRY["只生成提示词 + 命令<br/>仓库零改动"]
-    TRIG -->|"人工 apply（需审批）"| WT["隔离 worktree 中执行"]
+    TRIG -->|"人工 apply（需审批）"| WT["隔离 worktree 中执行<br/>提示词含规格"]
     TRIG -->|"自动 apply（自动审批）"| WT
 
-    WT --> GATE{"验证门禁<br/>所有 apply（人工 / 自动）"}
-    GATE -->|"未通过 / 未配置 / 超时"| FAIL["failed<br/>worktree 保留可重试"]
-    GATE -->|"通过 / 验证被禁用"| MERGE{"原子合并"}
+    WT --> GATE{"验证门禁 + LLM 评审<br/>人工 1 轮 / 自动最多 N 轮"}
+    GATE -->|"通过（含警告）"| MERGE{"原子合并"}
+    GATE -->|"未通过且可修 / 还有轮次<br/>把检查输出与评审问题注入下一轮"| WT
+    GATE -->|"轮次用尽 / 不可修 / 需人工审批"| FAIL["failed<br/>worktree 保留可重试"]
     MERGE -->|"无冲突"| DONE["succeeded<br/>已写入主仓库工作区"]
     MERGE -->|"有冲突"| BLOCK["succeeded + merge_state=blocked<br/>一个文件都不写"]
-    
+
     DRY --> RPT["Markdown 报告 + SSE 事件"]
     DONE --> RPT
     FAIL --> RPT
     BLOCK --> RPT
-    RPT --> BF["TAPD 回填：评论（结论/文件/diff）<br/>dry-run 完全不回写"]
+    RPT --> BF["TAPD 回填：评论（结论/文件/diff/评审）<br/>dry-run 完全不回写"]
 ```
-
 ---
 
 ## 2. 入口：工单怎么进来
@@ -117,6 +119,8 @@ TAPD 建单的三个细节：
 
 - 映射上了仓库 → `ready`，可以直接执行；
 - 映射不上 → `discovered`，`stage` 写明原因（"未找到本地仓库……"），等人指定。
+
+**任务规格**在建单时同步生成（`spec.py`，规则版）：目标、可判真伪的验收标准、约束、风险等级、测试建议，存进 `item.spec`。它不依赖 LLM，任何工单都有；自动任务执行前会尝试用后端 Agent 模型升级成更贴合工单的版本（`source=llm`），失败保留规则版。
 
 ---
 
@@ -173,22 +177,26 @@ TAPD 建单的三个细节：
 
 `run_auto` 写入的字段：`auto=True`、`approved_by="auto"`、`hold_merge=True`、`exec_mode="apply"`、`plan=<计划文本>`、`auto_dispatched_at=<now>`，然后复用 `run()`。
 
+自动任务执行时还会带上**任务规格**（规则版或 LLM 版）和**执行-反馈循环**：门禁/评审未通过时最多再修 `TASKAGENT_MAX_ROUNDS` 轮（默认 2）；人工 apply 固定 1 轮，保持「点一次跑一次」。
+
 ### 5.3 并发、重试、取消
 
 - **锁顺序**：父需求锁 → 同仓库锁 → 全局信号量。父锁/仓库锁只作用于自动任务（人工任务不进这两把锁，互不阻塞），保证同一父需求下、或同一仓库上的自动任务串行，避免后一个任务把前一个的合并基线顶掉。
 - **并发上限**：`max_concurrent`（默认 1，系统设置里改），是全局槽位。
 - **失败重试**：只有可重试错误（timeout / rate / 429 / 5xx）才自动重试。默认 `max_attempts=2`，即失败后等 2s 再试一次；`retry_delays=(2s, 8s)` 里的 8s 只有在调高上限后才会用到。其余失败直接 `failed`。
-- **取消**：置取消位 + 状态 `cancelled`；正在跑的子进程不会被强杀，但它跑完后结果作废、不会合并（超时才会 kill 进程）。
+- **取消**：置取消位并向 CLI 进程组发 SIGTERM（2s 后升级 SIGKILL）；状态 `cancelled`，结果作废、不合并，worktree 在进程退出后回收。
 - **重启恢复**：服务启动时把遗留的 `queued/running` 标记为 `failed`（"服务重启导致执行中断"），可一键重跑。
 
 ---
 
-## 6. 阶段 D：执行（隔离 worktree）
+## 6. 阶段 D：执行（隔离 worktree + 执行-反馈循环）
+
+### 6.1 单轮执行
 
 `executor.py` 的 apply 流程：
 
 1. **建 worktree**：`data/worktrees/<仓库名>-<item_id>`，基于 `git worktree add -b taskagent/<...>`；随后把主仓库**当前未提交的改动叠加上去**，保证 agent 改的是你眼前的代码而不是过期 HEAD。建不出来时退化为 `git archive` 快照 / 目录拷贝。
-2. **拼提示词**（`build_prompt`）：任务类型/标题/来源/描述 + 父需求上下文（子任务才有）+ 规划步骤；明确要求"最小必要修改、不提交、不推、不改无关文件、能跑测试就报告结果"；任务正文用 `--- TASK START/END ---` 包裹，降低注入风险。
+2. **拼提示词**（`build_prompt`）：任务类型/标题/来源/描述 + 父需求上下文 + **任务规格（目标/验收标准/约束/风险）** + 规划步骤 + **上一轮反馈**（如果有）；明确要求"最小必要修改、不提交、不推、不改无关文件、能跑测试就报告结果"；任务正文用 `--- TASK START/END ---` 包裹，降低注入风险。
 3. **选后端与模型**：任务自带 `executor` 字段决定用哪个 CLI（codebuddy / dsh / 自定义），`item.model` 覆盖后端默认模型；命令用 argv 列表拼（非 shell），任务文本无法注入命令。
 4. **沙箱与权限**：`--permission-mode acceptEdits`（DSH 映射为 `workspace-write`），cwd=worktree；子进程环境只透传 `PATH/HOME/LANG/TERM…` 白名单，避免把服务端密钥带进去。
 5. **超时**：默认 600s，超时 kill 并判失败。
@@ -197,11 +205,29 @@ TAPD 建单的三个细节：
 
 dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报告。
 
+### 6.2 执行-反馈循环（`loop.py`）
+
+自动任务的执行不是一次性的：每轮「执行 → 验证 + 评审」，未通过时把问题变成下一轮的修复指令。
+
+| 维度 | 规则 |
+|---|---|
+| 轮次 | 自动任务 `TASKAGENT_MAX_ROUNDS`（默认 2，1 = 关闭循环）；人工 apply 固定 1 轮 |
+| worktree | 各轮**复用同一个 worktree**：下一轮在上一轮改动上继续修，而不是从头重做 |
+| 反馈内容 | 失败原因、未通过检查的 label/退出码/输出节选、评审问题清单、状态特定要求（不改测试、缩小范围、必须产生真实改动）；≤ 4000 字符，作为「上一轮未通过」段注入提示词 |
+| 可继续修 | `failed` / `review_blocked` / `test_files_changed` / `protected_files_changed` / `too_many_files` / `diff_too_large` / `no_changes` |
+| 立即停止 | `unconfigured` / `incomplete` / `review_needs_human` / `error`（不是 agent 改代码能解决的，别浪费轮次） |
+| 轮次用尽 | 保留最后一轮结果，任务 `failed`，stage 标注「第 N 轮」，worktree 保留供人排查/重新验证 |
+| 记录 | `result.rounds`、`item.feedback`（最后一轮反馈）；报告里折叠展示 |
+
+循环本身不碰主仓库、不合并；合并仍由 scheduler 在循环结束后做一次原子合并。
+
 ---
 
-## 7. 阶段 E：验证门禁（所有 apply 链路，人工 + 自动）
+## 7. 阶段 E：验证 + 评审门禁（所有 apply 链路，人工 + 自动）
 
-位置：agent 跑完之后、原子合并之前；在同一个 worktree 里跑仓库声明的检查（`verification.run_gate`）。**默认 fail-closed**：没配置、跑不起来、超时、动到测试/受保护文件，都算不通过，主仓一个文件都不写。
+位置：agent 跑完之后、原子合并之前；在同一个 worktree 里跑仓库声明的检查（`verification.run_gate`），配置了模型时再叠加 LLM 评审。**默认 fail-closed**：没配置、跑不起来、超时、动到测试/受保护文件，都算不通过，主仓一个文件都不写。
+
+### 7.1 仓库检查（确定性）
 
 判定按固定顺序短路：
 
@@ -230,6 +256,23 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 - 门禁日志在 `data/verifications/`（7 天 / 2000 个文件自动回收），输出已脱敏。
 - 检查进程的 `PYTHONPATH` 指向被验证 worktree 的 `src/` 与根目录：`.venv` 若是 editable 安装（指向主仓），不这样做检查会跑主仓代码而不是 agent 的改动。
 - **人工 apply 与自动链路走同一套门禁**：`run()` 对所有 `apply`（包括人工单条执行）置 `hold_merge=True`，执行器只写隔离 worktree；门禁未过（含未配置、跑不起来、超时、动到测试/受保护文件）就一个文件都不写回主仓，worktree 保留供排查与「重新验证」。
+
+### 7.2 LLM 评审（`reviewer.py`）
+
+- **输入**：worktree diff（≤ 200,000 字符）+ **任务规格**（验收标准逐条核对）+ 改动行数；读「模型配置」里的后端 Agent 模型，与执行端 CLI 解耦。
+- **输出**：`verdict`（approve / comment / block）+ `issues`（severity/file/message）+ `risks`（security、migration、breaking-change…）+ `reason`。
+- **并入门禁**（`apply_review`）：
+
+| 评审结论 | 门禁结果 |
+|---|---|
+| `block` | `ok=false`，`state=review_blocked`，任务留任务中心 |
+| 大 diff（> 2000 行）/ 敏感文件（`.env`、CI、依赖清单、迁移、key 等）/ 高风险标签 / high·critical 问题 | `ok=false`，`state=review_needs_human`（转人工审批） |
+| `comment` | 放行，但写 `warnings`，`state` 升为 `passed_with_warnings` |
+| `approve` | 不改变门禁判定 |
+
+- **降级**：模型未配置、调用超时/失败、回复无法解析 → `review.state=skipped/error`，不改变原有验证门禁，报告如实标注「未评审」。
+- 关闭开关：`TASKAGENT_REVIEW=0`。
+- 评审同样作用于**人工 apply** 与**自动链路**，且是反馈循环的输入之一：block 的问题清单会进入下一轮修复指令。
 
 ---
 
@@ -261,8 +304,10 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 
 - 概览（ID、类型、来源、状态、执行模式、模型、映射仓库、批准来源）；
 - 需求描述；
-- 执行结果（成功、dry-run、耗时、改动文件数、worktree）；
-- 验证（状态、原因、每个检查的命令/耗时/退出码/输出摘要）；
+- **任务规格**（目标、验收标准、约束、风险、规则/LLM 来源）；
+- 执行结果（成功、dry-run、耗时、改动文件数、**执行轮次**、worktree）；
+- 验证（状态、原因、每个检查的命令/耗时/退出码/输出摘要）+ **LLM 评审**（结论/问题清单/风险标签）；
+- 多轮执行时的「最后一轮反馈」；
 - 合并状态与自动同步明细（已同步/已删除/冲突/备份目录）；
 - 最终结论摘要、执行命令、完整提示词、stderr（折叠附录）；
 - 错误。
@@ -280,6 +325,8 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 执行后端：codebuddy；模型：后端默认
 原因：<未完成时写；验证/合并失败的具体原因>
 状态：<stage，例如"完成（已自动合并 3 个文件到工作区）">
+执行轮次：2 轮（含自动修复）
+评审：通过（0 个问题）
 改动文件（N）：
 - src/a.py
 - web/b.tsx
@@ -316,7 +363,7 @@ stateDiagram-v2
     ready --> queued: run / run_auto
     queued --> running: 拿到并发槽位
     running --> succeeded: 执行成功
-    running --> failed: 执行失败 / 验证未通过
+    running --> failed: 执行失败 / 门禁或评审未通过 / 轮次用尽
     ready --> cancelled: 取消
     queued --> cancelled: 取消
     running --> cancelled: 取消（结果作废）
@@ -342,8 +389,11 @@ stateDiagram-v2
 | `auto` / `approved_by` | 是否自动派发 / 谁批准的 apply（`user` / `auto`） |
 | `auto_dispatched_at` | 自动派发幂等标记 |
 | `attempt` / `max_attempts` | 执行尝试次数 / 上限 |
-| `result.verification` | 门禁结论（`ok` / `state` / `reason` / `checks` / `override`） |
+| `result.verification` | 门禁结论（`ok` / `state` / `reason` / `checks` / `override`），配置了模型时含 `review` 子结论 |
 | `result.diff` | agent 改动 diff 节选（合并会删 worktree，所以执行后立刻留档，供评论/排查用） |
+| `result.rounds` | 本次执行跑了几轮 agent（>1 说明反馈循环修过） |
+| `spec` | 任务规格：目标 / 验收标准 / 约束 / 风险 / 来源（rule·llm） |
+| `feedback` | 最后一轮未通过的原因（下一轮提示词 / 报告用；重新执行时清空） |
 | `plan` / `parent_context` | 规划步骤 / 父需求上下文（执行时注入提示词） |
 
 ---
@@ -357,9 +407,12 @@ stateDiagram-v2
 | 没有可用的执行后端 | `failed` | 直接失败，提示去系统设置 | 启用/新增后端后重新执行 |
 | agent 超时 / 429 | 自动重试后仍失败 | 等 2s 重试一次（默认上限 2 次） | 重新执行或排查 CLI |
 | 退出码 0 但鉴权失败 / 无实际执行 | `failed` | 严格判定拦下"假成功" | 检查 CLI 登录态 |
-| 验证未配置 | `failed`（`unconfigured`） | 主仓不写，worktree 保留 | 补 `verify.json` / 重建画像 → 重新验证 |
-| 验证失败（测试/检查不过） | `failed` | 主仓不写，worktree 保留 | 修代码或环境 → 重新验证；急用可强制合并 |
-| 动到了测试/受保护文件 | `failed` | 拦截 | 让 agent 别改这些文件，或人工处理 |
+| 验证未配置 | `failed`（`unconfigured`） | 主仓不写，worktree 保留；循环立即停止（不是 agent 能修的） | 补 `verify.json` / 重建画像 → 重新验证 |
+| 验证失败（测试/检查不过） | `failed` | 自动任务会把失败输出注入下一轮，最多 N 轮；仍不过则失败、主仓不写 | 修代码或环境 → 重新验证；急用可强制合并 |
+| 动到了测试/受保护文件 | `failed` | 反馈里明确要求别改；轮次用尽仍犯则失败 | 让 agent 别改这些文件，或人工处理 |
+| LLM 评审 block | `failed`（`review_blocked`） | 问题清单进入下一轮修复；仍 block 则失败 | 看报告里的评审问题，人工处理后重新执行 |
+| 评审要求人工审批（大 diff/敏感文件/高风险） | `failed`（`review_needs_human`） | 循环立即停止，不自动合并 | 人工审 diff 后「强制合并」或拆分任务 |
+| 评审模型未配置/调用失败 | 门禁不回退失败 | 记为「未评审」，验证门禁照常生效 | 在「模型配置」里配一个可用的后端 Agent 模型 |
 | 合并冲突 | `succeeded` + `blocked` | 一个文件都不写，保留 worktree | 处理主仓冲突后点「合并」重试 |
 | dry-run 完成 | `succeeded` | 只生成本地方案；不改 TAPD 状态、不发评论 | 看本机报告后再决定是否 apply |
 | 服务重启时正在跑 | `failed`（已中断） | 启动恢复标记 | 重新执行 |
@@ -399,8 +452,11 @@ stateDiagram-v2
 3. **TAPD 回填要求门禁通过且合并未被 blocked**（人工 / 自动一致）；门禁失败或合并冲突时不会把工单回填为完成。
 4. **没有网络隔离**：检查进程不限制网络；只做了环境变量白名单与可选 `rlimits`（CPU/内存/文件大小）。
 5. **多候选仓库的自动选仓依赖后端 Agent 的 LLM**；没配（可用）模型时，多候选任务只能人工映射，系统不会猜。
-6. **取消不是强杀**：正在运行的 CLI 会跑完，结果作废。
-7. **单机单进程**：状态在本地 JSON，没有多实例协调；多副本会重复派发。
+6. **验收标准不是可执行断言**：目前由 LLM 评审核对（以及仓库测试兜底），没有「从验收标准自动生成/运行测试」的能力；评审模型不可用时，验收标准只能靠人看。
+7. **循环没有成本预算**：只按轮次（`TASKAGENT_MAX_ROUNDS`）和单次超时兜底，没有 token / 费用上限；模型调用按轮次线性增加。
+8. **取消不是瞬间生效**：先 SIGTERM 进程组，2s 后才 SIGKILL；期间已写入 worktree 的中间结果不会合并。
+9. **任务规格只读**：规则/LLM 生成后直接使用，界面暂不支持编辑验收标准再重跑（要改就重新执行，或改工单后重新导入）。
+10. **单机单进程**：状态在本地 JSON，没有多实例协调；多副本会重复派发。
 
 ---
 
@@ -413,7 +469,7 @@ sequenceDiagram
     participant S as Scheduler / Automation
     participant E as Executor (CLI)
     participant W as 隔离 worktree
-    participant G as 验证门禁
+    participant G as 验证门禁 + LLM 评审
     participant R as 主仓库工作区
     participant U as 调度台 UI
 
@@ -423,17 +479,25 @@ sequenceDiagram
     alt 多候选仓库
         S->>S: 规则短计划 / LLM 选仓 + 步骤
     end
+    S->>S: 任务规格：规则版兜底，自动任务尝试 LLM 升级
     S->>W: 建 worktree（叠加当前未提交改动）
-    S->>E: -p 提示词 + 权限 + 模型
-    E->>W: 改代码、跑测试
-    E-->>S: stdout / changed_files / 严格判定
-    S->>G: 在 worktree 里跑四类检查
-    alt 门禁不通过
-        G-->>S: ok=false + 原因
-        S->>U: item_verify_failed（failed，worktree 保留）
-    else 通过
+    loop 最多 N 轮（自动任务；人工 apply 1 轮）
+        S->>E: -p 提示词（规格 + 上一轮反馈）+ 权限 + 模型
+        E->>W: 改代码、跑测试
+        E-->>S: stdout / changed_files / 严格判定
+        S->>G: 四类检查（+ LLM 评审 diff 与验收标准）
+        alt 通过
+            G-->>S: ok=true
+        else 未通过且可修、还有轮次
+            G-->>S: ok=false + 原因 / 问题清单
+            S->>S: build_feedback 注入下一轮
+        end
+    end
+    alt 最终通过
         S->>R: 原子合并预演 → 全写或全不写
         S->>U: item_merged / item_merge_blocked
-        S->>T: 回填 resolved + 报告评论
+        S->>T: 回填（评论写文件/diff/评审摘要）
+    else 轮次用尽 / 不可修 / 需人工审批
+        S->>U: item_verify_failed（failed，worktree 保留）
     end
 ```
