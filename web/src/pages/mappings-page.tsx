@@ -14,6 +14,24 @@ import {endpoints, readGitOrigin, type RepoProfile, type TapdWorkspace, type Ver
 import {cn} from '@/lib/utils';
 import {toast} from 'sonner';
 
+const DELIVERY_LABEL: Record<string, string> = {
+  '': '跟随全局',
+  off: '关闭',
+  commit: '提交',
+  push: '推送',
+  pr: 'PR',
+};
+
+function deliveryText(mapping: {delivery?: string; merge_policy?: string}): string {
+  const mode = mapping.delivery ?? '';
+  const base = DELIVERY_LABEL[mode] ?? mode;
+  if (mode !== 'pr') return base;
+  const merge = mapping.merge_policy === 'auto'
+    ? '自动合并'
+    : mapping.merge_policy === 'manual' ? '人工合并' : '跟随合并策略';
+  return `${base}（${merge}）`;
+}
+
 function IconTip({label, children}: {label: string; children: React.ReactNode}) {
   return (
     <Tooltip>
@@ -158,7 +176,7 @@ export function MappingsPage() {
           title="暂无项目映射"
         />
       ) : (
-        <Table className="min-w-[1080px]" containerClassName="min-h-0 min-w-0 flex-1">
+        <Table className="min-w-[1180px]" containerClassName="min-h-0 min-w-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-[160px] pl-5">项目名</TableHead>
@@ -167,6 +185,7 @@ export function MappingsPage() {
               <TableHead className="w-[130px]">仓库画像</TableHead>
               <TableHead className="w-[110px]">验证配置</TableHead>
               <TableHead className="w-[130px]">TAPD 项目</TableHead>
+              <TableHead className="w-[150px]">交付</TableHead>
               <TableHead className="w-[90px]">状态</TableHead>
               <TableHead className="sticky right-0 z-20 w-[80px] bg-[#fafafd] pr-5 text-right shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.18)]">操作</TableHead>
             </TableRow>
@@ -291,6 +310,11 @@ export function MappingsPage() {
                       </div>
                     );
                   })()}
+                </TableCell>
+                <TableCell>
+                  <span className="text-[12.5px] text-foreground/70">
+                    {deliveryText(mapping)}
+                  </span>
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">

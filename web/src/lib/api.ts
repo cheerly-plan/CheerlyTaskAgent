@@ -156,6 +156,8 @@ export interface ProjectMapping {
   note: string;
   tapd_workspace_ids: string[];
   tapd_workspace_id: string;
+  delivery?: string;
+  merge_policy?: string;
 }
 
 export interface TapdWorkspace {
@@ -292,6 +294,8 @@ export interface MappingDraft {
   enabled?: boolean;
   tapd_workspace_ids?: string[];
   tapd_workspace_id?: string;
+  delivery?: string;
+  merge_policy?: string;
 }
 
 export type ItemAction =

@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {Input} from '@/components/ui/input';
-import {Field} from '@/components/select-field';
+import {Field, SelectField} from '@/components/select-field';
 import {readGitOrigin, type MappingDraft, type ProjectMapping, type TapdWorkspace} from '@/lib/api';
 
 interface MappingDialogProps {
@@ -30,6 +30,8 @@ interface FormState {
   path: string;
   note: string;
   workspaceIds: string[];
+  delivery: string;
+  mergePolicy: string;
 }
 
 const toForm = (mapping: ProjectMapping | null): FormState => ({
@@ -39,6 +41,8 @@ const toForm = (mapping: ProjectMapping | null): FormState => ({
   workspaceIds: mapping?.tapd_workspace_ids?.length
     ? [...mapping.tapd_workspace_ids]
     : mapping?.tapd_workspace_id ? [mapping.tapd_workspace_id] : [],
+  delivery: mapping?.delivery ?? '',
+  mergePolicy: mapping?.merge_policy ?? '',
 });
 
 export function MappingDialog({
@@ -70,6 +74,8 @@ export function MappingDialog({
       note: form.note.trim(),
       tapd_workspace_ids: form.workspaceIds,
       tapd_workspace_id: form.workspaceIds[0] ?? '',
+      delivery: form.delivery,
+      merge_policy: form.mergePolicy,
     });
   };
 
@@ -118,6 +124,37 @@ export function MappingDialog({
               onChange={(event) => patch('note', event.target.value)}
             />
           </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="交付">
+              <SelectField
+                value={form.delivery}
+                onChange={(value) => patch('delivery', value)}
+                options={[
+                  {value: '', label: '跟随全局'},
+                  {value: 'off', label: '关闭'},
+                  {value: 'commit', label: '仅提交任务分支'},
+                  {value: 'push', label: '提交并推送'},
+                  {value: 'pr', label: '推送并创建 PR/MR'},
+                ]}
+              />
+            </Field>
+            <Field label="PR 合并">
+              <SelectField
+                value={form.mergePolicy}
+                onChange={(value) => patch('mergePolicy', value)}
+                options={[
+                  {value: '', label: '跟随全局'},
+                  {value: 'manual', label: '人工合并'},
+                  {value: 'auto', label: 'CI 通过后自动合并'},
+                ]}
+              />
+            </Field>
+          </div>
+          <p className="mb-3.5 -mt-1 text-[11px] leading-relaxed text-foreground/55">
+            交付默认关闭；开启后会先在任务分支做过滤提交，再按模式 push / 创建 PR。
+            自动合并仅在 PR 模式、CI 全部通过时生效；CI 失败或未配置时保持人工处理。
+          </p>
 
           <Field label="关联 TAPD 项目（可多选）">
             <FloatingRepoSelect

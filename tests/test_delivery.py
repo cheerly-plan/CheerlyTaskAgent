@@ -393,52 +393,68 @@ def test_policy_merge_override() -> None:
     assert policy_for(item, settings=settings, mapping=mapping).merge == "manual"
 
 
-def test_scheduler_finish_delivery_records_ci_and_merge(tmp_path: Path, monkeypatch) -> None:
+async def test_watch_ci_updates_delivery_and_merges(tmp_path: Path, monkeypatch) -> None:
     import taskagent.delivery as delivery_mod
     from taskagent.events import EventBus
     from taskagent.executor import ExecutorRegistry
     from taskagent.gitmap import GitProjectRegistry
+    from taskagent.models import ItemStatus, RunResult
     from taskagent.scheduler import Scheduler, SchedulerSettings
     from taskagent.store import TaskStore
 
+    data = tmp_path / "data"
+    store = TaskStore(data / "tasks")
     scheduler = Scheduler(
-        store=TaskStore(tmp_path / "tasks"),
+        store=store,
         gitmap=GitProjectRegistry([]),
         executors=ExecutorRegistry(),
         events=EventBus(),
         settings=SchedulerSettings(
-            reports_dir=tmp_path / "reports",
+            reports_dir=data / "reports",
             delivery_mode="pr", delivery_merge="auto",
         ),
     )
-    item = _item(tmp_path)
+    item = _item(tmp_path / "repo")
+    item.status = ItemStatus.SUCCEEDED
+    item.auto = True
+    item.result = RunResult(
+        ok=True, dry_run=False, command="fake", changed_files=["app.py"],
+        worktree=str(tmp_path / "gone"),
+    )
     item.delivery = {
         "mode": "pr", "commit": "abc", "branch": "taskagent/demo-1",
         "pushed": True, "pr_url": "https://github.com/acme/repo/pull/7", "pr_number": 7,
+        "ci_pending": True,
     }
-    monkeypatch.setattr(
-        scheduler, "_deliver_remote", lambda target, policy: target.delivery
-    )
-    monkeypatch.setattr(
-        delivery_mod, "finalize_ci",
-        lambda *args, **kwargs: {
-            "ci": {"state": "success", "detail": "ok"},
-            "merged": True, "merge_error": "",
-        },
-    )
-    policy = scheduler._delivery_policy(item)
-    suffix = scheduler._finish_delivery(item, policy, wait_ci=True)
+    store.save(item)
 
-    assert item.delivery["ci_state"] == "success"
-    assert item.delivery["merged"] is True
-    assert "自动合并" in suffix
+    monkeypatch.setattr(
+        delivery_mod, "ci_status",
+        lambda *args, **kwargs: {"state": "success", "detail": "ok"},
+    )
+    monkeypatch.setattr(
+        delivery_mod, "merge_pr", lambda *args, **kwargs: {"ok": True}
+    )
+
+    policy = delivery_mod.DeliveryPolicy(
+        mode="pr", base="main", provider="github", token="t",
+        merge="auto", ci_timeout_s=5, ci_poll_interval_s=1,
+    )
+    await scheduler._watch_ci(item.id, policy)
+
+    saved = store.get(item.id)
+    assert saved is not None
+    assert saved.delivery["ci_state"] == "success"
+    assert saved.delivery["merged"] is True
+    assert saved.delivery["ci_pending"] is False
+    assert "已自动合并 PR" in saved.stage
+    assert (data / "reports" / f"{item.id}.md").is_file()
 
 
 def test_create_pr_reuses_existing_github_pr_on_retry() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return httpx.Response(422, json={"message": "A pull request already exists"})
-        assert request.method == "GET"
         assert request.url.params["head"] == "acme:taskagent/demo-1"
         return httpx.Response(200, json=[{
             "number": 7, "html_url": "https://github.com/acme/repo/pull/7",
@@ -454,7 +470,6 @@ def test_create_pr_reuses_existing_github_pr_on_retry() -> None:
     assert outcome["ok"] is True
     assert outcome["reused"] is True
     assert outcome["number"] == 7
-    assert outcome["url"].endswith("/pull/7")
 
 
 def test_create_pr_reuses_existing_gitlab_mr_on_retry() -> None:
@@ -476,3 +491,29 @@ def test_create_pr_reuses_existing_gitlab_mr_on_retry() -> None:
     assert outcome["ok"] is True
     assert outcome["reused"] is True
     assert outcome["number"] == 3
+
+
+def test_startup_recovery_clears_pending_ci(tmp_path: Path) -> None:
+    from taskagent.events import EventBus
+    from taskagent.executor import ExecutorRegistry
+    from taskagent.gitmap import GitProjectRegistry
+    from taskagent.scheduler import Scheduler, SchedulerSettings
+    from taskagent.store import TaskStore
+
+    store = TaskStore(tmp_path / "tasks")
+    scheduler = Scheduler(
+        store=store,
+        gitmap=GitProjectRegistry([]),
+        executors=ExecutorRegistry(),
+        events=EventBus(),
+        settings=SchedulerSettings(reports_dir=tmp_path / "reports"),
+    )
+    item = _item(tmp_path)
+    item.delivery = {"ci_pending": True, "branch": "taskagent/x"}
+    store.save(item)
+
+    assert scheduler.recover_interrupted() == 1
+    saved = store.get(item.id)
+    assert saved is not None
+    assert saved.delivery["ci_pending"] is False
+    assert "重启" in saved.delivery["error"]

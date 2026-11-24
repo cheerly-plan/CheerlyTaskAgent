@@ -461,6 +461,17 @@ class Scheduler:
                 Event("item_failed", item.id, {"error": item.error, "recovered": True})
             )
             recovered += 1
+        # 后台 CI 等待任务随进程一起消失：清掉 pending 标记，提示可重试交付。
+        for item in self.store.list(limit=self.store.count()):
+            delivery = item.delivery if isinstance(item.delivery, dict) else {}
+            if not delivery.get("ci_pending"):
+                continue
+            delivery["ci_pending"] = False
+            delivery["error"] = "服务重启，CI 等待中断；可在任务上重试交付"
+            item.delivery = delivery
+            item.stage = "完成（CI 等待因服务重启中断）"
+            self.store.save(item)
+            recovered += 1
         return recovered
 
     # ── run / cancel ───────────────────────────────────────────────────────────
@@ -1117,48 +1128,17 @@ class Scheduler:
             return
         item.delivery = self._deliver_commit(item, backend, result, policy)
 
-    def _finish_delivery(
-        self, item: WorkItem, policy, *, prefix: str = "，", wait_ci: bool = False
-    ) -> str:
-        """Push/PR, optionally wait for CI, and merge when policy=auto.
+    def _finish_delivery(self, item: WorkItem, policy, *, prefix: str = "，") -> str:
+        """Push the committed branch and create a PR/MR (fast, no CI wait).
 
-        Returns a short stage suffix. CI waiting is only enabled for automatic
-        tasks: a manual merge/deliver request should not hang for 30 minutes.
+        CI waiting is a separate background task (:meth:`_watch_ci`) so a slow
+        pipeline never holds the scheduler slot.
         """
         if not policy.enabled or not (item.delivery or {}).get("commit"):
             return ""
         self._deliver_remote(item, policy)
         record = item.delivery or {}
-        if wait_ci and record.get("pr_url") and policy.mode == "pr" and item.repo:
-            from .delivery import finalize_ci, remote_url
-
-            outcome = finalize_ci(
-                policy,
-                remote_url(item.repo.path, policy.remote),
-                str(record.get("branch") or ""),
-                int(record.get("pr_number") or 0),
-            )
-            ci = outcome.get("ci") or {}
-            record["ci_state"] = str(ci.get("state") or "")
-            record["ci_detail"] = str(ci.get("detail") or "")
-            if outcome.get("merged"):
-                record["merged"] = True
-            if outcome.get("merge_error"):
-                record["merge_error"] = str(outcome["merge_error"])
-            item.delivery = record
-
-        if record.get("merged"):
-            return f"{prefix}CI 通过，已自动合并 PR"
         if record.get("pr_url"):
-            state = str(record.get("ci_state") or "")
-            if state == "success":
-                return f"{prefix}PR 已创建，CI 通过（待人工合并）"
-            if state:
-                label = {
-                    "failure": "失败", "timeout": "超时",
-                    "none": "未发现", "error": "查询失败",
-                }.get(state, state)
-                return f"{prefix}PR 已创建，CI {label}（未合并）"
             return f"{prefix}PR/MR：{record['pr_url']}"
         if record.get("pushed"):
             return f"{prefix}已推送任务分支 {record.get('branch')}"
@@ -1168,7 +1148,79 @@ class Scheduler:
             return f"{prefix}已提交 {record['commit']}（任务分支）"
         return ""
 
-    def deliver_item(self, item_id: str, *, wait_ci: bool | None = None) -> WorkItem:
+    async def _watch_ci(self, item_id: str, policy) -> None:
+        """Background CI watch + optional auto-merge; never holds a scheduler slot."""
+        from .delivery import ci_status, merge_pr, remote_url
+
+        item = self.store.get(item_id)
+        if item is None or item.repo is None:
+            return
+        record = dict(item.delivery or {})
+        ref = str(record.get("branch") or "")
+        number = int(record.get("pr_number") or 0)
+        url = remote_url(item.repo.path, policy.remote)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(1, policy.ci_timeout_s)
+        interval = max(1, policy.ci_poll_interval_s)
+        ci: dict[str, Any] = {"state": "pending", "detail": "等待 CI"}
+        while True:
+            ci = await asyncio.to_thread(ci_status, policy, url, ref)
+            current = self.store.get(item_id)
+            if current is None:
+                return
+            if current.status in (ItemStatus.CANCELLED, ItemStatus.SKIPPED):
+                return
+            current.delivery["ci_state"] = str(ci.get("state") or "")
+            current.delivery["ci_detail"] = str(ci.get("detail") or "")
+            if ci.get("state") in {"success", "failure", "none", "error", "timeout"}:
+                break
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                ci = {"state": "timeout", "detail": "等待 CI 超时"}
+                break
+            current.stage = f"等待 CI…（{ci.get('state')}）"
+            self.store.save(current)
+            self.events.publish(Event("item_progress", item_id, {
+                "progress": 0.99, "stage": current.stage,
+            }))
+            await asyncio.sleep(min(interval, remaining))
+
+        item = self.store.get(item_id)
+        if item is None:
+            return
+        item.delivery["ci_state"] = str(ci.get("state") or "")
+        item.delivery["ci_detail"] = str(ci.get("detail") or "")
+        merged = False
+        if ci.get("state") == "success" and policy.auto_merge and number:
+            outcome = await asyncio.to_thread(merge_pr, policy, url, number)
+            merged = bool(outcome.get("ok"))
+            item.delivery["merged"] = merged
+            if not merged:
+                item.delivery["merge_error"] = str(outcome.get("error") or "")
+        item.delivery["ci_pending"] = False
+        if merged:
+            item.stage = "完成（CI 通过，已自动合并 PR）"
+        elif ci.get("state") == "success" and policy.auto_merge:
+            item.stage = "完成（CI 通过，但自动合并失败，请人工处理 PR）"
+        elif ci.get("state") == "success":
+            item.stage = "完成（PR 已创建，CI 通过，待人工合并）"
+        elif ci.get("state") == "timeout":
+            item.stage = "完成（等待 CI 超时，PR 未合并）"
+        elif ci.get("state") == "none":
+            item.stage = "完成（未发现 CI，PR 未自动合并）"
+        elif ci.get("state") == "error":
+            item.stage = "完成（CI 查询失败，PR 未自动合并）"
+        else:
+            item.stage = f"完成（CI {ci.get('state')}，PR 未合并）"
+        item.report_path = write_report(
+            item, self.settings.reports_dir, parent_title_of(item, self.store)
+        )
+        self.store.save(item)
+        self.events.publish(Event("item_delivery_updated", item_id, {
+            "delivery": dict(item.delivery), "stage": item.stage,
+        }))
+
+    def deliver_item(self, item_id: str) -> WorkItem:
         """Retry delivery (push/PR) for a task whose local commit already exists."""
         item = self.store.get(item_id)
         if item is None:
@@ -1186,9 +1238,7 @@ class Scheduler:
             if backend is None:
                 raise ValueError("没有可用的执行后端")
             item.delivery = self._deliver_commit(item, backend, item.result, policy)
-        if wait_ci is None:
-            wait_ci = bool(item.auto and policy.mode == "pr")
-        self._finish_delivery(item, policy, wait_ci=wait_ci)
+        self._finish_delivery(item, policy)
         self.store.save(item)
         self.events.publish(Event("item_delivered", item.id, {"delivery": dict(item.delivery)}))
         return item
@@ -1463,21 +1513,17 @@ class Scheduler:
                             await asyncio.to_thread(
                                 self._prepare_delivery, item, backend, result, policy
                             )
-                            wait_ci = bool(item.auto and policy.mode == "pr")
-                            if wait_ci:
-                                item.stage = "等待 CI 并处理 PR…"
-                                self.store.save(item)
-                                self.events.publish(Event("item_progress", item_id, {
-                                    "progress": 0.98, "stage": item.stage,
-                                }))
                             suffix = await asyncio.to_thread(
-                                self._finish_delivery, item, policy, wait_ci=wait_ci
+                                self._finish_delivery, item, policy
                             )
                             item.stage = (
                                 f"完成（已自动合并 {files} 个文件到工作区{note}）{suffix}"
                             )
                             # Merge landed: reclaim the isolated worktree now.
                             self._gc_after_success(item, backend)
+                            if item.auto and policy.mode == "pr" and (item.delivery or {}).get("pr_url"):
+                                item.delivery["ci_pending"] = True
+                                item.stage = "PR 已创建，等待 CI…（后台）"
                         else:
                             conflicts = len(result.sync_conflicts)
                             await asyncio.to_thread(
@@ -1564,6 +1610,12 @@ class Scheduler:
                     await asyncio.to_thread(self.on_finished, item, done)
                 except Exception as exc:  # noqa: BLE001 - write-back is best effort
                     logger.warning("工作项 %s 状态回填失败：%s", item_id, exc)
+            # 最后再起后台 CI 等待：避免 _execute 末尾的 save 覆盖后台写入的 ci_state。
+            if item.delivery.get("ci_pending"):
+                self._spawn(
+                    self._watch_ci(item_id, self._delivery_policy(item)),
+                    name=f"ci-{item_id}",
+                )
 
 
 def _is_retryable(error: str | None) -> bool:
