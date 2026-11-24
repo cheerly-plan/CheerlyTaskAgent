@@ -15,7 +15,7 @@ def _config(
     waive_missing: bool = True,
     **repo: object,
 ) -> Path:
-    body: dict = {"checks": checks, **repo}
+    body: dict = {"checks": checks, "baseline": "off", **repo}
     if waive_missing:
         present = {str(check.get("category")) for check in checks}
         body["na"] = {
@@ -180,3 +180,192 @@ def test_kill_switch_allows_merge(tmp_path: Path, monkeypatch) -> None:
     result = _gate(tmp_path, tmp_path / "missing.json")
     assert result["ok"] is True
     assert result["state"] == "disabled"
+
+# ── hardening: protected files / caps / env / retry / baseline ────────────────
+def _git_repo(tmp_path: Path) -> Path:
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "T"], check=True
+    )
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "init"], check=True
+    )
+    return repo
+
+
+def test_protected_file_blocks(tmp_path: Path) -> None:
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{"id": "unit", "category": "test", "command": ["true"]}]),
+        changed=["pyproject.toml"],
+    )
+    assert result["ok"] is False
+    assert result["state"] == "protected_files_changed"
+    assert result["protected_files"] == ["pyproject.toml"]
+
+
+def test_too_many_files_blocks(tmp_path: Path) -> None:
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{"id": "unit", "category": "test", "command": ["true"]}],
+            max_changed_files=2,
+        ),
+        changed=["a.py", "b.py", "c.py"],
+    )
+    assert result["ok"] is False
+    assert result["state"] == "too_many_files"
+
+
+def test_env_does_not_leak_secrets(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MY_SECRET", "super-secret-value")
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{
+            "id": "unit", "category": "test",
+            "command": ["sh", "-c", 'test -z "$MY_SECRET"'],
+        }]),
+    )
+    assert result["ok"] is True, result
+
+
+def test_output_redacts_secrets(tmp_path: Path) -> None:
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{
+            "id": "unit", "category": "test",
+            "command": ["sh", "-c", "echo api_key=abc123"],
+        }]),
+    )
+    tail = result["checks"][0]["tail"]
+    assert "abc123" not in tail
+    assert "***" in tail
+
+
+def test_flaky_retry_passes(tmp_path: Path) -> None:
+    counter = tmp_path / "count"
+    script = tmp_path / "flaky.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'n=$(cat "{counter}" 2>/dev/null || echo 0)\n'
+        "n=$((n+1))\n"
+        f'echo "$n" > "{counter}"\n'
+        '[ "$n" -ge 2 ]\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{
+                "id": "unit", "category": "test",
+                "command": ["sh", str(script)],
+            }],
+            retries=1,
+            retry_delay_s=0,
+        ),
+    )
+    assert result["ok"] is True
+    assert result["state"] == "passed_with_warnings"
+    assert result["checks"][0]["attempts"] == 2
+
+
+def test_baseline_advisory_allows_preexisting(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{"id": "unit", "category": "test", "command": ["false"]}],
+            baseline="advisory",
+        ),
+        worktree=repo,
+    )
+    assert result["ok"] is True, result
+    assert result["state"] == "passed_with_warnings"
+    assert result["checks"][0]["pre_existing"] is True
+    assert result["checks"][0]["baseline"]["ok"] is False
+    assert not list((tmp_path / "data" / "verification-baselines").glob("*"))
+
+
+def test_baseline_strict_blocks(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{"id": "unit", "category": "test", "command": ["false"]}],
+            baseline="strict",
+        ),
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "failed"
+    assert "基线同样失败" in result["reason"]
+
+
+def test_total_timeout_blocks(tmp_path: Path) -> None:
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [
+                {"id": "a", "category": "test", "command": ["sleep", "0.45"]},
+                {"id": "b", "category": "lint", "command": ["true"]},
+            ],
+            total_timeout_s=0.6,
+            retries=0,
+        ),
+    )
+    assert result["ok"] is False
+    assert result["state"] == "failed"
+    assert "总验证超时" in result["reason"]
+
+
+def test_gc_verification_logs(tmp_path: Path) -> None:
+    import os
+    import time
+
+    from taskagent.verification import gc_verification_logs
+
+    root = tmp_path / "data" / "verifications"
+    root.mkdir(parents=True)
+    old = root / "old.log"
+    new = root / "new.log"
+    old.write_text("old", encoding="utf-8")
+    new.write_text("new", encoding="utf-8")
+    old_time = time.time() - 9 * 86_400
+    os.utime(old, (old_time, old_time))
+    assert gc_verification_logs(tmp_path / "data") == 1
+    assert not old.exists()
+    assert new.exists()
+
+
+def test_diff_too_large_blocks(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path)
+    (repo / "app.py").write_text(
+        "VALUE = 1\nVALUE = 2\nVALUE = 3\nVALUE = 4\n", encoding="utf-8"
+    )
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{"id": "unit", "category": "test", "command": ["true"]}],
+            max_diff_lines=2,
+        ),
+        changed=["app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "diff_too_large"

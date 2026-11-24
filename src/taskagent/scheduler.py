@@ -46,6 +46,7 @@ class SchedulerSettings:
     # i.e. the sibling of reports/. None means "derive from reports_dir".
     verify_config_file: Path | None = None
     verify_default_timeout_s: int = 300
+    verify_total_timeout_s: int = 900
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -768,14 +769,14 @@ class Scheduler:
         Synchronous subprocess work is pushed to a thread so a slow test suite
         cannot freeze the event loop (SSE / UI / other tasks).
         """
-        from .verification import run_gate
+        from .verification import gc_verification_logs, run_gate
 
         config_file = self.settings.verify_config_file or (
             self.settings.reports_dir.parent / "verify.json"
         )
         repo = item.repo
         try:
-            return await asyncio.to_thread(
+            outcome = await asyncio.to_thread(
                 run_gate,
                 repo_name=repo.name if repo else "",
                 repo_path=repo.path if repo else "",
@@ -785,7 +786,13 @@ class Scheduler:
                 config_path=config_file,
                 data_dir=self.settings.reports_dir.parent,
                 default_timeout_s=self.settings.verify_default_timeout_s,
+                total_timeout_s=self.settings.verify_total_timeout_s,
             )
+            # Keep the verification log directory bounded; best effort.
+            await asyncio.to_thread(
+                gc_verification_logs, self.settings.reports_dir.parent
+            )
+            return outcome
         except Exception as error:
             logger.exception("验证执行异常 %s", item.id)
             return {
@@ -879,7 +886,11 @@ class Scheduler:
                         merged = self._auto_merge(item, backend, result)
                         if merged:
                             files = len(result.synced_files) + len(result.sync_deleted)
-                            note = "，验证已禁用" if gate.get("state") == "disabled" else ""
+                            note = ""
+                            if gate.get("state") == "disabled":
+                                note = "，验证已禁用"
+                            elif gate.get("state") == "passed_with_warnings":
+                                note = "，验证有警告"
                             item.stage = (
                                 f"完成（已自动合并 {files} 个文件到工作区{note}）"
                             )

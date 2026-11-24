@@ -68,7 +68,7 @@ def _write_verify(settings: Settings, command: tuple[str, ...] = ("true",)) -> N
         for category in ("test", "lint", "typecheck", "build")
     ]
     path.write_text(
-        json.dumps({"repos": {"demo": {"checks": checks}}}),
+        json.dumps({"repos": {"demo": {"checks": checks, "baseline": "off"}}}),
         encoding="utf-8",
     )
 
