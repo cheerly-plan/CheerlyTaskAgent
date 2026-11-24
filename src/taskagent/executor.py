@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shlex
 import shutil
+import signal
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -27,6 +29,8 @@ from typing import Any, ClassVar
 
 from . import dialect, dsh_profile
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
+
+logger = logging.getLogger(__name__)
 
 ProgressFn = Callable[[float, str], None]
 ShouldCancelFn = Callable[[], bool]
@@ -112,6 +116,110 @@ class Executor(ABC):
             "label": self.label,
             "command": self.command,
         }
+
+    # ── live process tracking (cancellation / shutdown) ──────────────────────
+    # The scheduler used to flip a flag before the CLI started and then delete
+    # the worktree immediately, while the child process could still be writing
+    # into it. Keep a handle to each running process so cancellation can stop
+    # it first. Both backends run through CodeBuddyExecutor._run_apply, so this
+    # single registry covers every backend without touching their signatures.
+
+    _live_procs: dict[str, asyncio.subprocess.Process]  # set in __init__
+
+    def _bind_process(self, item_id: str, proc: asyncio.subprocess.Process) -> None:
+        self._live_procs[item_id] = proc
+        # Remember the loop that started the child. The HTTP cancel route is a
+        # sync endpoint (runs in a threadpool), so get_running_loop() there
+        # would fail and the SIGKILL escalation would never be scheduled.
+        # loop.call_later is thread-safe.
+        try:
+            self._spawn_loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - bind is always in async code
+            self._spawn_loop = None
+
+    def _unbind_process(self, item_id: str, proc: asyncio.subprocess.Process | None = None) -> None:
+        # Identity check: a retried item may already have bound a *new* process
+        # under the same id. An old run's finally block must not unbind it.
+        current = self._live_procs.get(item_id)
+        if current is None or (proc is not None and current is not proc):
+            return
+        self._live_procs.pop(item_id, None)
+
+    def cancel_process(self, item_id: str, *, grace_s: float = 2.0) -> bool:
+        """Terminate a running CLI subprocess for ``item_id`` (best effort).
+
+        Returns True if a live process was found and signalled. The child is
+        started in its own session (POSIX), so we signal the whole process
+        group — a CLI launcher often spawns node/python grandchildren that
+        would otherwise keep writing to the worktree. Falls back to
+        ``Process.terminate`` on platforms without process groups.
+        """
+        proc = self._live_procs.get(item_id)
+        if proc is None or proc.returncode is not None:
+            return False
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
+        except (ProcessLookupError, OSError):
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                return False
+        # Escalate to SIGKILL after a grace period so a SIGTERM-ignoring child
+        # cannot keep the worktree busy indefinitely. Scheduled on the event
+        # loop; harmless if the process already exited by then.
+        try:
+            spawn_loop = getattr(self, "_spawn_loop", None)
+            loop = (
+                spawn_loop
+                if spawn_loop is not None and not spawn_loop.is_closed()
+                else asyncio.get_running_loop()
+            )
+            # Hold the process object in the closure: _run_apply unbinds it in
+            # its finally block (e.g. when shutdown cancels the task), but a
+            # stubborn child can still be alive and must still be SIGKILLed.
+            # Looking it up in _live_procs here would miss that case.
+            def _escalate(target: asyncio.subprocess.Process = proc) -> None:
+                if target.returncode is None:
+                    self._kill_process(target)
+
+            loop.call_later(grace_s, _escalate)
+        except RuntimeError:  # no running loop (sync test / shutdown path)
+            pass
+        return True
+
+    @staticmethod
+    def _kill_process(proc: asyncio.subprocess.Process) -> None:
+        try:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+    def snapshot_live_processes(self) -> list[asyncio.subprocess.Process]:
+        """Capture live process handles before a task cancellation unbinds them."""
+        return [p for p in self._live_procs.values() if p.returncode is None]
+
+    def hard_kill_snapshot(self, procs: list[asyncio.subprocess.Process]) -> int:
+        """SIGKILL a previously captured process list, skipping those that exited."""
+        count = 0
+        for proc in procs:
+            if proc.returncode is None:
+                self._kill_process(proc)
+                count += 1
+        return count
+
+    def cancel_all_processes(self) -> int:
+        """Gracefully signal every live CLI process (used on shutdown)."""
+        count = 0
+        for item_id, proc in list(self._live_procs.items()):
+            if proc.returncode is None and self.cancel_process(item_id):
+                count += 1
+        return count
 
 
 _KIND_LABEL = {
@@ -236,6 +344,9 @@ class CodeBuddyExecutor(Executor):
             probe=dialect.AlwaysProbe(True),
         )
         self._capability: bool | None = None
+        # Live CLI processes keyed by item id (see cancel_process). Defined on
+        # the base Executor; initialised here so both backends get it.
+        self._live_procs = {}
 
     def _dialect_ctx(self) -> dialect.DialectContext:
         """Snapshot what strategies may need (env is rebuilt per call)."""
@@ -786,6 +897,13 @@ class CodeBuddyExecutor(Executor):
         command = shlex.join(argv)
         started = time.monotonic()
         progress(0.1, f"worktree 已创建：{worktree_path.name}")
+        # Own session so cancellation can signal the whole process group: a
+        # CLI launcher spawns grandchildren that would otherwise keep writing
+        # to the worktree after we delete it. POSIX-only flag; Windows falls
+        # back to Process.terminate() in cancel_process().
+        spawn_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            spawn_kwargs["start_new_session"] = True
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -793,23 +911,8 @@ class CodeBuddyExecutor(Executor):
                 env=self._clean_env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
             )
-            progress(0.3, f"{self.label} 执行中…")
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=self.timeout_s
-                )
-            except TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                return RunResult(
-                    ok=False,
-                    dry_run=False,
-                    command=command,
-                    error=f"{self.label} timed out after {self.timeout_s:g}s",
-                    duration_s=time.monotonic() - started,
-                    worktree=str(worktree_path),
-                )
         except FileNotFoundError:
             return RunResult(
                 ok=False,
@@ -819,7 +922,59 @@ class CodeBuddyExecutor(Executor):
                 worktree=str(worktree_path),
             )
 
+        self._bind_process(item.id, proc)
+        progress(0.3, f"{self.label} 执行中…")
+        comm_task = asyncio.ensure_future(proc.communicate())
+        outcome = "ok"  # ok | timeout | cancelled
+        try:
+            deadline = started + self.timeout_s
+            while not comm_task.done():
+                if should_cancel():
+                    outcome = "cancelled"
+                    self.cancel_process(item.id)
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    outcome = "timeout"
+                    self._kill_process(proc)
+                    break
+                # Short sleeps keep cancellation responsive (<=200ms) without
+                # burning CPU; the child is awaited via comm_task below.
+                await asyncio.sleep(min(0.2, remaining))
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(comm_task, timeout=5.0)
+            except TimeoutError:
+                # SIGTERM ignored and escalation did not settle the child.
+                comm_task.cancel()
+                stdout_b, stderr_b = b"", b""
+                if outcome == "ok":
+                    outcome = "timeout"
+            # The child may have exited on its own right after our SIGTERM,
+            # completing communicate() between two poll ticks. Recheck the
+            # flag so the result is honest ("cancelled"), not a misleading
+            # "exit code -15" that looks like a genuine CLI failure.
+            if outcome == "ok" and should_cancel():
+                outcome = "cancelled"
+        finally:
+            self._unbind_process(item.id, proc)
+
         duration = time.monotonic() - started
+        # Cancellation is a terminal state for this run: no verdict, no sync,
+        # no report of phantom success. The caller decides how to record it.
+        if outcome != "ok":
+            return RunResult(
+                ok=False,
+                dry_run=False,
+                command=command,
+                stdout=stdout_b.decode("utf-8", errors="replace"),
+                stderr=stderr_b.decode("utf-8", errors="replace"),
+                error=(
+                    "cancelled" if outcome == "cancelled"
+                    else f"{self.label} timed out after {self.timeout_s:g}s"
+                ),
+                duration_s=duration,
+                worktree=str(worktree_path),
+            )
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
         changed = self._changed_files(worktree_path)
@@ -831,6 +986,18 @@ class CodeBuddyExecutor(Executor):
         ok, error = self.dialect.verdict.decide(
             returncode=proc.returncode, stdout=stdout, stderr=stderr, label=self.label
         )
+
+        # Capture the diff now: a successful merge deletes this worktree, but
+        # the TAPD comment (and the local report) still needs to show what the
+        # agent changed. Best-effort: diff capture never alters the verdict.
+        diff_text = ""
+        if changed:
+            try:
+                from .review import build_diff
+
+                diff_text = build_diff(worktree_path, changed, limit=8000)
+            except Exception:
+                logger.warning("抓取 worktree diff 失败：%s", item.id, exc_info=True)
 
         # Auto-sync successful apply changes back into the real repo so the
         # user sees them in their normal checkout without a manual copy. This
@@ -861,6 +1028,7 @@ class CodeBuddyExecutor(Executor):
             sync_conflicts=list(sync.get("sync_conflicts") or []),
             sync_backup_dir=sync.get("sync_backup_dir") if isinstance(sync.get("sync_backup_dir"), str) else None,
             sync_error=sync.get("sync_error") if isinstance(sync.get("sync_error"), str) else None,
+            diff=diff_text,
         )
 
     def _worktree_path(self, item: WorkItem, repo: LocalRepo) -> Path:
@@ -997,10 +1165,23 @@ class CodeBuddyExecutor(Executor):
                 ["git", "-C", cwd, *args], capture_output=True, text=True, check=False
             )
 
-        # A previously populated worktree can be reused safely; an empty or
-        # .git-only leftover (e.g. from a failed run) must be rebuilt.
+        # A previously populated *valid* worktree can be reused (retries keep
+        # their partial work). But a directory with files and no usable git
+        # HEAD is a half-built sandbox from a failed run — reusing it would
+        # treat stale files as the baseline and silently skip changed-file
+        # detection. Rebuild that case instead of trusting it.
         if cls._dir_has_content(target):
-            return True
+            # git -C walks up to a parent repo's HEAD, so also require that the
+            # target *itself* is a repo root — otherwise a stale directory
+            # inside the user's git tree would look like a valid worktree.
+            top = git("rev-parse", "--show-toplevel", cwd=str(target))
+            head = git("rev-parse", "--verify", "HEAD", cwd=str(target))
+            if (
+                top.returncode == 0
+                and Path(top.stdout.strip()).resolve() == Path(target).resolve()
+                and head.returncode == 0
+            ):
+                return True
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         target.parent.mkdir(parents=True, exist_ok=True)

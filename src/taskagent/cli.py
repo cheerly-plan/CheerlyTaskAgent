@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 from .backends import build_registry
@@ -11,6 +12,7 @@ from .config import Settings
 from .events import EventBus
 from .gitmap import GitProjectRegistry
 from .projectmap import ProjectMappingStore, ProjectRegistry
+from .reviewer import llm_from_settings as review_llm
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import RawItem
 from .store import TaskStore
@@ -38,6 +40,7 @@ def _build(settings: Settings):
             gc_enabled=settings.gc_enabled,
             backup_retention_days=settings.backup_retention_days,
             backup_max_per_task=settings.backup_max_per_task,
+            review_provider=lambda: review_llm(settings),
         ),
         projects=projects,
     )
@@ -160,17 +163,10 @@ def main() -> None:
     args = parser.parse_args()
 
     base = Settings.from_env()
-    settings = Settings(
-        data_dir=base.data_dir,
-        host=args.host or base.host,
-        port=args.port or base.port,
-        project_roots=base.project_roots,
-        codebuddy_command=base.codebuddy_command,
-        codebuddy_model=base.codebuddy_model,
-        timeout_s=base.timeout_s,
-        max_concurrent=base.max_concurrent,
-        project_map_file=base.project_map_file,
-    )
+    # Replace only the CLI-overridable fields. Hand-assembling Settings here
+    # silently dropped fs_root / auto_sync / gc_* / available_models etc. for
+    # scan and demo; dataclasses.replace keeps every current and future field.
+    settings = replace(base, host=args.host or base.host, port=args.port or base.port)
 
     if args.command == "web-build":
         build_web()

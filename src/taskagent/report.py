@@ -221,9 +221,42 @@ _VERIFY_STATE_LABELS: dict[str, str] = {
     "too_many_files": "改动文件过多",
     "diff_too_large": "改动行数过多",
     "incomplete": "验证类别不齐",
+    "review_blocked": "LLM 评审 block",
+    "review_needs_human": "LLM 评审转人工审批",
     "error": "验证出错",
     "disabled": "已禁用",
 }
+
+
+def _review_section(review: dict[str, Any]) -> list[str]:
+    """Render the LLM review verdict folded into the verification gate."""
+    verdict_label = {
+        "approve": "通过", "comment": "建议", "block": "阻塞",
+    }.get(str(review.get("verdict") or ""), str(review.get("verdict") or "未评审"))
+    lines = ["### LLM 评审", "", f"> 结论：**{verdict_label}**"]
+    state = str(review.get("state") or "")
+    if state and state != "done":
+        lines[-1] += f"（{state}）"
+    if review.get("reason"):
+        lines.append(f"> {review['reason']}")
+    lines.append("")
+    issues = review.get("issues") or []
+    if issues:
+        lines += ["问题清单：", ""]
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            item = f"- [{issue.get('severity') or 'medium'}] {issue.get('message') or ''}"
+            if issue.get("file"):
+                item += f"（`{issue['file']}`）"
+            lines.append(item)
+        lines.append("")
+    risks = review.get("risks") or []
+    if risks:
+        lines += [f"风险标签：{'、'.join(str(tag) for tag in risks)}", ""]
+    if review.get("needs_human"):
+        lines += ["> ⚠️ 大 diff 或高风险，已转人工审批，未自动合并。", ""]
+    return lines
 
 
 def _verification_section(verification: dict[str, Any]) -> list[str]:
@@ -232,6 +265,9 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
     label = _VERIFY_STATE_LABELS.get(state, state or "未知")
     reason = str(verification.get("reason") or "")
     lines = ["### 验证", "", f"> 验证结果：**{label}**" + (f"（{reason}）" if reason else ""), ""]
+    review = verification.get("review") or {}
+    if isinstance(review, dict) and review:
+        lines += _review_section(review)
     if verification.get("override"):
         lines += [
             (

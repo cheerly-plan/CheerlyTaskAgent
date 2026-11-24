@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from .automation import AutomationEngine
 from .backends import build_registry, describe_backends
+from .backfill import backfill_result
 from .config import Settings
 from .events import EventBus, sse_frame
 from .fsmap import FolderBrowser, PathBoundaryError
@@ -25,6 +26,7 @@ from .projectmap import ProjectMappingStore, ProjectRegistry
 from .repoprofile import RepoProfileStore, ensure_profiles
 from .report import parent_title_of, render_report
 from .review import build_diff, diff_stat
+from .reviewer import llm_from_settings as review_llm
 from .route import RouteHistory, route_item
 from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
@@ -278,35 +280,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return TapdClient(tapd_cfg), cfg
 
-    def parse_tapd_ref(source_ref: str) -> tuple[str, str] | None:
-        """'tapd:story:123' -> ('story', '123')."""
-        parts = (source_ref or "").split(":")
-        if len(parts) == 3 and parts[0] == "tapd" and parts[1] in {"story", "bug", "task"}:
-            return parts[1], parts[2]
-        return None
-
     def backfill_tapd(item: Any, ok: bool) -> None:
-        """Write task result back to TAPD (called by scheduler after execution)."""
+        """Write the result back to TAPD (called by scheduler after execution).
+
+        Every run leaves a comment (outcome + changed files + diff excerpt);
+        the status transition is skipped for dry-run, which changed no code.
+        Details and per-effect error isolation live in ``backfill.py``.
+        """
         cfg = settings.load_ui_settings().get("tapd", {})
         if not cfg.get("enabled"):
             return
-        parsed = parse_tapd_ref(item.source_ref)
-        if not parsed:
-            return
-        entity_type, object_id = parsed
         client, _ = make_tapd_client()
-        target = TapdItem(
-            entity_type=entity_type,
-            id=object_id,
-            workspace_id=client.config.primary_workspace_id,
-            title="", description="", status="", owner="", priority="",
-            iteration_id="", created="", modified="",
-        )
-        status = client.config.status_on_success if ok else client.config.status_on_failure
-        if status:
-            client.update_status(target, status)
-        if ok and item.report_path:
-            client.add_comment(target, f"任务已完成，报告：{item.report_path}")
+        backfill_result(item, ok, client=client)
 
     scheduler = Scheduler(
         store=store,
@@ -319,6 +304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gc_enabled=settings.gc_enabled,
             backup_retention_days=settings.backup_retention_days,
             backup_max_per_task=settings.backup_max_per_task,
+            review_provider=lambda: review_llm(settings),
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,

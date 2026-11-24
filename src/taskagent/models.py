@@ -157,6 +157,10 @@ class RunResult:
     # Post-execution verification gate verdict (see ``verification.py``).
     # Empty for dry-run / legacy results / manual applies.
     verification: dict[str, Any] = field(default_factory=dict)
+    # Excerpt of the worktree diff captured right after the agent ran. Kept on
+    # the result because the worktree is deleted on a successful merge, while
+    # the TAPD comment still needs to show *what* changed.
+    diff: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -176,6 +180,7 @@ class RunResult:
             "sync_backup_dir": self.sync_backup_dir,
             "sync_error": self.sync_error,
             "verification": self.verification,
+            "diff": self.diff,
         }
 
 

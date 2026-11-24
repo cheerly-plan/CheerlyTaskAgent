@@ -47,6 +47,11 @@ class SchedulerSettings:
     verify_config_file: Path | None = None
     verify_default_timeout_s: int = 300
     verify_total_timeout_s: int = 900
+    # LLM 代码评审（仅自动链路）。provider 延迟调用，UI 里配置的模型改完即生效；
+    # None = 未启用评审。评审结论并入上面的验证门禁。
+    review_provider: Callable[[], Any] | None = None
+    review_timeout_s: int = 120
+    review_max_diff_lines: int = 2_000
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -96,7 +101,11 @@ class Scheduler:
         self._cancel_flags: dict[str, bool] = {}
         self._seen_keys: dict[str, str] = {}
         self._tasks: set[asyncio.Task] = set()
-        for item in self.store.list(limit=2000):
+        # Idempotency keys must cover the full history: capping at 2000 made
+        # old dedupe_keys vanish once the task archive grew past that, so a
+        # re-synced TAPD ticket could be imported a second time. Load every
+        # persisted item at startup (store.count() is a cheap glob count).
+        for item in self.store.list(limit=self.store.count()):
             if item.dedupe_key:
                 self._seen_keys[item.dedupe_key] = item.id
 
@@ -108,17 +117,48 @@ class Scheduler:
         return task
 
     async def shutdown(self) -> None:
-        """Cancel in-flight execution tasks and let them settle (best effort).
+        """Stop live CLI processes, then cancel tasks and let them settle.
 
-        Cancelled tasks raise CancelledError inside ``_execute``; the work item
-        remains persisted as queued/running and ``recover_interrupted()`` reaps
-        it on the next start.
+        Cancelling the coroutine alone used to orphan the CLI subprocess: it
+        kept writing to the worktree after the server exited. Signal every
+        backend's live processes first (best effort), then cancel the tasks.
+        Work items stay persisted as queued/running and
+        ``recover_interrupted()`` reaps them on the next start.
         """
+        backends = [
+            (bid, backend)
+            for bid in list(self.executors.ids())
+            if (backend := self.executors.get(bid)) is not None
+        ]
+        # Snapshot BEFORE cancelling tasks: _run_apply's finally unbinds the
+        # process from _live_procs as soon as the task is cancelled, so a
+        # post-gather lookup there would find nothing to kill.
+        snapshots = []
+        for backend_id, backend in backends:
+            try:
+                snap = backend.snapshot_live_processes()
+                snapshots.append((backend_id, backend, snap))
+            except Exception:  # shutdown must never stall
+                logger.warning("快照后端 %s 的进程失败", backend_id, exc_info=True)
+                continue
+        for backend_id, backend, _snap in snapshots:
+            try:
+                backend.cancel_all_processes()  # SIGTERM + scheduled escalation
+            except Exception:  # shutdown must never stall
+                logger.warning("停止后端 %s 的进程失败", backend_id, exc_info=True)
         pending = [t for t in self._tasks if not t.done()]
         for task in pending:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        # A SIGTERM-ignoring child can outlive its coroutine and the deferred
+        # call_later escalation may not fire before the loop closes. Kill any
+        # survivor from the captured handles while the loop is still running.
+        for backend_id, backend, snap in snapshots:
+            try:
+                backend.hard_kill_snapshot(snap)
+            except Exception:  # shutdown must never stall
+                logger.warning("强制停止后端 %s 的进程失败", backend_id, exc_info=True)
 
     # ── import ─────────────────────────────────────────────────────────────────
     def import_raw(
@@ -728,11 +768,16 @@ class Scheduler:
         item.status = ItemStatus.CANCELLED
         item.stage = "已取消"
         item.finished_at = _utcnow()
-        # 放弃任务：删掉隔离 worktree 并顺带收敛备份，避免磁盘只增不减。
         backend = self.executors.resolve(item.executor)
         if backend is not None:
-            self._drop_worktree(item, backend)
-            self._gc_backups(backend)
+            # 关键：先让正在运行的子进程停下来。旧实现直接删 worktree，而
+            # CLI 子进程可能仍在往里写，造成竞态与孤儿进程。signal 之后由
+            # _execute 的取消分支在进程退出时清理 worktree；这里只处理
+            # 「没有活进程」的情况（排队中 / 尚未启动），保持即时回收。
+            live = bool(getattr(backend, "cancel_process", lambda _id: False)(item_id))
+            if not live:
+                self._drop_worktree(item, backend)
+                self._gc_backups(backend)
         self.store.save(item)
         self.events.publish(Event("item_cancelled", item.id, {}))
         return 1
@@ -859,12 +904,40 @@ class Scheduler:
         return lock
 
     # ── verification gate ─────────────────────────────────────────────────────
+    async def _review(self, item: WorkItem, result) -> Any | None:
+        """LLM 评审 worktree 改动；未配置模型或任何异常都降级为「未评审」。"""
+        from .reviewer import review_diff
+
+        provider = self.settings.review_provider
+        if provider is None:
+            return None
+        try:
+            llm = provider()
+        except Exception as error:  # noqa: BLE001 - 评审不得影响合并链路
+            logger.warning("读取评审模型失败 %s：%s", item.id, error)
+            return None
+        if llm is None:
+            return None
+        try:
+            return await review_diff(
+                item,
+                list(result.changed_files),
+                result.worktree,
+                llm=llm,
+                timeout_s=self.settings.review_timeout_s,
+                max_diff_lines=self.settings.review_max_diff_lines,
+            )
+        except Exception as error:  # noqa: BLE001 - best effort
+            logger.warning("LLM 代码评审异常 %s：%s", item.id, error)
+            return None
+
     async def _verify(self, item: WorkItem, result) -> dict[str, Any]:
         """Run the repository's checks inside the task worktree.
 
         Synchronous subprocess work is pushed to a thread so a slow test suite
         cannot freeze the event loop (SSE / UI / other tasks).
         """
+        from .reviewer import apply_review, review_enabled
         from .verification import gc_verification_logs, run_gate
 
         config_file = self.settings.verify_config_file or (
@@ -884,6 +957,10 @@ class Scheduler:
                 default_timeout_s=self.settings.verify_default_timeout_s,
                 total_timeout_s=self.settings.verify_total_timeout_s,
             )
+            # LLM 评审结论并入门禁：block / 大 diff / 高风险转人工，不自动合并。
+            if review_enabled():
+                review = await self._review(item, result)
+                outcome = apply_review(outcome, review)
             # Keep the verification log directory bounded; best effort.
             await asyncio.to_thread(
                 gc_verification_logs, self.settings.reports_dir.parent
@@ -950,9 +1027,14 @@ class Scheduler:
             result = await backend.run(item, progress=progress, should_cancel=should_cancel)
 
             if should_cancel():
+                # cancel() 已经 signal 了活进程；此刻 backend.run() 已返回、
+                # 子进程确已退出，worktree 回收是安全的（cancel() 自身在进程
+                # 仍存活时跳过删除，正是为了避开写入竞态）。
+                item.result = result
                 item.status = ItemStatus.CANCELLED
                 item.stage = "已取消"
                 item.finished_at = _utcnow()
+                self._drop_worktree(item, backend)
                 self.store.save(item)
                 self.events.publish(Event("item_cancelled", item_id, {}))
                 return

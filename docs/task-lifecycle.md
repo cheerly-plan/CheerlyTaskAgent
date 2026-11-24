@@ -1,0 +1,441 @@
+# 需求 / Bug 生命周期：从进入系统到「解决」
+
+> 口径：**以当前代码实现为准**（`src/taskagent/` + `web/`），不写未落地的设想。
+> 一句话：**工单进来 → 解析建单 → 映射仓库 → 隔离执行 → 验证门禁 → 原子合并 → 报告 + 回填**。
+> 相关文档：[架构设计](architecture.md)、[自动执行与选仓](auto-execution-and-plan-selection-design.md)、[父子需求](parent-child-requirements-design.md)。
+
+---
+
+## 0. 先定义「解决」
+
+本系统把一件事**做完**的判定是下面四条同时成立（而不是"agent 说它改好了"）：
+
+| # | 条件 | 证据落点 |
+|---|---|---|
+| 1 | 执行器在隔离 worktree 里跑通，且确实产生了文件改动（dry-run 除外） | `WorkItem.result.changed_files` |
+| 2 | **自动链路**验证门禁通过（或被人工「强制合并」显式越过） | `result.verification.state / ok` |
+| 3 | 改动**原子地**写入主仓库工作区——要么全写、要么一个文件都不写 | `item.merge_state = merged / blocked` |
+| 4 | 报告落盘，TAPD 来源的工单状态回填成功 | `data/reports/<id>.md`；TAPD 状态 + 评论 |
+
+**「解决」≠「发布」**：系统**不 commit、不 push、不开 MR、不部署**。合并成功后代码只存在于你的主仓库工作区（`git status` 里能看到），review、提交、推送仍由人完成。
+
+| 系统负责 | 人负责 |
+|---|---|
+| 拉单、去重、分类、映射仓库、跑 agent、跑检查、写回工作区、出报告、回填 TAPD | 决定要不要跑、apply 的审批、冲突处理、强制合并、commit / push / 发布 |
+
+---
+
+## 1. 全景图
+
+```mermaid
+flowchart TD
+    subgraph entry["入口"]
+      M["手动新建<br/>草稿 / dry-run / apply"]
+      P["TAPD 定时拉取<br/>auto_pull"]
+      S["TAPD 立即同步<br/>预览 → 勾选导入"]
+      W["TAPD Webhook<br/>后端接口保留"]
+    end
+
+    M --> PR["规则解析<br/>标题 / 类型 / git URL / 父子"]
+    P --> PR
+    S --> PR
+    W --> PR
+
+    PR --> DD{"source_ref 去重"}
+    DD -->|"已存在"| KEEP["跳过（预览式导入可原地更新内容）"]
+    DD -->|"新工单"| ARCH{"来源已关闭?"}
+    ARCH -->|"是"| SKIP["skipped<br/>仅归档，不进队列"]
+    ARCH -->|"否"| MAP{"映射本地仓库"}
+
+    MAP -->|"单仓绑定 / 别名 / git 命中"| READY["ready 就绪"]
+    MAP -->|"多仓未定 / 无映射"| DISC["discovered 待映射"]
+    MAP -->|"父需求"| CONT["容器节点<br/>只分组不执行"]
+
+    READY --> TRIG{"派发方式"}
+    DISC -->|"自动执行：规划选中仓库（LLM）"| READY
+    TRIG -->|"人工 dry-run"| DRY["只生成提示词 + 命令<br/>仓库零改动"]
+    TRIG -->|"人工 apply（需审批）"| WT["隔离 worktree 中执行"]
+    TRIG -->|"自动 apply（自动审批）"| WT
+
+    WT --> GATE{"验证门禁<br/>仅自动链路"}
+    GATE -->|"未通过 / 未配置 / 超时"| FAIL["failed<br/>worktree 保留可重试"]
+    GATE -->|"通过 / 验证被禁用"| MERGE{"原子合并"}
+    GATE -.->|"人工 apply 不跑门禁"| SYNC["逐文件三方同步"]
+    MERGE -->|"无冲突"| DONE["succeeded<br/>已写入主仓库工作区"]
+    MERGE -->|"有冲突"| BLOCK["succeeded + merge_state=blocked<br/>一个文件都不写"]
+    SYNC --> PART["succeeded<br/>冲突文件不覆盖，其余写入"]
+
+    DRY --> RPT["Markdown 报告 + SSE 事件"]
+    DONE --> RPT
+    FAIL --> RPT
+    BLOCK --> RPT
+    PART --> RPT
+    RPT --> BF["TAPD 回填：评论（结论/文件/diff）<br/>dry-run 完全不回写"]
+```
+
+---
+
+## 2. 入口：工单怎么进来
+
+| 入口 | 触发者 | 后端接口 | 建单后是否立即执行 |
+|---|---|---|---|
+| 任务中心「+ 新建任务」→ **创建草稿** | 人 | `POST /api/tasks/manual`（`run_now=false`） | 否，留在 `ready` 等手动执行 |
+| 同上 → **创建并 dry-run** | 人 | 同上（`run_now=true`，`approved=false`） | 是，只生成提示词和命令，不改仓库 |
+| 同上 → **创建并 apply** | 人 | 同上（`run_now=true`，`approved=true`） | 是，在隔离 worktree 里真改代码 |
+| 数据源页 **立即同步**（预览 → 勾选 → 导入） | 人 | `POST /api/tapd/preview` + `POST /api/tapd/import` | 否；导入后在任务中心手动「自动执行」或单条 apply |
+| 数据源页 **定时拉取**（`auto_pull` 开） | 定时器（默认 5 分钟） | 进程内 `sync_tapd_now()` | **是**：本次新建的工单直接自动执行 |
+| TAPD **Webhook** | TAPD 推送 | `POST /api/tapd/webhook`（前端表单已隐藏） | 否 |
+| 程序化导入 | 脚本 / 兼容 | `POST /api/import`（旧端点） | 否 |
+
+要点：
+
+- **只有两个自动执行触发点**：TAPD 定时拉取拉到的新单；任务中心「自动执行」里被勾选的任务（`automation.dispatch`）。手动「立即同步」不会自动跑。
+- 自动执行一律走 **apply**（`run_auto` 强制 `exec_mode="apply"` + `approved_by="auto"`），并带上 `hold_merge=True`——由 scheduler 负责验证和原子合并。
+- TAPD 凭据/项目/回填状态、定时开关都在「数据源」页，配置存 `data/settings.json`，即时生效。
+
+---
+
+## 3. 阶段 A：解析与建单
+
+入口不同，落到同一条建单管线：`RawItem → parse_raw() → WorkItem`（`sources.py` / `scheduler.import_raw`）。
+
+| 步骤 | 规则 | 代码 |
+|---|---|---|
+| 标题 | 去掉 `[BUG]` / `【需求】` / `[fix]` 类前缀；TAPD 会按实体类型补前缀 | `clean_title` |
+| 类型 | 前缀优先；否则关键词计数：`bug/缺陷/报错/crash…` vs `需求/新增/支持/优化…`；都不沾为 `task` | `classify_kind` |
+| 描述 | 去引用行（`>`）、去签名（`--`、`发件人`、`Regards` 等）；附件名追加到正文 | `clean_body` |
+| git 线索 | 从标题+正文+来源 hint 里正则提取 git URL，供后续映射兜底 | `extract_git_urls` |
+| 幂等键 | TAPD 用 `tapd:<story|bug|task>:<id>`；手动用随机 `manual:<hex>`（同名不互相去重） | `parse_raw` / `create_manual` |
+| 父子 | 子需求带 `parent_ref`（父的 source_ref）和 `parent_title` 快照；父需求本身**不导入** | `RawItem.from_tapd` |
+| 已关闭来源 | 直接建为 `skipped` + `stage=来源已关闭，仅归档供历史查看`，不映射、不进队列 | `import_raw(archived=True)` |
+
+TAPD 建单的三个细节：
+
+1. **父需求不建单**：定时拉取、预览导入、Webhook 都会跳过 `children_id` 非空的父需求；子需求按 `parent_title` 在界面分组。
+2. **重复拉取不重建**：`source_ref` 命中已有条目直接跳过（`created=False`）。只有「预览 → 勾选导入」这条链路会把标题/正文变化**原地更新**到已有条目。
+3. **重新打开会复活**：来源从已关闭变回活跃（如 TAPD reopened），条目从 `skipped` 回到 `discovered` 并重新映射。
+
+建单完成后的两种落点：
+
+- 映射上了仓库 → `ready`，可以直接执行；
+- 映射不上 → `discovered`，`stage` 写明原因（"未找到本地仓库……"），等人指定。
+
+---
+
+## 4. 阶段 B：映射本地仓库
+
+优先级从高到低（`scheduler._map` / `import_raw`）：
+
+1. **TAPD 项目 ↔ 本地仓库绑定**（最优先）：导入时按工单的 `workspace_id` 反查。
+   - 只绑一个仓库 → 直接 `ready`。
+   - 绑了多个 → 不猜。预览导入走确定性路由 `route_item`；定时拉取先留 `discovered`，等自动执行时再规划。
+2. **项目名 / 别名映射**（`projectmap.resolve_text`）：在「标题 + 描述 + git URL + source_ref」里匹配；中文按子串、英文按词边界，多命中取最长，停用的不参与。
+3. **git 扫描兜底**（`gitmap.resolve`）：把提取到的 git URL 和本地仓库的 `origin` 归一化成 `host/owner/repo` 再比。
+4. 都不命中 → `discovered`，等人工在界面上「映射仓库」。
+
+### 多候选仓库怎么定
+
+两条链路用两套机制，目的相同：**判不出来就交给人，绝不瞎猜**。
+
+| 链路 | 机制 | 判据 / 兜底 |
+|---|---|---|
+| 预览导入 | `route_item` 四层规则（`route.py`） | ①同一 TAPD 项目 + 相似业务词的历史人工选择 ②文本里直接点名仓库/别名 ③端别词与仓库画像角色匹配（页面/接口/小程序…）④画像文本相关度。置信度 < 0.6 或没选中 → 留空待人工 |
+| 自动执行 | `planner.plan_repo`（LLM，多候选时才调用） | 把候选仓库目录/README 摘要交给「模型配置」里的后端 Agent LLM，返回选中的仓库 + 执行步骤；调用失败、返回无法解析、模型未配置 → 跳过该任务并提示手动映射 |
+
+- 单候选不调用 LLM，直接规则版短计划（`build_short_plan`）。
+- 人工在界面上选过一次仓库，会记入 `data/route-history.json`，下次同类工单优先命中历史。
+- 父需求容器（`is_container`）不映射、不执行。
+
+---
+
+## 5. 阶段 C：派发
+
+### 5.1 人工执行（`scheduler.run`）
+
+| 模式 | 前提 | 行为 |
+|---|---|---|
+| `dry-run` | 已映射仓库 | 只拼提示词和命令落报告；仓库零改动；状态 `succeeded`，可再转 apply |
+| `apply` | 已映射仓库 + **`approved=true`**（显式审批） | 建 worktree、真跑 CLI；缺审批直接拒绝（400） |
+
+- 允许重新武装的状态：`dry-run` 成功的、`failed`、`cancelled`。重新执行会清掉旧 `result/report/attempt`，避免看板显示上一轮输出。
+- 已经是 `succeeded` 的 apply 任务不会重跑（要改就新建任务或走「重新验证 / 合并」）。
+
+### 5.2 自动执行（`automation.dispatch` → `scheduler.run_auto`）
+
+资格判定（不满足就如实跳过并给出原因，不静默）：
+
+| 情况 | 结果 |
+|---|---|
+| `auto_dispatched_at` 非空 | 跳过：已经自动执行过（幂等） |
+| 父容器 / 有 `children_ids` | 跳过：不进执行队列 |
+| `ready` 且已映射 | 执行 |
+| `discovered` 且有候选仓库 | 先规划（规则或 LLM）→ 选中则映射并执行；选不中则跳过待人工 |
+| `discovered` 且无候选 | 跳过：未映射仓库，且没有可用的候选仓库 |
+| `queued` / `running` / 终态 | 跳过 |
+
+`run_auto` 写入的字段：`auto=True`、`approved_by="auto"`、`hold_merge=True`、`exec_mode="apply"`、`plan=<计划文本>`、`auto_dispatched_at=<now>`，然后复用 `run()`。
+
+### 5.3 并发、重试、取消
+
+- **锁顺序**：父需求锁 → 同仓库锁 → 全局信号量。父锁/仓库锁只作用于自动任务（人工任务不参与原子合并，互不阻塞），保证同一父需求下、或同一仓库上的自动任务串行，避免后一个任务把前一个的合并基线顶掉。
+- **并发上限**：`max_concurrent`（默认 1，系统设置里改），是全局槽位。
+- **失败重试**：只有可重试错误（timeout / rate / 429 / 5xx）才自动重试。默认 `max_attempts=2`，即失败后等 2s 再试一次；`retry_delays=(2s, 8s)` 里的 8s 只有在调高上限后才会用到。其余失败直接 `failed`。
+- **取消**：置取消位 + 状态 `cancelled`；正在跑的子进程不会被强杀，但它跑完后结果作废、不会合并（超时才会 kill 进程）。
+- **重启恢复**：服务启动时把遗留的 `queued/running` 标记为 `failed`（"服务重启导致执行中断"），可一键重跑。
+
+---
+
+## 6. 阶段 D：执行（隔离 worktree）
+
+`executor.py` 的 apply 流程：
+
+1. **建 worktree**：`data/worktrees/<仓库名>-<item_id>`，基于 `git worktree add -b taskagent/<...>`；随后把主仓库**当前未提交的改动叠加上去**，保证 agent 改的是你眼前的代码而不是过期 HEAD。建不出来时退化为 `git archive` 快照 / 目录拷贝。
+2. **拼提示词**（`build_prompt`）：任务类型/标题/来源/描述 + 父需求上下文（子任务才有）+ 规划步骤；明确要求"最小必要修改、不提交、不推、不改无关文件、能跑测试就报告结果"；任务正文用 `--- TASK START/END ---` 包裹，降低注入风险。
+3. **选后端与模型**：任务自带 `executor` 字段决定用哪个 CLI（codebuddy / dsh / 自定义），`item.model` 覆盖后端默认模型；命令用 argv 列表拼（非 shell），任务文本无法注入命令。
+4. **沙箱与权限**：`--permission-mode acceptEdits`（DSH 映射为 `workspace-write`），cwd=worktree；子进程环境只透传 `PATH/HOME/LANG/TERM…` 白名单，避免把服务端密钥带进去。
+5. **超时**：默认 600s，超时 kill 并判失败。
+6. **严格判定**（`StrictVerdict` / `NdjsonStrictVerdict`）：**退出码 0 不算成功**——鉴权失败、没有实际执行、空输出信封都判失败，杜绝"假成功"。
+7. **收集改动**：`changed_files` 来自 worktree 的 git 状态（新增/修改/删除），后续门禁、合并、报告都用这份清单。
+
+dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报告。
+
+---
+
+## 7. 阶段 E：验证门禁（仅自动链路）
+
+位置：agent 跑完之后、原子合并之前；在同一个 worktree 里跑仓库声明的检查（`verification.run_gate`）。**默认 fail-closed**：没配置、跑不起来、超时、动到测试/受保护文件，都算不通过，主仓一个文件都不写。
+
+判定按固定顺序短路：
+
+| 顺序 | 检查 | 不通过时的 `state` |
+|---|---|---|
+| 1 | `TASKAGENT_VERIFY=0` 显式禁用 | `disabled`（放行，报告标注"验证已禁用"） |
+| 2 | 仓库在 `data/verify.json` 里没有任何检查 | `unconfigured` |
+| 3 | 改动为空 | `no_changes` |
+| 4 | 改动**删除/重写/重命名**了测试/快照文件（新增、纯插入允许） | `test_files_changed` |
+| 5 | 改动包含受保护文件（测试配置、CI、`package.json`/`pyproject.toml`、锁文件、`.env*`、Dockerfile…） | `protected_files_changed` |
+| 6 | 改动文件数 > 上限（默认 30） | `too_many_files` |
+| 7 | 四类 `test / lint / typecheck / build` 有缺失，且没在 `na` 里写理由 | `incomplete` |
+| 8 | worktree 不存在 | `error` |
+| 9 | 改动行数 > 上限（默认 2000） | `diff_too_large` |
+| 10 | 逐个执行检查（单检查默认 300s、总 900s，失败可重试 1 次） | `failed` |
+| 11 | 失败项在基线（worktree HEAD）复跑，判断是否既有失败 | `failed` / 放行加警告 |
+| 12 | 全过 | `passed` / `passed_with_warnings`（flaky 重试通过、advisory 放行） |
+
+补充：
+
+- **测试文件允许新增或纯插入**：删除/重写已有测试、重命名、或插入 `@skip`/`@xfail` 装饰器 / `pytestmark` / `collect_ignore` 会拦（防止 agent 放宽自己的考卷），人工仍可「强制合并」；新增的测试不参与阻塞判定——test 类检查跑在临时评分 worktree（`data/verification-grading/`，基线测试文件 + agent 的非测试改动）上，新增测试再在真实 worktree 跑一遍，结果只作为 `new_tests` 告警写进报告，不阻塞合并。
+- **检查命令自动生成**：启动和新增项目映射时按 `pyproject.toml`、`package.json scripts`、`go.mod`、`Cargo.toml`、`Makefile` 探测并写入 `data/verify.json`；仓库文件变了到「项目映射 → 重建画像与验证」重建。
+- **N/A 有期限**：四类检查缺哪类，就在「验证配置 → 编辑 N/A」写理由 + 过期时间；过期自动失效，需重新批准。
+- **失败可重试**：「重新验证」只重跑门禁（不重跑 agent），通过后按需自动合并。
+- **人工兜底**：「强制合并」显式跳过门禁，`verification.override/override_by/override_at` 记入报告，自动链路永远不会用它。
+- 门禁日志在 `data/verifications/`（7 天 / 2000 个文件自动回收），输出已脱敏。
+- 检查进程的 `PYTHONPATH` 指向被验证 worktree 的 `src/` 与根目录：`.venv` 若是 editable 安装（指向主仓），不这样做检查会跑主仓代码而不是 agent 的改动。
+- **人工 apply 不经过门禁**（这是当前实现的边界）：人工 apply 直接在 executor 里做逐文件同步。
+
+---
+
+## 8. 阶段 F：合并回主仓库工作区
+
+### 8.1 自动链路：原子合并（`sync_to_repo(atomic=True)`）
+
+1. **预演（preflight）**：对每个改动文件做三方比较——`base`（worktree HEAD）、`ours`（主仓库当前文件）、`theirs`（agent 结果）。
+   - 主仓自 base 以来没动 → 可直接覆盖/删除；
+   - 主仓也动了 → 先试 `git merge-file` 三方合并，无冲突才算通过。
+2. **只要有一个文件冲突 → 全部不写**（`merge_state=blocked`，任务 `succeeded` 但留在任务中心，带「合并冲突」标记）；worktree 保留供排查。
+3. **全部通过 → 一次性写入**，状态 `succeeded`、`merge_state=merged`，随后回收 worktree、清理备份。
+4. 路径安全：只碰改动文件、过滤忽略规则（`.env`、`data/`、venv 等）、拒绝绝对路径 / `..` / 符号链接逃逸；覆盖或删除前先备份到 `data/sync-backups/<item>/<时间>/`。
+5. 冲突后人工点「合并」重试（`merge_item`）；仍冲突就继续 blocked。人工强制合并只在这一步存在。
+
+### 8.2 人工链路：逐文件同步
+
+人工 apply 成功后由 executor 直接 `sync_to_repo`（非原子）：能三方合并的文件写入，冲突文件**不覆盖**、双方版本备份为 `.main` / `.codebuddy`，看板显示"N 个文件冲突未覆盖"。主仓可能处于"部分文件已更新"的状态。
+
+两种链路都**不 commit、不 push**。（后端还保留了带过滤规则的 `/api/items/{id}/commit*` 接口，当前界面未接入，不属于主链路。）
+
+---
+
+## 9. 阶段 G：报告与回填
+
+### 报告
+
+每单一份 `data/reports/<id>.md`（`report.py`），实时可通过 `GET /api/items/{id}/report` 渲染：
+
+- 概览（ID、类型、来源、状态、执行模式、模型、映射仓库、批准来源）；
+- 需求描述；
+- 执行结果（成功、dry-run、耗时、改动文件数、worktree）；
+- 验证（状态、原因、每个检查的命令/耗时/退出码/输出摘要）；
+- 合并状态与自动同步明细（已同步/已删除/冲突/备份目录）；
+- 最终结论摘要、执行命令、完整提示词、stderr（折叠附录）；
+- 错误。
+
+### TAPD 回填（`backfill.py`）
+
+只在 `tapd.enabled`、有 `source_ref`、且**不是 dry-run** 时执行；写权限由用户的 TAPD 凭据决定。回填拆成两个互相独立的副作用（`backfill_result`）：
+
+**1. 结果评论（仅 apply 链路）**
+
+```
+【TaskAgent】已完成 / 未完成 / 未合并 / 已强制合并（跳过验证）
+任务：<标题>（缺陷/需求/任务）
+来源：tapd:bug:123
+执行后端：codebuddy；模型：后端默认
+原因：<未完成时写；验证/合并失败的具体原因>
+状态：<stage，例如"完成（已自动合并 3 个文件到工作区）">
+改动文件（N）：
+- src/a.py
+- web/b.tsx
+改动内容（diff 节选）：
+<diff，按 1900 字符预算截断，文件清单在前保证不被切掉>
+```
+
+评论先发、状态后写，单个失败不影响另一个——避免"状态改成功了但评论没发出去"的静默结果。评论**不写本机报告路径**（TAPD 上的人打不开，只会成为噪音）；看改动就看评论里的 diff，看完整上下文回调度台。
+
+**2. 状态写回（仅 apply）**
+
+- **dry-run 完全不回写**：它只生成提示词和命令、不碰代码，既**不写状态**，也**不发评论**。给来源工单留一条"我没改代码"的评论只是噪音，同一条工单还可能被反复 dry-run；需要看方案就在调度台看本机报告。
+- 成功判定：`result.ok && merge_state != "blocked" && 验证通过`（无门禁时视为通过）。成立 → `status_on_success`（默认 `resolved`）；不成立 → `status_on_failure`（默认空 = 不改）。
+- 冲突后人工「合并」成功、或「重新验证」通过并合并时，会补一次回填。
+
+---
+
+## 10. 收尾：历史、归档与资源回收
+
+- **历史 vs 任务中心**（前端判定）：`apply` 且终态、非 `failed`、非 `merge_state=blocked` → 历史记录；`failed` 和合并冲突的任务留在任务中心，方便直接重试。
+- **来源关闭** → `skipped` 归档（历史可见）；来源重新活跃 → 复活重跑。
+- **worktree**：合并成功或取消后删除；合并冲突时保留（供重试/排查）。
+- **备份**：`sync-backups` 按保留天数/每任务份数回收，启动时也扫一遍。
+- **删除任务**：`DELETE /api/items/{id}`（界面确认后执行）。
+
+---
+
+## 11. 状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> discovered: 导入 / 建单（未映射）
+    discovered --> ready: 映射到本地仓库
+    ready --> queued: run / run_auto
+    queued --> running: 拿到并发槽位
+    running --> succeeded: 执行成功
+    running --> failed: 执行失败 / 验证未通过
+    ready --> cancelled: 取消
+    queued --> cancelled: 取消
+    running --> cancelled: 取消（结果作废）
+    failed --> ready: 重新执行
+    cancelled --> ready: 重新执行
+    succeeded --> ready: dry-run 后再 apply
+    succeeded --> [*]: apply 完成（历史）
+    failed --> [*]: 终态（保留在任务中心）
+    skipped --> discovered: 来源重新打开（复活）
+    skipped --> [*]: 归档
+```
+
+终态集合：`succeeded / failed / skipped / cancelled`。其中只有 `failed`、`cancelled` 可重新武装（外加 dry-run 成功的 `succeeded`）。
+
+> 自动任务的 `succeeded` 还要看 `merge_state`：`merged` 才算真正交付进工作区；`blocked` 虽然执行成功，但代码没进主仓，仍留在任务中心待处理。
+
+| 字段 | 含义 |
+|---|---|
+| `status` | 上述状态机 |
+| `stage` | 人话进度/原因，直接显示在界面与报告（"验证中…"、"完成（已自动合并 N 个文件…）"） |
+| `merge_state` | `""`（未走原子合并）/ `merged` / `blocked` |
+| `hold_merge` | True = 执行器不同步，交给 scheduler 做验证 + 原子合并（自动链路） |
+| `auto` / `approved_by` | 是否自动派发 / 谁批准的 apply（`user` / `auto`） |
+| `auto_dispatched_at` | 自动派发幂等标记 |
+| `attempt` / `max_attempts` | 执行尝试次数 / 上限 |
+| `result.verification` | 门禁结论（`ok` / `state` / `reason` / `checks` / `override`） |
+| `result.diff` | agent 改动 diff 节选（合并会删 worktree，所以执行后立刻留档，供评论/排查用） |
+| `plan` / `parent_context` | 规划步骤 / 父需求上下文（执行时注入提示词） |
+
+---
+
+## 12. 失败分支速查
+
+| 现象 / `stage` | 状态 | 系统做了什么 | 人该做什么 |
+|---|---|---|---|
+| 未找到本地仓库 / 待映射 | `discovered` | 不动 | 「映射仓库」或新增项目映射 |
+| 多仓待确定 | `discovered` + 候选列表 | 不猜仓库 | 人工选仓；或配置后端 Agent 模型让自动规划 |
+| 没有可用的执行后端 | `failed` | 直接失败，提示去系统设置 | 启用/新增后端后重新执行 |
+| agent 超时 / 429 | 自动重试后仍失败 | 等 2s 重试一次（默认上限 2 次） | 重新执行或排查 CLI |
+| 退出码 0 但鉴权失败 / 无实际执行 | `failed` | 严格判定拦下"假成功" | 检查 CLI 登录态 |
+| 验证未配置 | `failed`（`unconfigured`） | 主仓不写，worktree 保留 | 补 `verify.json` / 重建画像 → 重新验证 |
+| 验证失败（测试/检查不过） | `failed` | 主仓不写，worktree 保留 | 修代码或环境 → 重新验证；急用可强制合并 |
+| 动到了测试/受保护文件 | `failed` | 拦截 | 让 agent 别改这些文件，或人工处理 |
+| 合并冲突 | `succeeded` + `blocked` | 一个文件都不写，保留 worktree | 处理主仓冲突后点「合并」重试 |
+| dry-run 完成 | `succeeded` | 只生成本地方案；不改 TAPD 状态、不发评论 | 看本机报告后再决定是否 apply |
+| 服务重启时正在跑 | `failed`（已中断） | 启动恢复标记 | 重新执行 |
+| 来源已关闭 | `skipped` | 只归档 | 无需处理；重新打开会自动复活 |
+| TAPD 回填失败 | 本地状态不变 | 记日志，不改变本地结果 | 到 TAPD 手工改状态/评论 |
+
+---
+
+## 13. 产物清单
+
+| 路径 | 内容 |
+|---|---|
+| `data/tasks/<item_id>.json` | 工作项全量状态（原子写） |
+| `data/reports/<item_id>.md` | 每单报告 |
+| `data/worktrees/<仓库>-<item_id>/` | 隔离执行目录（合并后回收） |
+| `data/sync-backups/<item_id>/<时间>/` | 覆盖/删除前的原文件备份、冲突双方版本 |
+| `data/verifications/` | 门禁日志（脱敏，自动回收） |
+| `data/verify.json` | 各仓库的检查命令、N/A、阈值、基线策略 |
+| `data/repo-profiles.json` | 仓库画像（语言/依赖/目录摘要），供选仓与命令生成 |
+| `data/route-history.json` | 人工选仓历史，供多仓路由复用 |
+| `data/settings.json` | 数据源、后端、模型、并发等配置（凭据明文，仅本机） |
+
+---
+
+## 14. 可观测：SSE 事件
+
+`GET /api/events` 推送（前端实时刷新看板/报告）：
+
+`item_imported` → `item_updated` / `item_mapped` / `item_planned` → `item_queued` / `auto_queued` → `item_started` → `item_progress` → `item_verifying` → `item_succeeded` / `item_failed` / `item_verify_failed` / `item_retry` → `item_merged` / `item_merge_blocked`；另有 `item_cancelled`、`item_committed` / `item_commit_failed`。
+
+---
+
+## 15. 边界与已知限制
+
+1. **不 commit / 不 push / 不开 MR / 不部署**——代码只落到主仓库工作区。
+2. **验证门禁只覆盖自动链路**；人工 apply 依赖 agent 自报 + 报告，主仓可能部分写入。
+3. **人工 apply 的 TAPD 回填不检查同步冲突**：只要执行成功就回填 `resolved`，即使有文件冲突未覆盖（冲突会在报告/看板标出）。自动链路则要求合并未 blocked。
+4. **没有网络隔离**：检查进程不限制网络；只做了环境变量白名单与可选 `rlimits`（CPU/内存/文件大小）。
+5. **多候选仓库的自动选仓依赖后端 Agent 的 LLM**；没配（可用）模型时，多候选任务只能人工映射，系统不会猜。
+6. **取消不是强杀**：正在运行的 CLI 会跑完，结果作废。
+7. **单机单进程**：状态在本地 JSON，没有多实例协调；多副本会重复派发。
+
+---
+
+## 16. 附：自动链路时序（定时拉取 → 合并）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as TAPD
+    participant S as Scheduler / Automation
+    participant E as Executor (CLI)
+    participant W as 隔离 worktree
+    participant G as 验证门禁
+    participant R as 主仓库工作区
+    participant U as 调度台 UI
+
+    S->>T: 按游标增量拉取（modified 晚于上次）
+    T-->>S: stories / bugs
+    S->>S: 解析 → 去重 → 绑定单仓或留待规划
+    alt 多候选仓库
+        S->>S: 规则短计划 / LLM 选仓 + 步骤
+    end
+    S->>W: 建 worktree（叠加当前未提交改动）
+    S->>E: -p 提示词 + 权限 + 模型
+    E->>W: 改代码、跑测试
+    E-->>S: stdout / changed_files / 严格判定
+    S->>G: 在 worktree 里跑四类检查
+    alt 门禁不通过
+        G-->>S: ok=false + 原因
+        S->>U: item_verify_failed（failed，worktree 保留）
+    else 通过
+        S->>R: 原子合并预演 → 全写或全不写
+        S->>U: item_merged / item_merge_blocked
+        S->>T: 回填 resolved + 报告评论
+    end
+```
