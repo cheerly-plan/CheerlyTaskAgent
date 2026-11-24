@@ -106,6 +106,8 @@ class MappingBody(BaseModel):
     # TAPD 项目绑定：缺了这两个字段，前端提交的绑定会被模型静默丢弃。
     tapd_workspace_ids: list[str] = []
     tapd_workspace_id: str = ""
+    # 交付覆盖：""=跟随全局，off/commit/push/pr
+    delivery: str = ""
 
 
 class BrowseQuery(BaseModel):
@@ -310,6 +312,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_rounds=settings.max_rounds,
             task_token_budget=settings.task_token_budget,
             daily_token_budget=settings.daily_token_budget,
+            delivery_mode=settings.delivery_mode,
+            delivery_remote=settings.delivery_remote,
+            delivery_base=settings.delivery_base,
+            delivery_provider=settings.delivery_provider,
+            delivery_api_base=settings.delivery_api_base,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
@@ -961,6 +968,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     # ── 自动合并：冲突任务重试合并 / 查看 diff ─────────────────────────────
+    @app.post("/api/items/{item_id}/deliver")
+    def api_deliver_item(item_id: str) -> dict[str, Any]:
+        """Retry delivery (push / PR-MR) for a task that already has a commit."""
+        try:
+            return scheduler.deliver_item(item_id).to_dict()
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+
     @app.post("/api/items/{item_id}/merge")
     async def api_merge_item(item_id: str, body: MergeBody | None = None) -> dict[str, Any]:
         """重试原子合并：无冲突才写回主仓库工作区（不 commit）。

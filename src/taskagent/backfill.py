@@ -125,6 +125,16 @@ def build_comment(item: WorkItem, *, ok: bool, budget: int = COMMENT_LIMIT) -> s
         )
         issues = len(review.get("issues") or [])
         lines.append(f"评审：{verdict}（{issues} 个问题）")
+    delivery = item.delivery if isinstance(item.delivery, dict) else {}
+    if delivery.get("pr_url"):
+        lines.append(f"交付：PR/MR {delivery['pr_url']}")
+    elif delivery.get("commit"):
+        pushed = "，已推送" if delivery.get("pushed") else ""
+        lines.append(
+            f"交付：分支 {delivery.get('branch') or '—'} @ {delivery['commit']}{pushed}"
+        )
+    if delivery.get("error"):
+        lines.append(f"交付失败：{_one_line(str(delivery['error']), 200)}")
     usage = item.usage if isinstance(item.usage, dict) else {}
     usage_total = int(usage.get("total_tokens") or 0)
     if usage_total:

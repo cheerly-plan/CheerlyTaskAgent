@@ -12,10 +12,10 @@
 | 它做 | 它不做（本阶段） |
 |---|---|
 | 手动新建 / TAPD 权威源自动接入（Webhook + 定时拉取），规则提取标题/类型/git 地址 | 不接 LLM 自动拆任务（后续） |
-| git URL 归一化，映射到本地 checkout | 不改 git 历史、不提交、不 push |
+| git URL 归一化，映射到本地 checkout | 默认不改 git 历史、不提交、不 push（开启 delivery 才提交任务分支） |
 | 派发 `codebuddy -p` 在映射仓库执行 | — |
 | 执行完成后回填 TAPD 状态 + 报告评论 | 不接邮件数据源（非结构化、无状态机、无法回填） |
-| 幂等、并发、重试、取消、事件流、Markdown 报告 | apply 用 worktree 隔离执行；成功后自动把改动同步到主仓库工作区（不 commit/push，不改 git 历史） |
+| 幂等、并发、重试、取消、事件流、Markdown 报告 | apply 用 worktree 隔离执行；成功后自动把改动同步到主仓库工作区（默认不 commit/push；开启 delivery 后在任务分支提交） |
 
 **环境事实（决定了设计）**
 - 编码 CLI：本机已装 `@tencent-ai/codebuddy-code`（提供 `codebuddy`）。执行层已抽象为可增删的后端，遵循同一非交互 CLI 协议；在「系统设置 → 执行后端」配置任意二进制路径并启用后即可用，任务按 `executor` 字段分派到对应后端。
@@ -59,6 +59,7 @@ flowchart LR
 | `sources.py` | `RawItem`（TAPD/manual）→ `WorkItem`。规则：标题前缀判 bug/需求、关键词兜底、正则提取 git URL、去签名/引用。`TapdSource` 把 `TapdItem` 映射为 RawItem，source_ref=`tapd:<type>:<id>` 作幂等键。`RawItem.from_email` 仅作 demo/测试的轻量构造器保留。 |
 | `tapd.py` | TAPD 开放 API 客户端（权威源）：Basic Auth（应用ID:秘钥），公网 `api.tapd.cn` / 内网 `apiv2.tapd.woa.com`。`GET /stories`、`GET /bugs`（workspace_id + limit≤200 + page + modified>游标 + 可选 status）分页拉取并归一化为 `TapdItem`；`fetch_one()` 供 Webhook 回源拉单条；`list_projects(company_id)` 调 `/workspaces/projects`（只需企业 ID，不需要真人 nick）拉企业下项目列表，返回项带 `company_id` 并过滤掉企业自身 `category=organization`（避免把企业当成项目）供 UI 多选；`workspace_id` 支持逗号分隔多项目，`fetch()` 逐个工作区拉取并去重，`fetch_one()`（Webhook）逐个试；本地映射 `ProjectMapping.tapd_workspace_ids` 支持一个 TAPD 项目关联多个仓库（`find_all_by_workspace()`），单仓库直接指定 repo，多仓库只记录候选不做文本猜仓库，待后续按需求/代码决策；`POST /stories|/bugs` 回填 status + current_user，`POST /comments` 写报告评论。`TapdConfig.__post_init__` 统一 strip 所有字符串字段，防止复制凭证带入首尾空白导致 401。同步阻塞 IO，调用方用 `asyncio.to_thread`；未配置/网络错误进 `TapdResult.error` 不抛崩服务。 |
 | `spec.py` | 任务规格：规则版（目标/验收标准/约束/风险/测试建议，建单即生成）+ LLM 版（自动链路执行前用后端 Agent 模型升级，失败回退规则版）。规格进入执行提示词、评审提示词与报告，是「完成定义」的载体。 |
+| `delivery.py` | 可选交付：在任务分支上做过滤提交（只提交 commit 规则允许的文件）、push、按远端域名创建 GitHub PR / GitLab MR；默认 `off`，仓库映射可覆盖；失败只记录不回滚本地合并。 |
 | `usage.py` | Token 运行账本：从 CLI stdout / OpenAI 兼容响应解析用量，按任务聚合、按天持久化（`data/usage.json`），提供任务/日预算判定。 |
 | `loop.py` | 有界执行-反馈循环：每轮「执行 → 验证 + 评审」，未通过时把失败检查输出、评审问题与状态提示写成反馈注入下一轮；自动任务最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2），人工 apply 固定 1 轮；不可修复状态立即停止。 |
 | `reviewer.py` | LLM 代码评审 + 风险升级：diff + 任务规格 → approve/comment/block + 问题清单 + 风险标签；大 diff、敏感文件、高风险标签转人工；结论并入门禁（`apply_review`），模型未配置/失败降级为「未评审」。 |
@@ -88,7 +89,7 @@ flowchart LR
 
 1. **默认只读**：dry-run 是默认且唯一的开箱模式；apply 必须审批。
 2. **隔离执行**：apply 用 `git worktree add -b taskagent/<id>`（失败回退 `git archive`/快照）。建好沙箱后会把主仓库**当前工作区的未提交状态**（相对 HEAD 的 tracked 改动 + 未跟踪的非忽略文件）叠加进去并 commit 成新基线，因此 codebuddy 看到的是用户当前的代码，而非过期的已提交 HEAD——从源头避免"基于旧代码改完又撞上主仓库新代码"的假冲突（叠加失败则安全回退到纯 HEAD 基线）。codebuddy 只在隔离沙箱里跑。成功后改**文件**自动同步回主仓库工作区（可控、带备份），但**不产生 git 副作用**。同步采用三方比较（base=worktree HEAD / ours=主仓库当前 / theirs=codebuddy 结果）：主仓库自 base 未变才覆盖；已分叉则尝试 `git merge-file` 干净合并，冲突则不覆盖、备份 `.main`/`.codebuddy` 并报告，避免过期 worktree 回滚主仓库后续改动。
-3. **不产生 git 副作用**：提示词明确要求"不提交、不 push、不改无关文件"；自动同步只落工作区文件，不 stage、不 commit、不 push，由用户自行审查后提交。
+3. **默认不产生 git 副作用**：提示词明确要求"不提交、不 push、不改无关文件"；自动同步只落工作区文件，默认不 stage、不 commit、不 push。开启 delivery 后只在任务分支做过滤提交（可选 push / PR），由用户决定是否合并远端。
 4. **防注入**：任务文本放在 `--- TASK START/END ---` 分隔符内并要求忽略越权指令；命令用 `argv` 列表，`shell=False`。
 5. **凭证**：不入库；codebuddy 自身登录态由 CLI 管理。
 
@@ -113,7 +114,7 @@ flowchart LR
 
 | 风险 | 应对 |
 |---|---|
-| 自动改代码改错/改坏 | dry-run 默认 + worktree 隔离 + 审批 + 报告审阅；自动同步带路径校验/忽略规则/覆盖前备份，可 `TASKAGENT_AUTO_SYNC=0` 关闭；不 commit/push |
+| 自动改代码改错/改坏 | dry-run 默认 + worktree 隔离 + 审批 + 报告审阅；自动同步带路径校验/忽略规则/覆盖前备份，可 `TASKAGENT_AUTO_SYNC=0` 关闭；默认不 commit/push |
 | 任务文本 prompt 注入 | 分隔符包裹 + 忽略越权指令 + argv 非 shell |
 | git 映射错仓库 | 归一化 + 后缀匹配；支持手动映射；报告写明映射结果 |
 | codebuddy 未安装 | 明确报错并给出安装命令；可配 npx |
@@ -125,7 +126,7 @@ flowchart LR
 
 **已完成**：规则解析、git 映射、项目映射配置、新建任务合并进任务列表（按钮 + 弹窗，选项目即可 dry-run/apply）、去重、dry-run/apply 执行器、worktree、报告、SSE、UI、**TAPD 唯一外部数据源接入（Webhook + 定时拉取 + 幂等建单 + 状态/评论回填）**、**多执行后端（Executor 统一接口 + codebuddy/dsh 两类独立配置 + 任务按 executor 分派 + 模型动态探测）**、**方言策略库（四层封闭策略 + DSH 内置逃生 + 严格执行证据）**、**设置保存热生效**、**自动执行 + 原子自动合并（TAPD 定时拉取自动执行 / 任务中心勾选执行、LLM 规划选仓库、无冲突自动写入工作区、冲突时原子回滚并留在任务中心重试）**、测试全绿、mock 端到端闭环验证通过。
 
-**任务规格 / 执行-反馈循环 / LLM 评审**：`spec.py`（规则版建单即生成，自动任务 LLM 升级）、`loop.py`（有界反馈循环，默认 2 轮，失败原因回灌提示词）、`reviewer.py`（diff + 规格评审，block/大 diff/敏感文件/高风险转人工，并入门禁）、`usage.py`（CLI/LLM token 账本 + 任务/日预算，`data/usage.json`）。
+**任务规格 / 执行-反馈循环 / LLM 评审**：`spec.py`（规则版建单即生成，自动任务 LLM 升级）、`loop.py`（有界反馈循环，默认 2 轮，失败原因回灌提示词）、`reviewer.py`（diff + 规格评审，block/大 diff/敏感文件/高风险转人工，并入门禁）、`usage.py`（CLI/LLM token 账本 + 任务/日预算，`data/usage.json`）、`delivery.py`（可选交付：任务分支过滤提交 / push / PR-MR，默认关闭）。
 
 **下一步（按优先级）**：
 1. 申请 TAPD 应用凭证 + 项目授权（读 + 写权限），在「数据源」Tab 填入并开启；在 TAPD 后台配置 Webhook 事件订阅。

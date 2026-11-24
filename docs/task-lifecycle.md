@@ -18,11 +18,11 @@
 | 4 | 改动**原子地**写入主仓库工作区——要么全写、要么一个文件都不写 | `item.merge_state = merged / blocked` |
 | 5 | 报告落盘，TAPD 来源的工单状态回填成功 | `data/reports/<id>.md`；TAPD 状态 + 评论 |
 
-**「解决」≠「发布」**：系统**不 commit、不 push、不开 MR、不部署**。合并成功后代码只存在于你的主仓库工作区（`git status` 里能看到），review、提交、推送仍由人完成。
+**「解决」≠「发布」**：默认只把代码写进主仓库工作区（`git status` 里能看到），**不 commit、不 push、不开 MR、不部署**。仓库开启交付（`delivery`）后，系统会在**任务分支**上做过滤提交，按需 push 并创建 PR/MR，但仍不会自动合并远端、不会发布。
 
 | 系统负责 | 人负责 |
 |---|---|
-| 拉单、去重、分类、生成任务规格、映射仓库、跑 agent、跑检查、LLM 评审、写回工作区、出报告、回填 TAPD | 决定要不要跑、apply 的审批、冲突处理、强制合并、commit / push / 发布 |
+| 拉单、去重、分类、生成任务规格、映射仓库、跑 agent、跑检查、LLM 评审、写回工作区、出报告、回填 TAPD；开启交付时提交任务分支 / push / 开 PR | 决定要不要跑、apply 的审批、冲突处理、强制合并、是否开启交付、远端合并 / 发布 |
 
 ---
 
@@ -67,9 +67,10 @@ flowchart TD
     MERGE -->|"有冲突"| BLOCK["succeeded + merge_state=blocked<br/>一个文件都不写"]
 
     DRY --> RPT["Markdown 报告 + SSE 事件"]
-    DONE --> RPT
+    DONE --> DEL["可选交付<br/>任务分支过滤提交 / push / PR"]
+    BLOCK --> DEL
+    DEL --> RPT
     FAIL --> RPT
-    BLOCK --> RPT
     RPT --> BF["TAPD 回填：评论（结论/文件/diff/评审）<br/>dry-run 完全不回写"]
 ```
 ---
@@ -295,7 +296,23 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 
 人工 apply 不再由 executor 逐文件同步：与自动任务一样走上面的原子合并——门禁通过后无冲突才写入主仓，有冲突则一个文件都不写、保留 worktree 供「重试合并」或「强制合并」。失败后修好配置可通过「重新验证」重跑门禁（不重跑 agent），通过后自动合并。
 
-无论人工还是自动，都**不 commit、不 push**。（后端还保留了带过滤规则的 `/api/items/{id}/commit*` 接口，当前界面未接入，不属于主链路。）
+默认无论人工还是自动，都**不 commit、不 push**；开仓库交付后按 8.3 在任务分支上提交（仍不自动合并远端）。后端另有带过滤规则的 `/api/items/{id}/commit*` 接口，当前界面未接入，不属于主链路。
+
+### 8.3 可选交付（`delivery.py`，默认关闭）
+
+交付只发生在**合并成功之后**（顺序不能反：提交会移动 worktree HEAD，也就是三方合并的基线），且只对 `apply` 生效：
+
+| 模式 | 行为 |
+|---|---|
+| `off` | 保持原样：只写工作区，不产生提交 |
+| `commit` | 在隔离 worktree 的任务分支（`taskagent/<仓库>-<id>`）上做**过滤提交**：只 `git add` commit 规则允许的文件，被过滤的文件不 stage 不提交；不切主仓分支、不动主仓 HEAD；分支保留供 review |
+| `push` | commit 后 `git push --set-upstream <remote> <branch>`（用本机 git 凭据） |
+| `pr` | push 后按远端域名创建 GitHub PR / GitLab MR（`GITHUB_TOKEN` / `GITLAB_TOKEN`；企业版可用 `TASKAGENT_DELIVERY_API_BASE`） |
+
+- 开关：仓库映射的 `delivery` 字段覆盖全局 `TASKAGENT_DELIVERY`；`""` = 跟随全局。
+- 合并冲突（`blocked`）时仍会提交任务分支，但**不 push / 不建 PR**；处理完冲突点「合并」重试后会自动补交付。
+- 交付失败（push 被拒、缺 token、PR 被拒）**不会回滚已经落地的本地合并**：`item.delivery` 记录错误，报告与 TAPD 评论可见；`POST /api/items/{id}/deliver` 可重试。
+- 分支在 workspace 回收时保留（`keep_branch`），方便 `git log taskagent/...` review 或手工 cherry-pick。
 
 ---
 
@@ -310,6 +327,7 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 - **任务规格**（目标、验收标准、约束、风险、规则/LLM 来源）；
 - 执行结果（成功、dry-run、耗时、改动文件数、**执行轮次**、worktree）；
 - **Token 用量**（CLI / 后端 Agent / 合计）；
+- **交付**（模式、任务分支、提交、push、PR/MR、错误）；
 - 验证（状态、原因、每个检查的命令/耗时/退出码/输出摘要）+ **LLM 评审**（结论/问题清单/风险标签）；
 - 多轮执行时的「最后一轮反馈」；
 - 合并状态与自动同步明细（已同步/已删除/冲突/备份目录）；
@@ -397,6 +415,7 @@ stateDiagram-v2
 | `result.diff` | agent 改动 diff 节选（合并会删 worktree，所以执行后立刻留档，供评论/排查用） |
 | `result.rounds` | 本次执行跑了几轮 agent（>1 说明反馈循环修过） |
 | `usage` | 本次执行的 token 账本：`cli` / `llm` 各自的输入、输出、合计、调用次数 |
+| `delivery` | 交付结果：`mode/branch/commit/pushed/pr_url/error` |
 | `result.usage` | 最后一轮 CLI 的 token 用量（逐轮排查用） |
 | `spec` | 任务规格：目标 / 验收标准 / 约束 / 风险 / 来源（rule·llm） |
 | `feedback` | 最后一轮未通过的原因（下一轮提示词 / 报告用；重新执行时清空） |
@@ -420,6 +439,8 @@ stateDiagram-v2
 | 评审要求人工审批（大 diff/敏感文件/高风险） | `failed`（`review_needs_human`） | 循环立即停止，不自动合并 | 人工审 diff 后「强制合并」或拆分任务 |
 | 评审模型未配置/调用失败 | 门禁不回退失败 | 记为「未评审」，验证门禁照常生效 | 在「模型配置」里配一个可用的后端 Agent 模型 |
 | token 预算耗尽 | `failed` | 执行前/每轮后检查任务与当日预算；超限停止重试，主仓不写 | 调高 `TASKAGENT_TASK_TOKEN_BUDGET` / `TASKAGENT_DAILY_TOKEN_BUDGET`，或次日再跑 |
+| 交付失败（push / PR） | `succeeded`（本地已合并） | 任务分支提交保留，`item.delivery.error` 记录原因 | 修凭据/网络后 `POST /api/items/{id}/deliver` 重试 |
+| 交付被跳过（无变更/全被过滤） | `succeeded` | `item.delivery.error` 标注；不影响本地合并 | 检查 commit 规则 / 是否有可提交文件 |
 | 合并冲突 | `succeeded` + `blocked` | 一个文件都不写，保留 worktree | 处理主仓冲突后点「合并」重试 |
 | dry-run 完成 | `succeeded` | 只生成本地方案；不改 TAPD 状态、不发评论 | 看本机报告后再决定是否 apply |
 | 服务重启时正在跑 | `failed`（已中断） | 启动恢复标记 | 重新执行 |
@@ -455,7 +476,7 @@ stateDiagram-v2
 
 ## 15. 边界与已知限制
 
-1. **不 commit / 不 push / 不开 MR / 不部署**——代码只落到主仓库工作区。
+1. **默认不 commit / 不 push / 不开 MR / 不部署**——代码只落到主仓库工作区；开启 `delivery` 后才有任务分支提交、push、PR/MR，且仍不自动合并远端。
 2. **验证门禁覆盖所有 apply（人工 + 自动）**；未通过时主仓一个文件都不写，worktree 保留供排查 / 重新验证（急用可「强制合并」显式跳过）。
 3. **TAPD 回填要求门禁通过且合并未被 blocked**（人工 / 自动一致）；门禁失败或合并冲突时不会把工单回填为完成。
 4. **没有网络隔离**：检查进程不限制网络；只做了环境变量白名单与可选 `rlimits`（CPU/内存/文件大小）。

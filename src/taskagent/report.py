@@ -381,6 +381,26 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _delivery_section(delivery: dict[str, Any]) -> list[str]:
+    """交付结果：任务分支上的提交、push、PR/MR。"""
+    if not isinstance(delivery, dict) or not delivery:
+        return []
+    lines = ["### 交付", "", "| 字段 | 值 |", "|---|---|"]
+    lines.append(f"| 模式 | {delivery.get('mode') or '—'} |")
+    if delivery.get("branch"):
+        lines.append(f"| 任务分支 | `{delivery['branch']}` |")
+    if delivery.get("commit"):
+        lines.append(f"| 提交 | `{delivery['commit']}` |")
+    if delivery.get("pushed"):
+        lines.append(f"| 已推送 | 是（{delivery.get('remote') or 'origin'}） |")
+    if delivery.get("pr_url"):
+        lines.append(f"| PR / MR | {delivery['pr_url']} |")
+    if delivery.get("error"):
+        lines.append(f"| 错误 | {delivery['error']} |")
+    lines.append("")
+    return lines
+
+
 def _usage_section(usage: dict[str, Any]) -> list[str]:
     """Token 账本：CLI 与后端 Agent 分列，最后给合计。"""
     if not isinstance(usage, dict) or not usage:
@@ -500,6 +520,7 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             else:
                 note = "自动执行结果尚未合并到主仓库工作区。"
             lines += ["### 合并状态", "", f"> {note}", ""]
+        lines += _delivery_section(item.delivery)
 
         # Auto-sync outcome: which files landed in the main repo, what was
         # mirrored as a deletion, and where originals were backed up.

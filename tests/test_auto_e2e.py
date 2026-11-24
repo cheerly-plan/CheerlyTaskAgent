@@ -299,3 +299,57 @@ def test_force_merge_skips_verification(tmp_path: Path):
         assert merged["merge_state"] == "merged", merged
         assert merged["result"]["verification"]["override"] is True
         assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")
+
+
+def test_repo_delivery_commit_creates_task_branch(tmp_path: Path):
+    repo, settings = _setup(tmp_path, ("true",))
+    app = create_app(settings)
+    with TestClient(app) as client:
+        mapping = client.post("/api/mappings", json={
+            "name": "demo", "path": str(repo), "delivery": "commit",
+        })
+        assert mapping.status_code == 201, mapping.text
+
+        created = client.post("/api/tasks/manual", json={
+            "title": "把返回值改成 2", "description": "main 返回 2",
+            "kind": "bug", "repo_name": "demo",
+            "exec_mode": "apply", "run_now": False, "approved": False,
+        })
+        item_id = created.json()["id"]
+        client.post("/api/tasks/auto-run", json={"ids": [item_id]})
+
+        item = None
+        for _ in range(200):
+            item = client.get(f"/api/items/{item_id}").json()
+            if item["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert item is not None and item["status"] == "succeeded", item
+        delivery = item["delivery"]
+        assert delivery["mode"] == "commit"
+        assert delivery["commit"]
+        assert delivery["branch"].startswith("taskagent/")
+        assert delivery["pushed"] is False
+        assert "已提交" in item["stage"]
+
+        # 主仓分支没有被提交，任务分支上有一个可评审的提交。
+        main_count = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert main_count == "1"
+        subject = subprocess.run(
+            ["git", "-C", str(repo), "log", "-1", "--format=%s", delivery["branch"]],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert subject == "taskagent: 把返回值改成 2"
+        on_branch = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{delivery['branch']}:app.py"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "return 2" in on_branch
+
+        report = client.get(f"/api/items/{item_id}/report").text
+        assert "### 交付" in report
+        assert delivery["commit"] in report

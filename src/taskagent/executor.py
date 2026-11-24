@@ -1705,8 +1705,18 @@ class CodeBuddyExecutor(Executor):
         return result
 
     # ── workspace / backup GC ─────────────────────────────────────────────────
-    def cleanup_worktree(self, worktree: str | Path, repo_path: str | None = None) -> bool:
+    def cleanup_worktree(
+        self,
+        worktree: str | Path,
+        repo_path: str | None = None,
+        *,
+        keep_branch: bool = False,
+    ) -> bool:
         """Delete an isolated worktree once its result is merged or abandoned.
+
+        ``keep_branch`` keeps the task branch (and its delivery commit) after
+        removing the directory — used when the change was committed for review.
+        
 
         Handles both flavours built by :meth:`_create_worktree`: a real
         ``git worktree`` (deregistered first so its branch can be reused) and a
@@ -1732,7 +1742,7 @@ class CodeBuddyExecutor(Executor):
                 pass
         if wt.exists():
             shutil.rmtree(wt, ignore_errors=True)
-        if repo is not None and repo.is_dir():
+        if not keep_branch and repo is not None and repo.is_dir():
             try:
                 subprocess.run(
                     ["git", "-C", str(repo), "branch", "-D", f"taskagent/{wt.name}"],

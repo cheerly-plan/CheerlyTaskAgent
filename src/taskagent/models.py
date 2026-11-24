@@ -89,6 +89,8 @@ class ProjectMapping:
     note: str = ""
     tapd_workspace_ids: list[str] = field(default_factory=list)  # 关联的 TAPD 项目（一个项目可关联多个仓库）
     tapd_workspace_id: str = ""     # 兼容旧字段：取 tapd_workspace_ids 第一个
+    # 交付策略覆盖：""=跟随全局，off/commit/push/pr（见 delivery.py）。
+    delivery: str = ""
 
     def __post_init__(self) -> None:
         if not self.tapd_workspace_ids and self.tapd_workspace_id:
@@ -106,6 +108,7 @@ class ProjectMapping:
             "note": self.note,
             "tapd_workspace_ids": list(self.tapd_workspace_ids),
             "tapd_workspace_id": self.tapd_workspace_ids[0] if self.tapd_workspace_ids else "",
+            "delivery": self.delivery,
         }
 
     def to_local_repo(self) -> LocalRepo:
@@ -129,6 +132,7 @@ class ProjectMapping:
             enabled=bool(data.get("enabled", True)),
             note=str(data.get("note", "")),
             tapd_workspace_ids=ids,
+            delivery=str(data.get("delivery") or "").strip().lower(),
         )
 
 
@@ -272,6 +276,8 @@ class WorkItem:
     feedback: str = ""               # 上一轮验证/评审未通过的原因，注入下一轮提示词
     # 本次执行的 token 账本（引擎维度聚合）：{cli:{...}, llm:{...}, total_tokens, calls}
     usage: dict[str, Any] = field(default_factory=dict)
+    # 交付结果：mode/branch/commit/pushed/pr_url/error（见 delivery.py）
+    delivery: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -403,6 +409,7 @@ class WorkItem:
             "spec": dict(self.spec),
             "feedback": self.feedback,
             "usage": dict(self.usage),
+            "delivery": dict(self.delivery),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -455,6 +462,7 @@ class WorkItem:
             spec=dict(data.get("spec") or {}),
             feedback=str(data.get("feedback", "") or ""),
             usage=dict(data.get("usage") or {}),
+            delivery=dict(data.get("delivery") or {}),
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),

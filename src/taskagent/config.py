@@ -202,6 +202,12 @@ class Settings:
     # Token 预算（0 = 不限）：任务级「本次执行」累计 / 日级跨任务累计。
     task_token_budget: int = 0
     daily_token_budget: int = 0
+    # 交付模式：off / commit / push / pr（仓库映射可单独覆盖）。
+    delivery_mode: str = "off"
+    delivery_remote: str = "origin"
+    delivery_base: str = ""        # 空 = 自动探测 origin/HEAD、main、master
+    delivery_provider: str = ""    # 空 = 按远端域名判断 github / gitlab
+    delivery_api_base: str = ""    # 企业版 API 地址覆盖
     # Workspace/backup GC (P0-3): worktrees of merged/abandoned tasks are
     # removed and sync-backups are pruned so long-running servers don't bloat.
     gc_enabled: bool = True
@@ -231,6 +237,13 @@ class Settings:
             daily_token_budget=max(
                 0, int(os.environ.get("TASKAGENT_DAILY_TOKEN_BUDGET", "0"))
             ),
+            delivery_mode=(
+                os.environ.get("TASKAGENT_DELIVERY", "off").strip().lower() or "off"
+            ),
+            delivery_remote=os.environ.get("TASKAGENT_DELIVERY_REMOTE", "origin"),
+            delivery_base=os.environ.get("TASKAGENT_DELIVERY_BASE", ""),
+            delivery_provider=os.environ.get("TASKAGENT_DELIVERY_PROVIDER", "").lower(),
+            delivery_api_base=os.environ.get("TASKAGENT_DELIVERY_API_BASE", ""),
             project_map_file=(
                 Path(item).expanduser()
                 if (item := os.environ.get("TASKAGENT_PROJECT_MAP_FILE"))

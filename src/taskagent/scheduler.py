@@ -65,6 +65,12 @@ class SchedulerSettings:
     task_token_budget: int = 0
     daily_token_budget: int = 0
     usage_file: Path | None = None
+    # 交付（默认关闭；仓库映射的 delivery 字段可单独覆盖）。
+    delivery_mode: str = "off"
+    delivery_remote: str = "origin"
+    delivery_base: str = ""
+    delivery_provider: str = ""
+    delivery_api_base: str = ""
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -607,19 +613,24 @@ class Scheduler:
                 "override_at": _utcnow(),
             }
             item.approved_by = "user"
+        policy = self._delivery_policy(item)
         ok = self._auto_merge(item, backend, item.result)
         files = len(item.result.synced_files) + len(item.result.sync_deleted)
         if ok:
+            # 合并成功后再提交：worktree HEAD 是三方合并的基线。
+            self._prepare_delivery(item, backend, item.result, policy)
             if verify_failed:
                 item.status = ItemStatus.SUCCEEDED
                 item.error = None
-            item.stage = (
+            base_stage = (
                 f"完成（人工强制合并 {files} 个文件，已跳过验证）"
                 if verify_failed else f"完成（已合并 {files} 个文件到工作区）"
             )
+            item.stage = base_stage + self._finish_delivery(item, policy)
             # Changes are in the main repo — the worktree has served its purpose.
             self._gc_after_success(item, backend)
         else:
+            self._prepare_delivery(item, backend, item.result, policy)
             conflicts = len(item.result.sync_conflicts)
             item.stage = (
                 f"完成（合并冲突 {conflicts} 个文件，未写入主仓）"
@@ -681,11 +692,15 @@ class Scheduler:
         item.status = ItemStatus.SUCCEEDED
         item.error = None
         backend = self.executors.resolve(item.executor)
+        policy = self._delivery_policy(item)
         if merge and item.hold_merge and backend is not None:
             merged = self._auto_merge(item, backend, item.result)
             if merged:
+                # 先合并再提交：worktree 的 HEAD 是同步基线，提交会移动它。
+                self._prepare_delivery(item, backend, item.result, policy)
                 files = len(item.result.synced_files) + len(item.result.sync_deleted)
-                item.stage = f"完成（验证通过，已合并 {files} 个文件到工作区）"
+                suffix = await asyncio.to_thread(self._finish_delivery, item, policy)
+                item.stage = f"完成（验证通过，已合并 {files} 个文件到工作区）{suffix}"
                 self._gc_after_success(item, backend)
             else:
                 conflicts = len(item.result.sync_conflicts)
@@ -742,7 +757,15 @@ class Scheduler:
         worktree = outcome.worktree if outcome is not None else None
         if not worktree:
             return
+        keep_branch = bool((item.delivery or {}).get("commit"))
         try:
+            cleanup(
+                worktree,
+                str(item.repo.path) if item.repo else None,
+                keep_branch=keep_branch,
+            )
+        except TypeError:
+            # 老的自定义执行器没有 keep_branch 参数：退回旧签名。
             cleanup(worktree, str(item.repo.path) if item.repo else None)
         except OSError:
             logger.warning("清理 worktree 失败：%s", worktree, exc_info=True)
@@ -982,6 +1005,152 @@ class Scheduler:
         if daily_limit and today >= daily_limit:
             return f"今日 token 预算已用完（{today}/{daily_limit}）"
         return ""
+
+    # ── delivery（过滤提交 / push / PR） ───────────────────────────────────────
+    def _mapping_for(self, item: WorkItem):
+        if self.projects is None or item.repo is None:
+            return None
+        try:
+            repo_path = str(Path(item.repo.path).expanduser().resolve())
+        except OSError:
+            repo_path = item.repo.path
+        for mapping in self.projects.list():
+            if mapping.name == item.repo.name:
+                return mapping
+            try:
+                if str(Path(mapping.path).expanduser().resolve()) == repo_path:
+                    return mapping
+            except OSError:
+                continue
+        return None
+
+    def _delivery_policy(self, item: WorkItem):
+        from .delivery import policy_for
+
+        return policy_for(
+            item, settings=self.settings, mapping=self._mapping_for(item)
+        )
+
+    def _deliver_commit(self, item: WorkItem, backend, result, policy) -> dict[str, Any]:
+        """Commit the verified worktree changes onto the task branch."""
+        from .delivery import commit_changes
+
+        outcome = commit_changes(
+            item,
+            backend=backend,
+            worktree=result.worktree or "",
+            filter_obj=self._commit_filter(),
+        )
+        record: dict[str, Any] = {
+            "mode": policy.mode,
+            "branch": str(outcome.get("branch") or ""),
+            "commit": str(outcome.get("commit") or ""),
+            "kept": list(outcome.get("kept") or []),
+            "skipped": list(outcome.get("skipped") or []),
+            "pushed": False,
+            "pr_url": "",
+            "error": str(outcome.get("error") or ""),
+        }
+        if record["commit"]:
+            item.commit = CommitResult(
+                ok=True,
+                commit=record["commit"],
+                branch=record["branch"],
+                message=f"taskagent: {item.title}",
+                kept=record["kept"],
+                skipped=record["skipped"],
+            )
+        return record
+
+    def _deliver_remote(self, item: WorkItem, policy) -> dict[str, Any]:
+        """Push the committed branch and optionally open a PR/MR."""
+        from .delivery import create_pr, push_branch, remote_url
+
+        record = dict(item.delivery or {})
+        record["mode"] = policy.mode
+        if not record.get("commit") or item.repo is None:
+            record["error"] = record.get("error") or "没有可推送的提交"
+            item.delivery = record
+            return record
+        if policy.mode not in {"push", "pr"}:
+            item.delivery = record
+            return record
+        push = push_branch(item.repo.path, record["branch"], policy.remote)
+        record["pushed"] = bool(push.get("ok"))
+        record["remote"] = policy.remote
+        if not push.get("ok"):
+            record["error"] = str(push.get("error") or "push 失败")
+            item.delivery = record
+            return record
+        if policy.mode == "pr":
+            body = (
+                f"由 TaskAgent 自动生成。\n\n- 任务：{item.title}\n"
+                f"- 任务 ID：{item.id}\n"
+                f"- 改动文件：{len((item.result.changed_files if item.result else []) or [])} 个\n"
+            )
+            pr = create_pr(
+                policy=policy,
+                remote_url=remote_url(item.repo.path, policy.remote),
+                branch=record["branch"],
+                title=f"{item.title} ({item.id})",
+                body=body,
+            )
+            record["pr_url"] = str(pr.get("url") or "")
+            record["provider"] = str(pr.get("provider") or "")
+            if not pr.get("ok"):
+                record["error"] = str(pr.get("error") or "创建 PR/MR 失败")
+        item.delivery = record
+        return record
+
+    def _prepare_delivery(self, item: WorkItem, backend, result, policy) -> None:
+        """Commit verified changes before merge (worktree is gone afterwards)."""
+        if not policy.enabled:
+            return
+        if (item.delivery or {}).get("commit"):
+            return
+        if result is None or not result.worktree:
+            item.delivery = {"mode": policy.mode, "error": "没有可提交的 worktree"}
+            return
+        item.delivery = self._deliver_commit(item, backend, result, policy)
+
+    def _finish_delivery(self, item: WorkItem, policy, *, prefix: str = "，") -> str:
+        """Push/PR after a successful merge; returns a short stage suffix."""
+        if not policy.enabled or not (item.delivery or {}).get("commit"):
+            return ""
+        self._deliver_remote(item, policy)
+        record = item.delivery or {}
+        if record.get("pr_url"):
+            return f"{prefix}PR/MR：{record['pr_url']}"
+        if record.get("pushed"):
+            return f"{prefix}已推送任务分支 {record.get('branch')}"
+        if record.get("error"):
+            return f"{prefix}交付失败：{str(record['error'])[:120]}"
+        if record.get("commit"):
+            return f"{prefix}已提交 {record['commit']}（任务分支）"
+        return ""
+
+    def deliver_item(self, item_id: str) -> WorkItem:
+        """Retry delivery (push/PR) for a task whose local commit already exists."""
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        if item.result is None or item.result.dry_run:
+            raise ValueError("任务还没有可交付的 apply 结果")
+        policy = self._delivery_policy(item)
+        if not policy.enabled:
+            raise ValueError("该仓库未开启交付（delivery=off）")
+        if not (item.delivery or {}).get("commit"):
+            worktree = item.result.worktree
+            if not worktree or not Path(worktree).expanduser().is_dir():
+                raise ValueError("worktree 已回收，找不到可提交的改动")
+            backend = self.executors.resolve(item.executor)
+            if backend is None:
+                raise ValueError("没有可用的执行后端")
+            item.delivery = self._deliver_commit(item, backend, item.result, policy)
+        self._deliver_remote(item, policy)
+        self.store.save(item)
+        self.events.publish(Event("item_delivered", item.id, {"delivery": dict(item.delivery)}))
+        return item
 
     async def _ensure_spec(self, item: WorkItem) -> None:
         """Make sure the item has a TaskSpec; auto tasks get an LLM upgrade.
@@ -1239,7 +1408,9 @@ class Scheduler:
                         round_note = f"（第 {result.rounds} 轮）" if result.rounds > 1 else ""
                         item.stage = f"验证未通过{round_note}：{verify_failure}"
                     else:
-                        # 门禁通过：scheduler 负责原子合并，无冲突才写入主仓工作区。
+                        # 门禁通过：先原子合并，再在 worktree 的任务分支上提交交付物。
+                        # 顺序不能反：提交会移动 worktree HEAD（三方合并的基线）。
+                        policy = self._delivery_policy(item)
                         merged = self._auto_merge(item, backend, result)
                         if merged:
                             files = len(result.synced_files) + len(result.sync_deleted)
@@ -1248,17 +1419,30 @@ class Scheduler:
                                 note = "，验证已禁用"
                             elif gate.get("state") == "passed_with_warnings":
                                 note = "，验证有警告"
+                            await asyncio.to_thread(
+                                self._prepare_delivery, item, backend, result, policy
+                            )
+                            suffix = await asyncio.to_thread(
+                                self._finish_delivery, item, policy
+                            )
                             item.stage = (
-                                f"完成（已自动合并 {files} 个文件到工作区{note}）"
+                                f"完成（已自动合并 {files} 个文件到工作区{note}）{suffix}"
                             )
                             # Merge landed: reclaim the isolated worktree now.
                             self._gc_after_success(item, backend)
                         else:
                             conflicts = len(result.sync_conflicts)
-                            item.stage = (
+                            await asyncio.to_thread(
+                                self._prepare_delivery, item, backend, result, policy
+                            )
+                            blocked_stage = (
                                 f"完成（合并冲突 {conflicts} 个文件，未写入主仓）"
                                 if conflicts else "完成（合并失败，未写入主仓）"
                             )
+                            commit_note = ""
+                            if (item.delivery or {}).get("commit"):
+                                commit_note = f"；已在任务分支提交 {item.delivery['commit']}（未推送）"
+                            item.stage = blocked_stage + commit_note
                 elif result.sync_error:
                     # Apply itself worked, but the mirror into the main repo
                     # failed — surface it so the user doesn't assume the code
