@@ -184,6 +184,83 @@ def test_verification_failure_blocks_merge(tmp_path: Path):
         assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")
 
 
+def test_manual_apply_runs_verification_gate_and_merges(tmp_path: Path):
+    repo, settings = _setup(tmp_path, ("true",))
+    app = create_app(settings)
+    with TestClient(app) as client:
+        mapping = client.post("/api/mappings", json={"name": "demo", "path": str(repo)})
+        assert mapping.status_code == 201, mapping.text
+        created = client.post("/api/tasks/manual", json={
+            "title": "把返回值改成 2", "description": "main 返回 2",
+            "kind": "bug", "repo_name": "demo",
+            "exec_mode": "apply", "run_now": False, "approved": False,
+        })
+        assert created.status_code == 201, created.text
+        item_id = created.json()["id"]
+
+        # 人工单条 apply（非自动执行）：approved=true 但仍需经过验证门禁。
+        started = client.post(f"/api/items/{item_id}/run", json={
+            "exec_mode": "apply", "approved": True,
+        })
+        assert started.status_code == 200, started.text
+        assert started.json()["approved_by"] != "auto"
+
+        item = None
+        for _ in range(200):
+            item = client.get(f"/api/items/{item_id}").json()
+            if item["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert item is not None and item["status"] == "succeeded", item
+        assert item["result"]["verification"]["ok"] is True
+        assert item["merge_state"] == "merged", item
+        assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")
+        assert (repo / "util.py").is_file()
+
+
+def test_manual_apply_gate_failure_blocks_sync_and_can_reverify(tmp_path: Path):
+    repo, settings = _setup(tmp_path, ("false",))
+    app = create_app(settings)
+    with TestClient(app) as client:
+        client.post("/api/mappings", json={"name": "demo", "path": str(repo)})
+        created = client.post("/api/tasks/manual", json={
+            "title": "把返回值改成 2", "description": "main 返回 2",
+            "kind": "bug", "repo_name": "demo",
+            "exec_mode": "apply", "run_now": False, "approved": False,
+        })
+        item_id = created.json()["id"]
+        client.post(f"/api/items/{item_id}/run", json={
+            "exec_mode": "apply", "approved": True,
+        })
+
+        item = None
+        for _ in range(200):
+            item = client.get(f"/api/items/{item_id}").json()
+            if item["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+
+        assert item is not None and item["status"] == "failed", item
+        assert "验证未通过" in item["stage"]
+        assert "验证未通过" in (item["error"] or "")
+        # 门禁拦下：主仓一个字节都没变，worktree 保留。
+        assert item["merge_state"] == ""
+        assert "return 1" in (repo / "app.py").read_text(encoding="utf-8")
+        assert not (repo / "util.py").exists()
+        assert item["result"]["verification"]["state"] == "failed"
+        assert item["result"]["worktree"]
+
+        # 修好配置后只重跑门禁：通过后人工 apply 同样会原子合并。
+        _write_verify(settings, ("true",))
+        verified = client.post(f"/api/items/{item_id}/verify")
+        assert verified.status_code == 200, verified.text
+        body = verified.json()
+        assert body["status"] == "succeeded", body
+        assert body["merge_state"] == "merged", body
+        assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")
+
+
 def test_force_merge_skips_verification(tmp_path: Path):
     repo, settings = _setup(tmp_path, ("false",))
     app = create_app(settings)

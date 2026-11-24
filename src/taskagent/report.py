@@ -429,7 +429,7 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
         if verification:
             lines += _verification_section(verification)
 
-        # 自动链路：scheduler 在任务结束后做原子合并。
+        # 所有 apply（人工/自动）：门禁通过后由 scheduler 做原子合并。
         if item.hold_merge:
             if item.merge_state == "merged":
                 note = "已自动合并到主仓库工作区（未提交；冲突文件不会被覆盖）。"

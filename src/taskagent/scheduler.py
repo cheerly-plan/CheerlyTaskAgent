@@ -42,7 +42,7 @@ class SchedulerSettings:
     max_concurrent: int = 1          # codebuddy is heavy; run one at a time by default
     retry_delays: tuple[float, ...] = (2.0, 8.0)
     reports_dir: Path = Path("data/reports")
-    # Verification gate (auto path only). Defaults to <data_dir>/verify.json,
+    # Verification gate (all apply runs). Defaults to <data_dir>/verify.json,
     # i.e. the sibling of reports/. None means "derive from reports_dir".
     verify_config_file: Path | None = None
     verify_default_timeout_s: int = 300
@@ -480,6 +480,10 @@ class Scheduler:
             item.model = (model or "").strip() or None
         if item.exec_mode == "apply" and not approved:
             raise ValueError("apply mode requires explicit approval (approved=true)")
+        if item.exec_mode == "apply":
+            # 人工 apply 同样要过验证门禁：执行器只写隔离 worktree，由 scheduler
+            # 在门禁通过后做原子合并。否则代码会先落主仓，门禁就形同虚设。
+            item.hold_merge = True
         item.status = ItemStatus.QUEUED
         item.error = None
         self.store.save(item)
@@ -618,8 +622,8 @@ class Scheduler:
         """Re-run the gate on an existing worktree, without re-running the agent.
 
         Useful after a flaky failure, an environment fix, or an N/A/config
-        change. When the gate passes and the task is an auto task, it also
-        performs the normal atomic merge.
+        change. When the gate passes and the run holds its merge (all apply
+        runs), it also performs the normal atomic merge.
         """
         item = self.store.get(item_id)
         if item is None:
@@ -1047,10 +1051,10 @@ class Scheduler:
                 # would let them read a half-finished task ("验证中…").
                 if result.dry_run:
                     item.stage = "完成（dry-run）"
-                elif item.auto and item.hold_merge:
-                    # 验证门禁：先在隔离 worktree 里跑仓库声明的检查。验证不过
-                    # （含未配置、跑不起来、超时、测试文件被改）就一个文件都
-                    # 不写回主仓，worktree 保留供排查。
+                elif item.hold_merge:
+                    # 验证门禁（人工 apply 与自动链路都走）：先在隔离 worktree 里
+                    # 跑仓库声明的检查。验证不过（含未配置、跑不起来、超时、测试
+                    # 文件被改）就一个文件都不写回主仓，worktree 保留供排查。
                     item.stage = "验证中…"
                     self.store.save(item)
                     self.events.publish(Event("item_verifying", item_id, {}))
@@ -1060,7 +1064,7 @@ class Scheduler:
                         verify_failure = str(gate.get("reason") or "未知原因")
                         item.stage = f"验证未通过：{verify_failure}"
                     else:
-                        # 自动链路：scheduler 负责原子合并，无冲突才写入主仓工作区。
+                        # 门禁通过：scheduler 负责原子合并，无冲突才写入主仓工作区。
                         merged = self._auto_merge(item, backend, result)
                         if merged:
                             files = len(result.synced_files) + len(result.sync_deleted)

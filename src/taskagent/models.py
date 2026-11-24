@@ -155,7 +155,7 @@ class RunResult:
     sync_backup_dir: str | None = None
     sync_error: str | None = None
     # Post-execution verification gate verdict (see ``verification.py``).
-    # Empty for dry-run / legacy results / manual applies.
+    # Empty for dry-run / legacy results; every apply (manual or auto) records it.
     verification: dict[str, Any] = field(default_factory=dict)
     # Excerpt of the worktree diff captured right after the agent ran. Kept on
     # the result because the worktree is deleted on a successful merge, while

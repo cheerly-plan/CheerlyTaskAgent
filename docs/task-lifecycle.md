@@ -13,7 +13,7 @@
 | # | 条件 | 证据落点 |
 |---|---|---|
 | 1 | 执行器在隔离 worktree 里跑通，且确实产生了文件改动（dry-run 除外） | `WorkItem.result.changed_files` |
-| 2 | **自动链路**验证门禁通过（或被人工「强制合并」显式越过） | `result.verification.state / ok` |
+| 2 | **apply 链路（人工 / 自动）**验证门禁通过（或被人工「强制合并」显式越过） | `result.verification.state / ok` |
 | 3 | 改动**原子地**写入主仓库工作区——要么全写、要么一个文件都不写 | `item.merge_state = merged / blocked` |
 | 4 | 报告落盘，TAPD 来源的工单状态回填成功 | `data/reports/<id>.md`；TAPD 状态 + 评论 |
 
@@ -57,19 +57,16 @@ flowchart TD
     TRIG -->|"人工 apply（需审批）"| WT["隔离 worktree 中执行"]
     TRIG -->|"自动 apply（自动审批）"| WT
 
-    WT --> GATE{"验证门禁<br/>仅自动链路"}
+    WT --> GATE{"验证门禁<br/>所有 apply（人工 / 自动）"}
     GATE -->|"未通过 / 未配置 / 超时"| FAIL["failed<br/>worktree 保留可重试"]
     GATE -->|"通过 / 验证被禁用"| MERGE{"原子合并"}
-    GATE -.->|"人工 apply 不跑门禁"| SYNC["逐文件三方同步"]
     MERGE -->|"无冲突"| DONE["succeeded<br/>已写入主仓库工作区"]
     MERGE -->|"有冲突"| BLOCK["succeeded + merge_state=blocked<br/>一个文件都不写"]
-    SYNC --> PART["succeeded<br/>冲突文件不覆盖，其余写入"]
-
+    
     DRY --> RPT["Markdown 报告 + SSE 事件"]
     DONE --> RPT
     FAIL --> RPT
     BLOCK --> RPT
-    PART --> RPT
     RPT --> BF["TAPD 回填：评论（结论/文件/diff）<br/>dry-run 完全不回写"]
 ```
 
@@ -91,6 +88,7 @@ flowchart TD
 
 - **只有两个自动执行触发点**：TAPD 定时拉取拉到的新单；任务中心「自动执行」里被勾选的任务（`automation.dispatch`）。手动「立即同步」不会自动跑。
 - 自动执行一律走 **apply**（`run_auto` 强制 `exec_mode="apply"` + `approved_by="auto"`），并带上 `hold_merge=True`——由 scheduler 负责验证和原子合并。
+- **人工 apply 同样走验证门禁 + 原子合并**：`run()` 对所有 `apply` 置 `hold_merge=True`，执行器只写隔离 worktree，门禁通过后由 scheduler 原子合并回主仓（与自动链路同一套机制）。
 - TAPD 凭据/项目/回填状态、定时开关都在「数据源」页，配置存 `data/settings.json`，即时生效。
 
 ---
@@ -155,7 +153,7 @@ TAPD 建单的三个细节：
 | 模式 | 前提 | 行为 |
 |---|---|---|
 | `dry-run` | 已映射仓库 | 只拼提示词和命令落报告；仓库零改动；状态 `succeeded`，可再转 apply |
-| `apply` | 已映射仓库 + **`approved=true`**（显式审批） | 建 worktree、真跑 CLI；缺审批直接拒绝（400） |
+| `apply` | 已映射仓库 + **`approved=true`**（显式审批） | 建 worktree、真跑 CLI；缺审批直接拒绝（400）；完成后先过验证门禁，通过才原子合并回主仓（与自动链路一致） |
 
 - 允许重新武装的状态：`dry-run` 成功的、`failed`、`cancelled`。重新执行会清掉旧 `result/report/attempt`，避免看板显示上一轮输出。
 - 已经是 `succeeded` 的 apply 任务不会重跑（要改就新建任务或走「重新验证 / 合并」）。
@@ -177,7 +175,7 @@ TAPD 建单的三个细节：
 
 ### 5.3 并发、重试、取消
 
-- **锁顺序**：父需求锁 → 同仓库锁 → 全局信号量。父锁/仓库锁只作用于自动任务（人工任务不参与原子合并，互不阻塞），保证同一父需求下、或同一仓库上的自动任务串行，避免后一个任务把前一个的合并基线顶掉。
+- **锁顺序**：父需求锁 → 同仓库锁 → 全局信号量。父锁/仓库锁只作用于自动任务（人工任务不进这两把锁，互不阻塞），保证同一父需求下、或同一仓库上的自动任务串行，避免后一个任务把前一个的合并基线顶掉。
 - **并发上限**：`max_concurrent`（默认 1，系统设置里改），是全局槽位。
 - **失败重试**：只有可重试错误（timeout / rate / 429 / 5xx）才自动重试。默认 `max_attempts=2`，即失败后等 2s 再试一次；`retry_delays=(2s, 8s)` 里的 8s 只有在调高上限后才会用到。其余失败直接 `failed`。
 - **取消**：置取消位 + 状态 `cancelled`；正在跑的子进程不会被强杀，但它跑完后结果作废、不会合并（超时才会 kill 进程）。
@@ -201,7 +199,7 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 
 ---
 
-## 7. 阶段 E：验证门禁（仅自动链路）
+## 7. 阶段 E：验证门禁（所有 apply 链路，人工 + 自动）
 
 位置：agent 跑完之后、原子合并之前；在同一个 worktree 里跑仓库声明的检查（`verification.run_gate`）。**默认 fail-closed**：没配置、跑不起来、超时、动到测试/受保护文件，都算不通过，主仓一个文件都不写。
 
@@ -231,13 +229,13 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 - **人工兜底**：「强制合并」显式跳过门禁，`verification.override/override_by/override_at` 记入报告，自动链路永远不会用它。
 - 门禁日志在 `data/verifications/`（7 天 / 2000 个文件自动回收），输出已脱敏。
 - 检查进程的 `PYTHONPATH` 指向被验证 worktree 的 `src/` 与根目录：`.venv` 若是 editable 安装（指向主仓），不这样做检查会跑主仓代码而不是 agent 的改动。
-- **人工 apply 不经过门禁**（这是当前实现的边界）：人工 apply 直接在 executor 里做逐文件同步。
+- **人工 apply 与自动链路走同一套门禁**：`run()` 对所有 `apply`（包括人工单条执行）置 `hold_merge=True`，执行器只写隔离 worktree；门禁未过（含未配置、跑不起来、超时、动到测试/受保护文件）就一个文件都不写回主仓，worktree 保留供排查与「重新验证」。
 
 ---
 
 ## 8. 阶段 F：合并回主仓库工作区
 
-### 8.1 自动链路：原子合并（`sync_to_repo(atomic=True)`）
+### 8.1 原子合并（人工 / 自动 apply 共用，`sync_to_repo(atomic=True)`）
 
 1. **预演（preflight）**：对每个改动文件做三方比较——`base`（worktree HEAD）、`ours`（主仓库当前文件）、`theirs`（agent 结果）。
    - 主仓自 base 以来没动 → 可直接覆盖/删除；
@@ -247,11 +245,11 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 4. 路径安全：只碰改动文件、过滤忽略规则（`.env`、`data/`、venv 等）、拒绝绝对路径 / `..` / 符号链接逃逸；覆盖或删除前先备份到 `data/sync-backups/<item>/<时间>/`。
 5. 冲突后人工点「合并」重试（`merge_item`）；仍冲突就继续 blocked。人工强制合并只在这一步存在。
 
-### 8.2 人工链路：逐文件同步
+### 8.2 人工 apply 的合并
 
-人工 apply 成功后由 executor 直接 `sync_to_repo`（非原子）：能三方合并的文件写入，冲突文件**不覆盖**、双方版本备份为 `.main` / `.codebuddy`，看板显示"N 个文件冲突未覆盖"。主仓可能处于"部分文件已更新"的状态。
+人工 apply 不再由 executor 逐文件同步：与自动任务一样走上面的原子合并——门禁通过后无冲突才写入主仓，有冲突则一个文件都不写、保留 worktree 供「重试合并」或「强制合并」。失败后修好配置可通过「重新验证」重跑门禁（不重跑 agent），通过后自动合并。
 
-两种链路都**不 commit、不 push**。（后端还保留了带过滤规则的 `/api/items/{id}/commit*` 接口，当前界面未接入，不属于主链路。）
+无论人工还是自动，都**不 commit、不 push**。（后端还保留了带过滤规则的 `/api/items/{id}/commit*` 接口，当前界面未接入，不属于主链路。）
 
 ---
 
@@ -340,7 +338,7 @@ stateDiagram-v2
 | `status` | 上述状态机 |
 | `stage` | 人话进度/原因，直接显示在界面与报告（"验证中…"、"完成（已自动合并 N 个文件…）"） |
 | `merge_state` | `""`（未走原子合并）/ `merged` / `blocked` |
-| `hold_merge` | True = 执行器不同步，交给 scheduler 做验证 + 原子合并（自动链路） |
+| `hold_merge` | True = 执行器不同步，交给 scheduler 做验证 + 原子合并（所有 apply：人工 + 自动） |
 | `auto` / `approved_by` | 是否自动派发 / 谁批准的 apply（`user` / `auto`） |
 | `auto_dispatched_at` | 自动派发幂等标记 |
 | `attempt` / `max_attempts` | 执行尝试次数 / 上限 |
@@ -397,8 +395,8 @@ stateDiagram-v2
 ## 15. 边界与已知限制
 
 1. **不 commit / 不 push / 不开 MR / 不部署**——代码只落到主仓库工作区。
-2. **验证门禁只覆盖自动链路**；人工 apply 依赖 agent 自报 + 报告，主仓可能部分写入。
-3. **人工 apply 的 TAPD 回填不检查同步冲突**：只要执行成功就回填 `resolved`，即使有文件冲突未覆盖（冲突会在报告/看板标出）。自动链路则要求合并未 blocked。
+2. **验证门禁覆盖所有 apply（人工 + 自动）**；未通过时主仓一个文件都不写，worktree 保留供排查 / 重新验证（急用可「强制合并」显式跳过）。
+3. **TAPD 回填要求门禁通过且合并未被 blocked**（人工 / 自动一致）；门禁失败或合并冲突时不会把工单回填为完成。
 4. **没有网络隔离**：检查进程不限制网络；只做了环境变量白名单与可选 `rlimits`（CPU/内存/文件大小）。
 5. **多候选仓库的自动选仓依赖后端 Agent 的 LLM**；没配（可用）模型时，多候选任务只能人工映射，系统不会猜。
 6. **取消不是强杀**：正在运行的 CLI 会跑完，结果作废。
