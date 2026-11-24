@@ -216,7 +216,7 @@ _VERIFY_STATE_LABELS: dict[str, str] = {
     "unconfigured": "未配置",
     "no_changes": "无改动",
     "passed_with_warnings": "通过（有警告）",
-    "test_files_changed": "改动包含测试文件",
+    "test_files_changed": "改动修改/删除了测试文件",
     "protected_files_changed": "改动受保护文件",
     "too_many_files": "改动文件过多",
     "diff_too_large": "改动行数过多",
@@ -241,8 +241,26 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
             "",
         ]
     test_files = verification.get("test_files") or []
+    reasons = verification.get("test_file_reasons") or {}
     if test_files:
-        lines += ["改动的测试文件：", ""] + [f"- `{name}`" for name in test_files] + [""]
+        lines += ["被修改/删除的测试文件：", ""] + [
+            f"- `{name}`" + (
+                f"：{reasons.get(name)}" if isinstance(reasons, dict) and reasons.get(name) else ""
+            )
+            for name in test_files
+        ] + [""]
+    test_added = verification.get("test_files_added") or []
+    if test_added:
+        lines += [
+            "新增的测试文件（阻塞判定仍使用基线测试，新增测试结果仅供参考）：",
+            "",
+        ] + [f"- `{name}`" for name in test_added] + [""]
+    test_augmented = verification.get("test_files_augmented") or []
+    if test_augmented:
+        lines += [
+            "仅在原测试文件中新增用例（原有用例未被删改；判定仍使用基线测试）：",
+            "",
+        ] + [f"- `{name}`" for name in test_augmented] + [""]
     protected = verification.get("protected_files") or []
     if protected:
         lines += ["改动的受保护文件：", ""] + [f"- `{name}`" for name in protected] + [""]
@@ -279,6 +297,28 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
             lines.append(
                 f"| {check.get('label') or check.get('id')} | `{command}` | {outcome} "
                 f"| {base_text} | {check.get('duration_s', 0)}s |"
+            )
+        lines += [""]
+    new_tests = verification.get("new_tests") or []
+    if new_tests:
+        lines += [
+            "含新增测试的全量检查（仅告警，不参与合并判定）：",
+            "",
+            "| 检查 | 结果 | 耗时 |",
+            "|---|---|---|",
+        ]
+        for check in new_tests:
+            if check.get("timed_out"):
+                outcome = "超时"
+            elif check.get("ok"):
+                outcome = "通过"
+            elif check.get("exit_code") is None:
+                outcome = "无法执行"
+            else:
+                outcome = f"失败（退出码 {check.get('exit_code')}）"
+            lines.append(
+                f"| {check.get('label') or check.get('id')} | {outcome} "
+                f"| {check.get('duration_s', 0)}s |"
             )
         lines += [""]
     missing = verification.get("missing_categories") or []

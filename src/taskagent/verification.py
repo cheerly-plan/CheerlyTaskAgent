@@ -6,8 +6,13 @@ before the scheduler merges anything into the main working tree.
 Hardening beyond the first MVP:
 
 - environment whitelist (never inherit API keys / tokens)
+- checks run the *worktree* code even when `.venv` is an editable install
 - total verification budget in addition to per-check timeouts
 - protected files (test config / CI / manifests / lockfiles) cannot be changed
+- test/snapshot files may be added, or grown by pure insertions into an
+  existing file; deleting/rewriting them blocks the merge.  The blocking test
+  verdict is produced against the baseline (pre-agent) test files, so tests the
+  agent wrote cannot grade themselves
 - changed-file and diff-size caps
 - one retry for flaky checks
 - optional baseline run at the pre-agent commit: a check that fails on both
@@ -359,6 +364,255 @@ def _is_git_worktree(path: Path) -> bool:
     return bool(proc and proc.returncode == 0 and proc.stdout.strip() == "true")
 
 
+# ── changed-file classification ──────────────────────────────────────────────
+def _norm_path(value: str) -> str:
+    text = str(value).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def _expand_renames(changed: list[str]) -> list[str]:
+    """Split ``old -> new`` porcelain entries into their two real paths.
+
+    Older task records stored renames that way; treating them as one opaque
+    path would let a renamed test file slip past the grader check.
+    """
+    expanded: list[str] = []
+    for item in changed:
+        text = str(item)
+        if " -> " in text:
+            old, new = text.split(" -> ", 1)
+            expanded.extend(part.strip() for part in (old, new) if part.strip())
+        elif text.strip():
+            expanded.append(text)
+    return expanded
+
+
+def _kind_of(status: str) -> str:
+    """Map a porcelain ``XY`` pair to added / modified / deleted."""
+    pair = (status + "  ")[:2]
+    if pair == "??" or pair[0] == "A":
+        return "added"
+    if "D" in pair:
+        return "deleted"
+    return "modified"
+
+
+def _change_kinds(worktree: Path, changed: list[str]) -> dict[str, str]:
+    """Classify each changed path as added / modified / deleted.
+
+    Uses ``git status`` when the worktree is a checkout. Returns ``{}`` when
+    that is impossible (no git, git error), which callers treat as "unknown"
+    and therefore conservatively as modified.
+    """
+    if not _is_git_worktree(worktree):
+        return {}
+    proc = _git(
+        worktree, "status", "--porcelain", "-z", "--no-renames", timeout=30,
+    )
+    if proc is None or proc.returncode != 0:
+        return {}
+    entries: dict[str, str] = {}
+    for raw in proc.stdout.split("\0"):
+        if len(raw) < 4:
+            continue
+        entries[_norm_path(raw[3:])] = raw[:2]
+    kinds: dict[str, str] = {}
+    for item in changed:
+        key = _norm_path(item)
+        if not key:
+            continue
+        status = entries.get(key)
+        if status is None:
+            # ``changed`` may carry a collapsed untracked directory (``dir/``).
+            prefix = key if key.endswith("/") else key + "/"
+            children = [
+                value for path, value in entries.items() if path.startswith(prefix)
+            ]
+            if children:
+                status = "??" if all(value == "??" for value in children) else "M "
+        if status is None:
+            # ... or a file below one: inherit the collapsed directory's state.
+            parents = [
+                path for path in entries if path.endswith("/") and key.startswith(path)
+            ]
+            if parents:
+                status = entries[max(parents, key=len)]
+        kinds[key] = _kind_of(status) if status is not None else "unknown"
+    return kinds
+
+
+def _path_kind(kinds: dict[str, str], path: str) -> str:
+    return kinds.get(_norm_path(path), "unknown")
+
+
+# Executable lines that can switch tests off.  A "pure insertion" diff is only
+# allowed through when it does not add one of these: adding a skip marker on
+# top of an existing test file is a one-line addition that weakens the suite.
+_WEAKENING_ANY_RE = re.compile(r"\b(?:pytestmark\s*=|collect_ignore\s*=)")
+_WEAKENING_TOP_RE = re.compile(
+    r"^(?:pytest\.skip\s*\(|sys\.exit\s*\(|os\._exit\s*\(|raise\s+SystemExit\b)"
+)
+_WEAKENING_DECORATOR_RE = re.compile(r"^\s*@[\w.]*\b(?:skip|skipif|xfail)\b")
+
+
+def _weakening_added_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+    if _WEAKENING_DECORATOR_RE.match(line):
+        return True
+    if _WEAKENING_ANY_RE.search(line):
+        return True
+    return bool(not line[:1].isspace() and _WEAKENING_TOP_RE.match(stripped))
+
+
+def _pure_addition(worktree: Path, rel: str) -> tuple[bool, str]:
+    """True when a modified test file only inserted lines.
+
+    This is a structural check (``git diff -U0``), not a semantic one: the
+    merge verdict itself is still produced from the baseline tests, and the
+    inserted cases are run afterwards as advisory output.  The added-line
+    guard exists so a one-line ``skip``/``xfail``/``pytestmark`` cannot quietly
+    disable existing tests.
+    """
+    diff = _git(
+        worktree, "diff", "--no-color", "--no-renames", "-U0", "HEAD", "--", rel,
+        timeout=30,
+    )
+    if diff is None or diff.returncode != 0:
+        return False, "无法读取该测试文件的 diff"
+    removed: list[str] = []
+    added: list[str] = []
+    for line in diff.stdout.splitlines():
+        if line.startswith(("---", "+++")):
+            continue
+        if line.startswith("-"):
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+    if removed:
+        return False, f"删改了 {len(removed)} 行已有测试代码"
+    if not added:
+        return False, "没有新增的测试内容"
+    if any(_weakening_added_line(line) for line in added):
+        return False, "新增内容含可能跳过/关闭测试的语句"
+    return True, ""
+
+
+# ── detached worktrees (baseline / grading) ──────────────────────────────────
+def _add_detached_worktree(worktree: Path, target: Path) -> str:
+    """Create ``target`` at the worktree's HEAD; return an error string or ''."""
+    head = _git(worktree, "rev-parse", "HEAD")
+    if head is None or head.returncode != 0 or not head.stdout.strip():
+        return "无法确定基线提交"
+    added = _git(
+        worktree, "worktree", "add", "--detach", str(target), head.stdout.strip()
+    )
+    if added is None or added.returncode != 0:
+        detail = (
+            (added.stderr or added.stdout or "").strip()[:500]
+            if added is not None else "git worktree 失败"
+        )
+        return f"创建基线 worktree 失败：{detail}"
+    return ""
+
+
+def _drop_detached_worktree(worktree: Path, target: Path) -> None:
+    _git(worktree, "worktree", "remove", "--force", str(target))
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    _git(worktree, "worktree", "prune")
+
+
+def _remove_path(path: Path) -> None:
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        elif path.exists() or path.is_symlink():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _remove_path(dst)
+    if src.is_symlink():
+        dst.symlink_to(os.path.realpath(src))
+    else:
+        shutil.copy2(src, dst)
+
+
+def _copy_tree_entry(
+    src: Path, dst: Path, test_patterns: list[str], rel: str
+) -> None:
+    """Replay one changed entry into the grading tree, skipping test files."""
+    if src.is_symlink():
+        _remove_path(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.symlink_to(os.path.realpath(src))
+        return
+    if not src.exists():
+        _remove_path(dst)
+        return
+    if src.is_dir():
+        for child in src.rglob("*"):
+            if child.is_dir() and not child.is_symlink():
+                continue
+            child_rel = f"{rel}/{child.relative_to(src).as_posix()}"
+            if is_test_file(child_rel, test_patterns):
+                continue
+            _copy_file(child, dst / child.relative_to(src))
+        return
+    _copy_file(src, dst)
+
+
+def _grading_worktree(
+    *,
+    worktree: Path,
+    repo_path: str,
+    changed: list[str],
+    kinds: dict[str, str],
+    test_patterns: list[str],
+    item_id: str,
+    data_dir: Path,
+    link_dirs: Any,
+) -> tuple[Path | None, str]:
+    """Build the tree the *blocking* checks run in: agent source, baseline tests.
+
+    Added test files are allowed to merge, but they must not take part in the
+    verdict — otherwise an agent could weaken its own grader. This detached
+    worktree starts at the pre-agent commit and replays only non-test changes.
+    """
+    root = (data_dir / "verification-grading").resolve()
+    target = root / f"{_safe_name(item_id)}-{time.time_ns()}"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return None, f"创建评分目录失败：{error}"
+    error = _add_detached_worktree(worktree, target)
+    if error:
+        return None, error
+    try:
+        _link_dirs(target, repo_path, link_dirs)
+        for raw in changed:
+            rel = _norm_path(raw)
+            if not rel or rel.startswith("../") or Path(rel).is_absolute():
+                continue
+            if is_test_file(rel, test_patterns):
+                continue
+            if _path_kind(kinds, raw) == "deleted":
+                _remove_path(target / rel)
+            else:
+                _copy_tree_entry(worktree / rel, target / rel, test_patterns, rel)
+        return target, ""
+    except OSError as error:
+        _drop_detached_worktree(worktree, target)
+        return None, f"复制改动到评分 worktree 失败：{error}"
+
+
 def _run_baseline(
     *,
     worktree: Path,
@@ -372,18 +626,12 @@ def _run_baseline(
     link_dirs: Any,
 ) -> dict[str, Any]:
     """Run one check at the pre-agent commit (worktree HEAD)."""
-    head = _git(worktree, "rev-parse", "HEAD")
-    if head is None or head.returncode != 0 or not head.stdout.strip():
-        return {"ok": False, "error": "无法确定基线提交"}
     base_root = data_dir / "verification-baselines"
     base = base_root / f"{_safe_name(item_id)}-{time.time_ns()}"
     base_root.mkdir(parents=True, exist_ok=True)
-    added = _git(
-        worktree, "worktree", "add", "--detach", str(base), head.stdout.strip()
-    )
-    if added is None or added.returncode != 0:
-        error = (added.stderr or added.stdout or "").strip()[:500] if added else "git worktree 失败"
-        return {"ok": False, "error": f"创建基线 worktree 失败：{error}"}
+    error = _add_detached_worktree(worktree, base)
+    if error:
+        return {"ok": False, "error": error}
     try:
         _link_dirs(base, repo_path, link_dirs)
         return _run_check(
@@ -395,10 +643,7 @@ def _run_baseline(
             rlimits=rlimits,
         )
     finally:
-        _git(worktree, "worktree", "remove", "--force", str(base))
-        if base.exists():
-            shutil.rmtree(base, ignore_errors=True)
-        _git(worktree, "worktree", "prune")
+        _drop_detached_worktree(worktree, base)
 
 
 # ── runner ────────────────────────────────────────────────────────────────────
@@ -464,6 +709,14 @@ def _run_check(
     limits = rlimits if rlimits is not None else check.get("rlimits")
     argv, limit_env = _with_rlimits(list(check["command"]), limits)
     env = _build_env({**(env_extra or {}), **(check.get("env") or {}), **limit_env})
+    if "PYTHONPATH" not in env:
+        # A `.venv` editable install points at the *main* checkout, so a plain
+        # `python -m pytest` would grade the main code and stay blind to the
+        # worktree. Put this checkout (src/ layout + root) first instead.
+        # Resolve it: relative entries in PYTHONPATH would be resolved against
+        # the child's cwd and silently duplicate the path prefix.
+        root = worktree.resolve()
+        env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), str(root)])
     try:
         proc = subprocess.Popen(
             argv,
@@ -579,6 +832,12 @@ def run_gate(
     ``passed_with_warnings``, ``failed``, ``incomplete``, ``unconfigured``,
     ``no_changes``, ``test_files_changed``, ``protected_files_changed``,
     ``too_many_files``, ``diff_too_large``, ``error``, ``disabled``.
+
+    Test/snapshot files may only be *added*: modifying or deleting one blocks
+    the merge (a human can still force it).  Blocking test checks run against a
+    detached worktree that keeps the pre-agent test files and replays only the
+    agent's non-test changes, so tests written by the agent cannot grade their
+    own work.  Those new tests are then run as advisory output.
     """
     started = time.monotonic()
     results: list[dict[str, Any]] = []
@@ -607,6 +866,7 @@ def run_gate(
         )
     if not changed:
         return verdict("no_changes", False, "执行结果没有改动任何文件")
+    changed = _expand_renames(changed)
 
     na_meta = parse_na(entry.get("na"))
     na = {
@@ -627,19 +887,55 @@ def run_gate(
             part.strip() for part in raw_patterns.replace("，", ",").split(",") if part.strip()
         ]
     test_patterns = raw_patterns or list(DEFAULT_TEST_PATTERNS)
-    touched = [path for path in changed if is_test_file(path, test_patterns)]
-    if touched:
+
+    path = Path(worktree).expanduser() if worktree else None
+    if path is not None and not path.is_dir():
+        path = None
+
+    # New test files and pure *insertions* into existing test files are
+    # allowed; rewrites, deletions and renames still need a human review.
+    kinds = _change_kinds(path, changed) if path is not None else {}
+    touched = [item for item in changed if is_test_file(item, test_patterns)]
+    new_tests: list[str] = []
+    augmented_tests: list[str] = []
+    blocked_tests: list[str] = []
+    block_reasons: dict[str, str] = {}
+    for item in touched:
+        kind = _path_kind(kinds, item)
+        if kind == "added":
+            new_tests.append(item)
+        elif kind == "modified" and path is not None:
+            allowed, why = _pure_addition(path, item)
+            if allowed:
+                augmented_tests.append(item)
+            else:
+                blocked_tests.append(item)
+                block_reasons[item] = why
+        else:
+            blocked_tests.append(item)
+            block_reasons[item] = (
+                "删除或重命名了测试文件" if kind == "deleted" else "无法确认只新增用例"
+            )
+    if blocked_tests:
+        details = "；".join(
+            f"{name}（{block_reasons.get(name, '无法确认只新增用例')}）"
+            for name in blocked_tests[:3]
+        )
         return verdict(
             "test_files_changed",
             False,
-            f"改动包含 {len(touched)} 个测试/快照文件，自动链路不合并",
-            test_files=touched,
+            f"改动修改/删除了 {len(blocked_tests)} 个测试/快照文件（{details}），"
+            "需要人工复核后才能合并",
+            test_files=blocked_tests,
+            test_file_reasons=block_reasons,
+            test_files_added=new_tests,
+            test_files_augmented=augmented_tests,
             na=na,
             na_meta=na_meta,
             expired_na=expired_na,
         )
 
-    protected = [path for path in changed if _matches_patterns(path, _protected_patterns(entry))]
+    protected = [name for name in changed if _matches_patterns(name, _protected_patterns(entry))]
     if protected:
         return verdict(
             "protected_files_changed",
@@ -674,8 +970,7 @@ def run_gate(
             expired_na=expired_na,
         )
 
-    path = Path(worktree).expanduser() if worktree else None
-    if path is None or not path.is_dir():
+    if path is None:
         return verdict(
             "error", False, "worktree 不存在，无法验证",
             na=na, na_meta=na_meta, expired_na=expired_na,
@@ -708,11 +1003,102 @@ def run_gate(
     link_dirs = entry.get("link_dirs")
 
     linked = _link_dirs(path, repo_path, link_dirs)
-    log_dir = Path(data_dir).expanduser() / "verifications"
+    grading: Path | None = None
+    test_additions = new_tests + augmented_tests
+    has_test_check = any(str(check.get("category")) == "test" for check in checks)
+    if test_additions and has_test_check:
+        grading, grading_error = _grading_worktree(
+            worktree=path,
+            repo_path=repo_path,
+            changed=changed,
+            kinds=kinds,
+            test_patterns=test_patterns,
+            item_id=item_id,
+            data_dir=Path(data_dir).expanduser(),
+            link_dirs=link_dirs,
+        )
+        if grading is None:
+            return verdict(
+                "error", False, f"无法准备基线测试评分 worktree：{grading_error}",
+                linked_dirs=linked, na=na, na_meta=na_meta, expired_na=expired_na,
+            )
+    try:
+        return _run_checks(
+            started=started,
+            path=path,
+            grading=grading,
+            checks=checks,
+            repo_path=repo_path,
+            item_id=item_id,
+            data_dir=Path(data_dir).expanduser(),
+            total=total,
+            deadline=deadline,
+            base_env=base_env,
+            base_limits=base_limits,
+            link_dirs=link_dirs,
+            retries=retries,
+            retry_delay=retry_delay,
+            baseline_mode=baseline_mode,
+            na=na,
+            na_meta=na_meta,
+            expired_na=expired_na,
+            added_tests=new_tests,
+            augmented_tests=augmented_tests,
+            linked=linked,
+        )
+    finally:
+        if grading is not None:
+            _drop_detached_worktree(path, grading)
+
+
+def _run_checks(
+    *,
+    started: float,
+    path: Path,
+    grading: Path | None,
+    checks: list[dict[str, Any]],
+    repo_path: str,
+    item_id: str,
+    data_dir: Path,
+    total: float,
+    deadline: float,
+    base_env: dict[str, Any],
+    base_limits: dict[str, Any],
+    link_dirs: Any,
+    retries: int,
+    retry_delay: float,
+    baseline_mode: str,
+    na: dict[str, str],
+    na_meta: dict[str, Any],
+    expired_na: list[str],
+    added_tests: list[str],
+    augmented_tests: list[str],
+    linked: list[str],
+) -> dict[str, Any]:
+    """Execute the configured checks; test checks use the baseline grader."""
+    results: list[dict[str, Any]] = []
     warnings: list[str] = []
     timeout_reason = ""
     passed = True
+
+    def verdict(state: str, ok: bool, reason: str = "", **extra: Any) -> dict[str, Any]:
+        return {
+            "ok": ok,
+            "state": state,
+            "reason": reason,
+            "checks": results,
+            "duration_s": round(time.monotonic() - started, 2),
+            **extra,
+        }
+
+    log_dir = data_dir / "verifications"
     for check in checks:
+        # Test checks are graded with the agent's own test edits removed.
+        check_path = (
+            grading
+            if grading is not None and str(check.get("category")) == "test"
+            else path
+        )
         remaining = deadline - time.monotonic()
         if remaining <= 0.5:
             timeout_reason = f"总验证超时（{total:g}s）"
@@ -728,7 +1114,7 @@ def run_gate(
                 break
             check_limits = {**base_limits, **(check.get("rlimits") or {})}
             outcome = _run_check(
-                path, check,
+                check_path, check,
                 item_id=item_id,
                 log_dir=log_dir,
                 timeout_s=min(float(check["timeout_s"]), remaining),
@@ -756,7 +1142,7 @@ def run_gate(
                 repo_path=repo_path,
                 check=check,
                 item_id=item_id,
-                data_dir=Path(data_dir).expanduser(),
+                data_dir=data_dir,
                 timeout_s=max(0.2, min(float(check["timeout_s"]), remaining)),
                 env_extra=base_env,
                 rlimits={**base_limits, **(check.get("rlimits") or {})},
@@ -778,12 +1164,39 @@ def run_gate(
         break
 
     if passed:
+        new_tests: list[dict[str, Any]] = []
+        if added_tests or augmented_tests:
+            for check in checks:
+                if str(check.get("category")) != "test":
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.5:
+                    warnings.append("新增测试未运行（验证预算用尽）")
+                    break
+                outcome = _run_check(
+                    path, check,
+                    item_id=f"{item_id}-new-tests",
+                    log_dir=log_dir,
+                    timeout_s=min(float(check["timeout_s"]), remaining),
+                    env_extra=base_env,
+                    rlimits={**base_limits, **(check.get("rlimits") or {})},
+                )
+                outcome["attempts"] = 1
+                outcome["advisory"] = True
+                new_tests.append(outcome)
+                if not outcome["ok"]:
+                    warnings.append(
+                        f"含新增测试的 {check['label']} 未通过（仅告警，不阻塞合并）"
+                    )
         state = "passed_with_warnings" if warnings else "passed"
         reason = "全部验证通过" if not warnings else "通过（含既有失败/重试警告）"
         return verdict(
             state, True, reason,
             linked_dirs=linked, na=na, na_meta=na_meta,
             expired_na=expired_na, warnings=warnings,
+            test_files_added=added_tests,
+            test_files_augmented=augmented_tests,
+            new_tests=new_tests,
         )
 
     if timeout_reason:

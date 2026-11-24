@@ -189,3 +189,43 @@ def test_parent_title_of_looks_up_by_source_ref():
     child = WorkItem.create(title="子需求", description="", parent_ref="tapd:story:p1")
     assert parent_title_of(child, FakeStore()) == "父需求"
     assert parent_title_of(WorkItem.create(title="顶层", description=""), FakeStore()) == ""
+
+
+def test_report_renders_modified_test_files_as_blocked():
+    item = _item()
+    item.result.verification = {
+        "ok": False,
+        "state": "test_files_changed",
+        "reason": "改动修改/删除了 1 个测试/快照文件，需要人工复核后才能合并",
+        "checks": [],
+        "test_files": ["tests/test_app.py"],
+        "test_file_reasons": {"tests/test_app.py": "删改了 1 行已有测试代码"},
+    }
+    text = render_report(item)
+    assert "被修改/删除的测试文件" in text
+    assert "`tests/test_app.py`" in text
+    assert "删改了 1 行已有测试代码" in text
+
+
+def test_report_renders_baseline_graded_new_tests():
+    item = _item()
+    item.result.verification = {
+        "ok": True,
+        "state": "passed_with_warnings",
+        "reason": "通过（含既有失败/重试警告）",
+        "checks": [],
+        "warnings": ["含新增测试的 pytest 未通过（仅告警，不阻塞合并）"],
+        "test_files_added": ["tests/test_new.py"],
+        "test_files_augmented": ["tests/test_app.py"],
+        "new_tests": [{
+            "id": "unit", "label": "pytest", "ok": False,
+            "exit_code": 1, "duration_s": 0.5,
+        }],
+    }
+    text = render_report(item)
+    assert "`tests/test_new.py`" in text
+    assert "`tests/test_app.py`" in text
+    assert "仅在原测试文件中新增用例" in text
+    assert "含新增测试的全量检查" in text
+    assert "失败（退出码 1）" in text
+    assert "仅告警" in text

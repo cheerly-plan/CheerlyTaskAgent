@@ -1058,7 +1058,7 @@ class CodeBuddyExecutor(Executor):
         import subprocess
 
         result = subprocess.run(
-            ["git", "-C", str(worktree), "status", "--porcelain"],
+            ["git", "-C", str(worktree), "status", "--porcelain", "--no-renames"],
             capture_output=True,
             text=True,
             check=False,

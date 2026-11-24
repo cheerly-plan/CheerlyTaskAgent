@@ -213,6 +213,162 @@ def test_protected_file_blocks(tmp_path: Path) -> None:
     assert result["protected_files"] == ["pyproject.toml"]
 
 
+def _git_repo_with_test(tmp_path: Path) -> Path:
+    import subprocess
+
+    repo = _git_repo(tmp_path)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_value():\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "tests"], check=True)
+    return repo
+
+
+def test_added_test_file_is_allowed_and_graded_with_baseline_tests(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    (repo / "tests" / "test_new.py").write_text(
+        "def test_new():\n    assert True\n", encoding="utf-8"
+    )
+    # Passes only if the new test file is absent: proves the blocking run used
+    # the baseline test tree rather than the agent's own tests.
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{
+                "id": "unit", "label": "unit", "category": "test",
+                "command": ["sh", "-c", "test ! -e tests/test_new.py"],
+            }],
+        ),
+        changed=["tests/test_new.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is True, result
+    assert result["test_files_added"] == ["tests/test_new.py"]
+    # ... but the advisory run uses the real worktree, where the file exists.
+    assert [check["ok"] for check in result["new_tests"]] == [False]
+    assert result["state"] == "passed_with_warnings"
+    assert any("新增测试" in item for item in result["warnings"])
+    assert not list((tmp_path / "data" / "verification-grading").glob("*"))
+
+
+def test_modified_test_file_with_pure_additions_is_allowed(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    test_file = repo / "tests" / "test_app.py"
+    test_file.write_text(
+        test_file.read_text(encoding="utf-8")
+        + "\n\ndef test_added_case():\n    assert True\n",
+        encoding="utf-8",
+    )
+    # The blocking run must see the baseline file (no test_added_case), while
+    # the advisory run sees the augmented one.
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{
+                "id": "unit", "label": "unit", "category": "test",
+                "command": ["sh", "-c", "! grep -q test_added_case tests/test_app.py"],
+            }],
+        ),
+        changed=["tests/test_app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is True, result
+    assert result["test_files_added"] == []
+    assert result["test_files_augmented"] == ["tests/test_app.py"]
+    assert [check["ok"] for check in result["new_tests"]] == [False]
+    assert result["state"] == "passed_with_warnings"
+
+
+def test_modified_test_file_with_removed_lines_blocks(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_value():\n    assert 1 == 1\n", encoding="utf-8"
+    )
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{"id": "unit", "category": "test", "command": ["true"]}]),
+        changed=["tests/test_app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "test_files_changed"
+    assert result["test_files"] == ["tests/test_app.py"]
+    assert "删改" in result["test_file_reasons"]["tests/test_app.py"]
+
+
+def test_added_skip_decorator_blocks(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    test_file = repo / "tests" / "test_app.py"
+    test_file.write_text(
+        test_file.read_text(encoding="utf-8").replace(
+            "def test_value():", "@pytest.mark.skip\ndef test_value():"
+        ),
+        encoding="utf-8",
+    )
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{"id": "unit", "category": "test", "command": ["true"]}]),
+        changed=["tests/test_app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "test_files_changed"
+    assert "跳过" in result["test_file_reasons"]["tests/test_app.py"]
+
+
+def test_added_pytestmark_blocks(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    test_file = repo / "tests" / "test_app.py"
+    test_file.write_text(
+        "pytestmark = pytest.mark.skip\n\n" + test_file.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{"id": "unit", "category": "test", "command": ["true"]}]),
+        changed=["tests/test_app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "test_files_changed"
+    assert "跳过" in result["test_file_reasons"]["tests/test_app.py"]
+
+
+def test_modified_test_file_blocks(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_value():\n    assert 1\n", encoding="utf-8"
+    )
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{"id": "unit", "category": "test", "command": ["true"]}]),
+        changed=["tests/test_app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "test_files_changed"
+    assert result["test_files"] == ["tests/test_app.py"]
+    assert result["checks"] == []
+
+
+def test_deleted_test_file_blocks(tmp_path: Path) -> None:
+    repo = _git_repo_with_test(tmp_path)
+    (repo / "tests" / "test_app.py").unlink()
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{"id": "unit", "category": "test", "command": ["true"]}]),
+        changed=["tests/test_app.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is False
+    assert result["state"] == "test_files_changed"
+    assert result["test_files"] == ["tests/test_app.py"]
+
+
 def test_too_many_files_blocks(tmp_path: Path) -> None:
     result = _gate(
         tmp_path,
@@ -414,3 +570,28 @@ def test_cpu_rlimit_stops_runaway_check(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["state"] == "failed"
     assert result["checks"][0]["timed_out"] is False
+
+
+def test_checks_import_the_worktree_code(tmp_path: Path) -> None:
+    import sys
+
+    repo = _git_repo(tmp_path)
+    (repo / "src" / "gateprobe").mkdir(parents=True)
+    (repo / "src" / "gateprobe" / "__init__.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
+    # An editable .venv install points at the main checkout; PYTHONPATH must
+    # put this worktree's src/ first or the check would grade the wrong code.
+    result = _gate(
+        tmp_path,
+        _config(tmp_path, [{
+            "id": "unit", "category": "test",
+            "command": [
+                sys.executable, "-c",
+                "import gateprobe; raise SystemExit(0 if gateprobe.VALUE == 2 else 1)",
+            ],
+        }]),
+        changed=["src/gateprobe/__init__.py"],
+        worktree=repo,
+    )
+    assert result["ok"] is True, result
