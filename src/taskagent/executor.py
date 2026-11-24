@@ -30,6 +30,7 @@ from typing import Any, ClassVar
 from . import dialect, dsh_profile
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
 from .spec import spec_text
+from .usage import extract_cli_usage
 
 logger = logging.getLogger(__name__)
 
@@ -978,22 +979,24 @@ class CodeBuddyExecutor(Executor):
         duration = time.monotonic() - started
         # Cancellation is a terminal state for this run: no verdict, no sync,
         # no report of phantom success. The caller decides how to record it.
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
+        usage = extract_cli_usage(stdout).to_dict()
         if outcome != "ok":
             return RunResult(
                 ok=False,
                 dry_run=False,
                 command=command,
-                stdout=stdout_b.decode("utf-8", errors="replace"),
-                stderr=stderr_b.decode("utf-8", errors="replace"),
+                stdout=stdout,
+                stderr=stderr,
                 error=(
                     "cancelled" if outcome == "cancelled"
                     else f"{self.label} timed out after {self.timeout_s:g}s"
                 ),
                 duration_s=duration,
                 worktree=str(worktree_path),
+                usage=usage,
             )
-        stdout = stdout_b.decode("utf-8", errors="replace")
-        stderr = stderr_b.decode("utf-8", errors="replace")
         changed = self._changed_files(worktree_path)
         progress(1.0, f"{self.label} 完成")
 
@@ -1046,6 +1049,7 @@ class CodeBuddyExecutor(Executor):
             sync_backup_dir=sync.get("sync_backup_dir") if isinstance(sync.get("sync_backup_dir"), str) else None,
             sync_error=sync.get("sync_error") if isinstance(sync.get("sync_error"), str) else None,
             diff=diff_text,
+            usage=usage,
         )
 
     def _worktree_path(self, item: WorkItem, repo: LocalRepo) -> Path:

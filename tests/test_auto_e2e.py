@@ -129,6 +129,10 @@ def test_manual_task_auto_runs_and_merges(tmp_path: Path):
         # 待办菜单已移除，接口也不存在。
         assert client.get("/api/todos").status_code == 404
 
+        usage = client.get("/api/usage").json()
+        assert usage["limits"] == {"task_tokens": 0, "daily_tokens": 0}
+        assert "total_tokens" in usage
+
     # 合并只改工作区，不产生提交。
     count = subprocess.run(
         ["git", "-C", str(repo), "rev-list", "--count", "HEAD"],

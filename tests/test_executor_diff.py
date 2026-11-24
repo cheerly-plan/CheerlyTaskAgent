@@ -70,3 +70,6 @@ def test_apply_keeps_diff_excerpt_on_result(tmp_path: Path, repo: Path, fake_cli
     assert "+print('fixed')" in result.diff
     # And it survives the JSON round-trip used by TaskStore.
     assert RunResult(**result.to_dict()).diff == result.diff
+    # CLI 自报的 token 用量进入 RunResult.usage，供账本/预算使用。
+    assert result.usage["total_tokens"] == 8
+    assert result.usage["input_tokens"] == 5

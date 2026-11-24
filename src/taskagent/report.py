@@ -381,6 +381,35 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _usage_section(usage: dict[str, Any]) -> list[str]:
+    """Token 账本：CLI 与后端 Agent 分列，最后给合计。"""
+    if not isinstance(usage, dict) or not usage:
+        return []
+    rows = []
+    for key, label in (("cli", "执行后端 CLI"), ("llm", "后端 Agent（规格/评审/选仓）")):
+        bucket = usage.get(key)
+        if not isinstance(bucket, dict) or not int(bucket.get("total_tokens") or 0):
+            continue
+        rows.append(
+            f"| {label} | {int(bucket.get('input_tokens') or 0)} "
+            f"| {int(bucket.get('output_tokens') or 0)} "
+            f"| {int(bucket.get('total_tokens') or 0)} "
+            f"| {int(bucket.get('calls') or 0)} |"
+        )
+    total = int(usage.get("total_tokens") or 0)
+    if not rows or not total:
+        return []
+    rows.append(f"| **合计** | | | **{total}** | {int(usage.get('calls') or 0)} |")
+    return [
+        "## Token 用量",
+        "",
+        "| 来源 | 输入 | 输出 | 合计 | 调用 |",
+        "|---|---|---|---|---|",
+        *rows,
+        "",
+    ]
+
+
 def _spec_section(spec: dict[str, Any]) -> list[str]:
     """任务规格：目标、验收标准、约束与风险（评审就是按这些逐条核对）。"""
     parsed = TaskSpec.from_dict(spec)
@@ -449,6 +478,7 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             lines += [f"> ⚠️ 执行错误：{result.error}", ""]
         if result.changed_files:
             lines += ["### 改动文件", ""] + [f"- `{name}`" for name in result.changed_files] + [""]
+        lines += _usage_section(item.usage)
 
         if verification:
             lines += _verification_section(verification)

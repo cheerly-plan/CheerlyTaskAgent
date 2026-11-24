@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from .usage import TokenUsage, extract_llm_usage
+
 
 class AgentLLMError(RuntimeError):
     """The backend agent could not get a usable answer from its LLM."""
@@ -106,6 +108,8 @@ class AgentLLM:
     ) -> None:
         self.model = model
         self._transport = transport
+        # 最近一次调用的 token 用量；调度台据此记运行账本。
+        self.last_usage = TokenUsage()
 
     def _request(self) -> tuple[str, dict[str, str]]:
         if not self.model.base_url:
@@ -162,6 +166,7 @@ class AgentLLM:
             raise AgentLLMError("LLM 返回的不是合法 JSON") from error
         if not isinstance(body, dict):
             raise AgentLLMError("LLM 返回结构异常")
+        self.last_usage = extract_llm_usage(body)
         text = _message_text(body)
         if not text:
             raise AgentLLMError("LLM 返回内容为空")

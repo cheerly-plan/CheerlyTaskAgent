@@ -218,8 +218,11 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 | 立即停止 | `unconfigured` / `incomplete` / `review_needs_human` / `error`（不是 agent 改代码能解决的，别浪费轮次） |
 | 轮次用尽 | 保留最后一轮结果，任务 `failed`，stage 标注「第 N 轮」，worktree 保留供人排查/重新验证 |
 | 记录 | `result.rounds`、`item.feedback`（最后一轮反馈）；报告里折叠展示 |
+| 预算 | 每轮失败后检查任务 / 当日 token 预算；超限立即停止重试，任务 `failed`（不再合并） |
 
 循环本身不碰主仓库、不合并；合并仍由 scheduler 在循环结束后做一次原子合并。
+
+**Token 账本**：执行 CLI 的 stdout usage、后端 Agent 的规格/评审/选仓调用都会记入 `item.usage`（`cli` / `llm` 分列）并按天累加到 `data/usage.json`；执行前检查日预算，循环每轮后检查任务/日预算。超限只会停止「下一轮」，不会撤销已经通过门禁的交付。
 
 ---
 
@@ -306,6 +309,7 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 - 需求描述；
 - **任务规格**（目标、验收标准、约束、风险、规则/LLM 来源）；
 - 执行结果（成功、dry-run、耗时、改动文件数、**执行轮次**、worktree）；
+- **Token 用量**（CLI / 后端 Agent / 合计）；
 - 验证（状态、原因、每个检查的命令/耗时/退出码/输出摘要）+ **LLM 评审**（结论/问题清单/风险标签）；
 - 多轮执行时的「最后一轮反馈」；
 - 合并状态与自动同步明细（已同步/已删除/冲突/备份目录）；
@@ -392,6 +396,8 @@ stateDiagram-v2
 | `result.verification` | 门禁结论（`ok` / `state` / `reason` / `checks` / `override`），配置了模型时含 `review` 子结论 |
 | `result.diff` | agent 改动 diff 节选（合并会删 worktree，所以执行后立刻留档，供评论/排查用） |
 | `result.rounds` | 本次执行跑了几轮 agent（>1 说明反馈循环修过） |
+| `usage` | 本次执行的 token 账本：`cli` / `llm` 各自的输入、输出、合计、调用次数 |
+| `result.usage` | 最后一轮 CLI 的 token 用量（逐轮排查用） |
 | `spec` | 任务规格：目标 / 验收标准 / 约束 / 风险 / 来源（rule·llm） |
 | `feedback` | 最后一轮未通过的原因（下一轮提示词 / 报告用；重新执行时清空） |
 | `plan` / `parent_context` | 规划步骤 / 父需求上下文（执行时注入提示词） |
@@ -413,6 +419,7 @@ stateDiagram-v2
 | LLM 评审 block | `failed`（`review_blocked`） | 问题清单进入下一轮修复；仍 block 则失败 | 看报告里的评审问题，人工处理后重新执行 |
 | 评审要求人工审批（大 diff/敏感文件/高风险） | `failed`（`review_needs_human`） | 循环立即停止，不自动合并 | 人工审 diff 后「强制合并」或拆分任务 |
 | 评审模型未配置/调用失败 | 门禁不回退失败 | 记为「未评审」，验证门禁照常生效 | 在「模型配置」里配一个可用的后端 Agent 模型 |
+| token 预算耗尽 | `failed` | 执行前/每轮后检查任务与当日预算；超限停止重试，主仓不写 | 调高 `TASKAGENT_TASK_TOKEN_BUDGET` / `TASKAGENT_DAILY_TOKEN_BUDGET`，或次日再跑 |
 | 合并冲突 | `succeeded` + `blocked` | 一个文件都不写，保留 worktree | 处理主仓冲突后点「合并」重试 |
 | dry-run 完成 | `succeeded` | 只生成本地方案；不改 TAPD 状态、不发评论 | 看本机报告后再决定是否 apply |
 | 服务重启时正在跑 | `failed`（已中断） | 启动恢复标记 | 重新执行 |
@@ -433,6 +440,7 @@ stateDiagram-v2
 | `data/verify.json` | 各仓库的检查命令、N/A、阈值、基线策略 |
 | `data/repo-profiles.json` | 仓库画像（语言/依赖/目录摘要），供选仓与命令生成 |
 | `data/route-history.json` | 人工选仓历史，供多仓路由复用 |
+| `data/usage.json` | 当日 token 账本（总量 + 按任务），本地日期切换时重置 |
 | `data/settings.json` | 数据源、后端、模型、并发等配置（凭据明文，仅本机） |
 
 ---
@@ -456,7 +464,8 @@ stateDiagram-v2
 7. **循环没有成本预算**：只按轮次（`TASKAGENT_MAX_ROUNDS`）和单次超时兜底，没有 token / 费用上限；模型调用按轮次线性增加。
 8. **取消不是瞬间生效**：先 SIGTERM 进程组，2s 后才 SIGKILL；期间已写入 worktree 的中间结果不会合并。
 9. **任务规格只读**：规则/LLM 生成后直接使用，界面暂不支持编辑验收标准再重跑（要改就重新执行，或改工单后重新导入）。
-10. **单机单进程**：状态在本地 JSON，没有多实例协调；多副本会重复派发。
+10. **预算只按 token 计，不算钱**：不同模型单价差异很大，且 CLI 不报 usage 时无法计量（记为 0）；需要金额成本时再叠加价格表。并发任务共享日预算，检查在调用前，可能小幅超额。
+11. **单机单进程**：状态在本地 JSON，没有多实例协调；多副本会重复派发，账本也不是分布式锁。
 
 ---
 

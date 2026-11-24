@@ -87,6 +87,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 - **N/A 与人工兜底**：N/A 在「项目映射 → 验证配置 → 编辑 N/A」维护，带理由、过期时间、批准人与时间；过期后自动失效，需要重新批准。验证失败的任务支持「重新验证」（只重跑检查、不重跑 agent，通过后自动合并）和「强制合并」（显式跳过门禁，报告记录 override）。可选 `rlimits`（`cpu_s` / `memory_mb` / `file_size_mb`，POSIX）限制检查进程资源；网络隔离未提供。
 - **任务规格（TaskSpec）**：建单即生成规则版规格——目标、可判真伪的验收标准、约束、风险等级、测试建议（`data/tasks/<id>.json` 的 `spec` 字段）；自动链路执行前再用「模型配置」里的后端 Agent LLM 升级为更贴合工单的规格（失败保留规则版，规划不阻塞执行）。规格同时进入**执行提示词**（编码前先看目标与验收标准）、**评审提示词**（逐条核对）和**报告**。
 - **执行-反馈循环**：自动任务门禁/评审未通过时，把失败检查输出、评审问题、状态提示写成一份「上一轮未通过」的反馈，注入下一轮提示词，在**同一个 worktree** 继续修（不从头重做），最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2）。不可修复的状态（仓库没配置检查、验证类别不齐、评审要求人工审批）立即停止，不浪费轮次；人工 apply 固定 1 轮，保持「点一次跑一次」。报告记录 `rounds` 与最后一轮反馈。
+- **Token 运行账本与预算**：每次 CLI / 后端 Agent 调用都记 token（输入、输出、调用次数），按任务聚合并按天落盘 `data/usage.json`，`GET /api/usage` 可查今日用量。`TASKAGENT_TASK_TOKEN_BUDGET`（本次执行上限）与 `TASKAGENT_DAILY_TOKEN_BUDGET`（当日上限）为 0 表示不限；执行前检查日预算、循环每轮失败后检查任务/日预算，超限立即停止重试并把任务置 `failed`（已完成的那一轮不受影响，通过门禁仍会合并）。报告与 TAPD 评论里都有 Token 用量。
 - **LLM 评审门禁**：合并前把 **diff + 任务规格**交给后端 Agent 的 LLM 评审，产出 `approve / comment / block` + 问题清单 + 风险标签。`block` 直接挡合并；大 diff、敏感文件（`.env`/CI/依赖清单/迁移等）、高风险标签或高严重度问题**转人工审批**（任务留在任务中心）；`comment` 作为警告放行。模型未配置或调用失败时降级为「未评审」，不改变原有验证门禁；`TASKAGENT_REVIEW=0` 可临时关闭。
 - **自动同步（三方比较，防覆盖）**：apply 先建隔离 worktree，并把主仓库当前工作区的未提交改动叠加进去作为基线，所以 codebuddy 改的是你眼前的最新代码，而不是过期的已提交版本（叠加失败会安全回退到纯 HEAD 基线）。apply 成功后，codebuddy 的改动文件自动同步回主仓库工作区（无需手动从 worktree 拷贝），看板即显示「完成（已同步 N 个文件）」。对每个文件以 worktree 的 HEAD 为 base，与主仓库当前版本、codebuddy 结果做三方比较：**仅当主仓库自 base 以来未改动才直接覆盖**；若主仓库也已改动，先尝试三方合并（`git merge-file`，仅在无冲突时写入），否则**不覆盖**，把双方版本备份为 `.main` / `.codebuddy` 并在报告中列出冲突，看板显示「N 个文件冲突未覆盖」。这样过期 worktree 不会回滚主仓库里更新的改动。同步只碰改动文件、按忽略规则过滤（`.env`/`data/`/venv 等不同步）、拒绝路径逃逸；备份在 `<data_dir>/sync-backups/<item>/<时间>/`；失败写进报告但不否定 apply 结果。用 `TASKAGENT_AUTO_SYNC=0` 可关闭，回到纯隔离模式。
 - **可观测**：SSE 实时推送导入/映射/排队/执行/进度/成功/失败/重试；每单都有 Markdown 报告（含自动同步明细与备份位置）。
@@ -122,6 +123,8 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 | `TASKAGENT_MAX_ROUNDS` | `2` | 自动任务执行-反馈循环轮数（1 = 关闭循环；人工 apply 固定 1 轮） |
 | `TASKAGENT_VERIFY` | `1` | 设 `0` 临时关闭验证门禁（报告记为「验证已禁用」） |
 | `TASKAGENT_REVIEW` | `1` | 设 `0` 临时关闭 LLM 评审门禁 |
+| `TASKAGENT_TASK_TOKEN_BUDGET` | `0` | 单任务本次执行的 token 上限（0 = 不限，超限停止重试并置 failed） |
+| `TASKAGENT_DAILY_TOKEN_BUDGET` | `0` | 当日 token 上限（0 = 不限，按本地日期重置） |
 | `TASKAGENT_PROJECT_MAP_FILE` | `<data_dir>/projects.json` | 项目映射列表 JSON 路径；默认空列表，由界面手动维护 |
 | `TASKAGENT_FS_ROOT` | `~`（主目录） | 文件夹浏览器/扫描器的只读边界，防止越界浏览 |
 | `TASKAGENT_AUTO_SYNC` | `1`（开启） | apply 成功后是否自动把改动同步回主仓库工作区；设 `0` 关闭 |
@@ -134,6 +137,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 |---|---|---|
 | `GET` | `/` | 调度台 UI |
 | `GET` | `/api/config` | 配置概览 |
+| `GET` | `/api/usage` | 今日 Token 账本（按任务）+ 任务/日预算上限 |
 | `GET` / `PUT` | `/api/settings` | 读取 / 保存系统设置（CLI 路径、DSH、模型、TAPD） |
 | `POST` | `/api/tapd/workspaces` | 按企业 ID 拉取企业下项目列表 `{company_id}`（回退到已保存配置），供选 workspace_id；企业自身 category=organization 已过滤 |
 | `POST` | `/api/tapd/sync` | 立即从 TAPD 增量拉取需求 / 缺陷并幂等建单（可选 `modified_since`） |
@@ -175,6 +179,7 @@ src/taskagent/
 ├── tapd.py         TAPD Open API 客户端：Basic Auth 拉取需求/缺陷 + 状态回填/评论
 ├── spec.py         TaskSpec：规则版/LLM 版任务规格（目标/验收标准/约束/风险）
 ├── loop.py         有界执行-反馈循环（失败原因注入下一轮提示词）
+├── usage.py        Token 运行账本（CLI/LLM 用量解析、按天累计、预算判定）
 ├── reviewer.py     LLM 代码评审 + 风险升级（并入门禁）
 ├── verification.py 验证门禁：四类检查、基线、受保护文件、评分 worktree
 ├── executor.py     Executor 统一接口 + 两类 CLI 执行器（codebuddy/dsh）+ dry-run/worktree 安全策略

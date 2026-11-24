@@ -36,6 +36,7 @@ from .report import parent_context_of, parent_title_of, write_report
 from .sources import RawItem, parse_raw
 from .spec import rule_spec
 from .store import TaskStore
+from .usage import TokenUsage, UsageLedger
 
 
 @dataclass
@@ -60,6 +61,10 @@ class SchedulerSettings:
     # 执行-反馈循环：自动任务门禁/评审未通过时，带着问题再修几轮。
     # 1 = 关闭循环；人工 apply 固定 1 轮。
     max_rounds: int = 2
+    # Token 预算（0 = 不限）。任务预算是「本次执行」累计，日预算跨任务累计。
+    task_token_budget: int = 0
+    daily_token_budget: int = 0
+    usage_file: Path | None = None
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -102,6 +107,11 @@ class Scheduler:
         self._sem = asyncio.Semaphore(self.settings.max_concurrent)
         # One lock per repository path: same-repo auto tasks run one at a time
         # so they never branch from the same stale base and race to merge.
+        # Token 运行账本：按天累计，供预算与报告使用。
+        self.ledger = UsageLedger(
+            self.settings.usage_file
+            or (self.settings.reports_dir.parent / "usage.json")
+        )
         self._repo_locks: dict[str, asyncio.Lock] = {}
         # 同父任务的串行锁：同一 parent_ref 的自动任务一次只跑一个，即便它们
         # 映射到了不同仓库（父子编排硬约束）。
@@ -476,6 +486,7 @@ class Scheduler:
             item.finished_at = None
             item.attempt = 0
             item.feedback = ""
+            item.usage = {}
             item.stage = f"已从 {previous} 转入重新执行"
         if item.repo is None:
             raise ValueError("no local repo mapped; map the item first")
@@ -930,6 +941,48 @@ class Scheduler:
             logger.warning("读取规格模型失败：%s", error)
             return None
 
+    # ── token usage / budget ───────────────────────────────────────────────────
+    def record_usage(self, item: WorkItem, kind: str, usage: TokenUsage | dict) -> int:
+        """Accumulate usage onto the item and into the daily ledger.
+
+        ``kind`` is ``cli`` (execution backend) or ``llm`` (spec/review/planner).
+        Returns today's cumulative total.
+        """
+        parsed = usage if isinstance(usage, TokenUsage) else TokenUsage.from_dict(usage)
+        if not parsed:
+            return self.ledger.total_today
+        book = dict(item.usage or {})
+        bucket = dict(book.get(kind) or {})
+        bucket["input_tokens"] = int(bucket.get("input_tokens") or 0) + parsed.input_tokens
+        bucket["output_tokens"] = int(bucket.get("output_tokens") or 0) + parsed.output_tokens
+        bucket["calls"] = int(bucket.get("calls") or 0) + parsed.calls
+        bucket["total_tokens"] = int(bucket["input_tokens"]) + int(bucket["output_tokens"])
+        book[kind] = bucket
+        book["total_tokens"] = sum(
+            int((value or {}).get("total_tokens") or 0)
+            for key, value in book.items()
+            if key in {"cli", "llm"} and isinstance(value, dict)
+        )
+        book["calls"] = sum(
+            int((value or {}).get("calls") or 0)
+            for key, value in book.items()
+            if key in {"cli", "llm"} and isinstance(value, dict)
+        )
+        item.usage = book
+        return self.ledger.record(item.id, parsed)
+
+    def _budget_reason(self, item: WorkItem) -> str:
+        """Why this task must not start another round/run (empty = within budget)."""
+        used = int((item.usage or {}).get("total_tokens") or 0)
+        task_limit = max(0, int(self.settings.task_token_budget or 0))
+        if task_limit and used >= task_limit:
+            return f"任务 token 预算已用完（{used}/{task_limit}）"
+        daily_limit = max(0, int(self.settings.daily_token_budget or 0))
+        today = self.ledger.total_today
+        if daily_limit and today >= daily_limit:
+            return f"今日 token 预算已用完（{today}/{daily_limit}）"
+        return ""
+
     async def _ensure_spec(self, item: WorkItem) -> None:
         """Make sure the item has a TaskSpec; auto tasks get an LLM upgrade.
 
@@ -946,6 +999,7 @@ class Scheduler:
                 generated = await plan_spec(
                     item, llm=llm, timeout_s=self.settings.spec_timeout_s
                 )
+                self.record_usage(item, "llm", getattr(llm, "last_usage", None) or {})
                 if generated is not None:
                     item.spec = generated.to_dict()
                     return
@@ -968,7 +1022,7 @@ class Scheduler:
         if llm is None:
             return None
         try:
-            return await review_diff(
+            review = await review_diff(
                 item,
                 list(result.changed_files),
                 result.worktree,
@@ -978,7 +1032,9 @@ class Scheduler:
             )
         except Exception as error:  # noqa: BLE001 - best effort
             logger.warning("LLM 代码评审异常 %s：%s", item.id, error)
-            return None
+            review = None
+        self.record_usage(item, "llm", getattr(llm, "last_usage", None) or {})
+        return review
 
     async def _verify(self, item: WorkItem, result) -> dict[str, Any]:
         """Run the repository's checks inside the task worktree.
@@ -1069,6 +1125,20 @@ class Scheduler:
             item.started_at = item.started_at or _utcnow()
             item.feedback = ""
 
+            # 日预算在进入任何模型调用之前检查，避免"先花钱再报超支"。
+            budget_early = self._budget_reason(item)
+            if budget_early:
+                item.status = ItemStatus.FAILED
+                item.stage = budget_early
+                item.error = budget_early
+                item.finished_at = _utcnow()
+                item.report_path = write_report(
+                    item, self.settings.reports_dir, parent_title_of(item, self.store)
+                )
+                self.store.save(item)
+                self.events.publish(Event("item_failed", item_id, {"error": item.error}))
+                return
+
             # 任务规格：规则版兜底；自动任务升级为 LLM 版（失败保留规则版）。
             if item.auto and (item.spec or {}).get("source") != "llm":
                 item.stage = "生成任务规格…"
@@ -1077,6 +1147,19 @@ class Scheduler:
                     "progress": 0.05, "stage": item.stage,
                 }))
             await self._ensure_spec(item)
+            # 规格调用本身也占预算：生成完再检查一次，超了就不启动 agent。
+            budget_early = self._budget_reason(item)
+            if budget_early:
+                item.status = ItemStatus.FAILED
+                item.stage = budget_early
+                item.error = budget_early
+                item.finished_at = _utcnow()
+                item.report_path = write_report(
+                    item, self.settings.reports_dir, parent_title_of(item, self.store)
+                )
+                self.store.save(item)
+                self.events.publish(Event("item_failed", item_id, {"error": item.error}))
+                return
             item.stage = f"开始执行（{backend.label}）"
             self.store.save(item)
             self.events.publish(Event("item_started", item_id, {
@@ -1096,6 +1179,7 @@ class Scheduler:
                     "progress": 0.5, "stage": text,
                 }))
 
+            budget_stop = ""
             if item.hold_merge and item.exec_mode == "apply":
                 # 执行-反馈循环：门禁/评审未通过时带着具体问题再修几轮。
                 # 人工 apply 固定 1 轮，保持「点一次跑一次」的直觉。
@@ -1109,8 +1193,11 @@ class Scheduler:
                     progress=progress,
                     should_cancel=should_cancel,
                     stage=set_stage,
+                    record_usage=lambda kind, usage: self.record_usage(item, kind, usage),
+                    budget_reason=lambda: self._budget_reason(item),
                 )
                 result = outcome.result
+                budget_stop = outcome.budget_reason
             else:
                 result = await backend.run(item, progress=progress, should_cancel=should_cancel)
             result.rounds = result.rounds or 1
@@ -1191,7 +1278,11 @@ class Scheduler:
                     # 验证没过 = 这单没有交付；置 failed 以便留在任务中心可重试，
                     # 而不是归档进历史。
                     item.status = ItemStatus.FAILED
-                    item.error = f"验证未通过：{verify_failure}"
+                    if budget_stop:
+                        item.stage = f"{budget_stop}，已停止重试"
+                        item.error = f"{budget_stop}（最后一轮未通过：{verify_failure}）"
+                    else:
+                        item.error = f"验证未通过：{verify_failure}"
                 else:
                     item.status = ItemStatus.SUCCEEDED
                     item.error = None

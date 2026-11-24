@@ -308,6 +308,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             review_provider=lambda: review_llm(settings),
             spec_provider=lambda: review_llm(settings),
             max_rounds=settings.max_rounds,
+            task_token_budget=settings.task_token_budget,
+            daily_token_budget=settings.daily_token_budget,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
@@ -761,6 +763,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     # ── UI-managed settings (系统设置 tab) ────────────────────────────────────
+    @app.get("/api/usage")
+    def api_usage() -> dict[str, object]:
+        """Today's token ledger + configured budgets (0 = unlimited)."""
+        return {
+            **scheduler.ledger.snapshot(),
+            "limits": {
+                "task_tokens": int(settings.task_token_budget or 0),
+                "daily_tokens": int(settings.daily_token_budget or 0),
+            },
+        }
+
     @app.get("/api/settings")
     def api_get_settings() -> dict[str, Any]:
         return settings.load_ui_settings()

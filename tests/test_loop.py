@@ -15,12 +15,13 @@ def _item() -> WorkItem:
     return item
 
 
-def _result(ok: bool = True) -> RunResult:
+def _result(ok: bool = True, usage: dict | None = None) -> RunResult:
     return RunResult(
         ok=ok, dry_run=False, command="fake -p",
         changed_files=["src/a.py"] if ok else [],
         worktree="/tmp/worktree",
         error=None if ok else "boom",
+        usage=usage or {},
     )
 
 
@@ -180,3 +181,35 @@ def test_build_feedback_includes_hints_checks_and_caps_length() -> None:
         checks=[{"label": "t", "ok": False, "tail": "y" * 5_000}],
     )
     assert len(build_feedback(huge, round_no=1, max_rounds=2)) <= 4_000
+
+async def test_budget_exhaustion_stops_before_second_round() -> None:
+    backend = FakeBackend([
+        _result(usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "calls": 1}),
+        _result(),
+    ])
+    gate = FakeGate([FAILED_GATE, PASSED_GATE])
+    item = _item()
+    recorded: list[tuple[str, int]] = []
+    checks = 0
+
+    def budget_reason() -> str:
+        nonlocal checks
+        checks += 1
+        return "今日 token 预算已用完（100/100）"
+
+    outcome = await run_rounds(
+        item=item,
+        backend=backend,
+        gate=gate,
+        max_rounds=3,
+        record_usage=lambda kind, usage: recorded.append((kind, usage.total_tokens)),
+        budget_reason=budget_reason,
+    )
+
+    assert backend.calls == 1
+    assert outcome.rounds == 1
+    assert outcome.budget_reason
+    assert checks == 1
+    assert recorded == [("cli", 15)]
+    # 预算耗尽时不会进入第二轮，也不会假装通过。
+    assert outcome.gate["ok"] is False

@@ -199,6 +199,9 @@ class Settings:
     available_models: tuple[str, ...] = ()  # allowed model ids for per-task selection
     # 自动链路的执行-反馈循环轮数（1 = 关闭；人工 apply 固定 1 轮）。
     max_rounds: int = 2
+    # Token 预算（0 = 不限）：任务级「本次执行」累计 / 日级跨任务累计。
+    task_token_budget: int = 0
+    daily_token_budget: int = 0
     # Workspace/backup GC (P0-3): worktrees of merged/abandoned tasks are
     # removed and sync-backups are pruned so long-running servers don't bloat.
     gc_enabled: bool = True
@@ -222,6 +225,12 @@ class Settings:
             timeout_s=float(os.environ.get("CODEBUDDY_TIMEOUT", "600")),
             max_concurrent=max(1, int(os.environ.get("TASKAGENT_MAX_CONCURRENT", "1"))),
             max_rounds=max(1, int(os.environ.get("TASKAGENT_MAX_ROUNDS", "2"))),
+            task_token_budget=max(
+                0, int(os.environ.get("TASKAGENT_TASK_TOKEN_BUDGET", "0"))
+            ),
+            daily_token_budget=max(
+                0, int(os.environ.get("TASKAGENT_DAILY_TOKEN_BUDGET", "0"))
+            ),
             project_map_file=(
                 Path(item).expanduser()
                 if (item := os.environ.get("TASKAGENT_PROJECT_MAP_FILE"))

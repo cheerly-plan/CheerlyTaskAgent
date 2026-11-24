@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .models import RunResult, WorkItem
+from .usage import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ class LoopOutcome:
     gate: dict[str, Any] = field(default_factory=dict)
     rounds: int = 0
     cancelled: bool = False
+    # 非空 = 因为 token 预算耗尽而提前停止（不会合并，任务置 failed）。
+    budget_reason: str = ""
 
 
 def repairable(gate: dict[str, Any]) -> bool:
@@ -156,6 +159,8 @@ async def run_rounds(
     progress: ProgressFn | None = None,
     should_cancel: ShouldCancelFn | None = None,
     stage: StageFn | None = None,
+    record_usage: Callable[[str, TokenUsage], None] | None = None,
+    budget_reason: Callable[[], str] | None = None,
 ) -> LoopOutcome:
     """Run the agent up to ``max_rounds`` times until gate + review pass.
 
@@ -179,6 +184,8 @@ async def run_rounds(
         )
         last_result = result
         result.rounds = number
+        if record_usage is not None and result.usage:
+            record_usage("cli", TokenUsage.from_dict(result.usage))
         if cancel():
             return LoopOutcome(result=result, rounds=number, cancelled=True)
         if result.dry_run or not result.ok:
@@ -197,6 +204,12 @@ async def run_rounds(
                 item.id, number, verdict.get("state"),
             )
             break
+        reason = budget_reason() if budget_reason is not None else ""
+        if reason:
+            logger.info("任务 %s 第 %d 轮后停止：%s", item.id, number, reason)
+            return LoopOutcome(
+                result=last_result, gate=verdict, rounds=number, budget_reason=reason
+            )
         item.feedback = build_feedback(verdict, round_no=number, max_rounds=rounds)
         logger.info("任务 %s 第 %d 轮未通过（%s），带着反馈重试", item.id, number, verdict.get("state"))
 

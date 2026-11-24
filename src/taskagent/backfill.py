@@ -125,6 +125,12 @@ def build_comment(item: WorkItem, *, ok: bool, budget: int = COMMENT_LIMIT) -> s
         )
         issues = len(review.get("issues") or [])
         lines.append(f"评审：{verdict}（{issues} 个问题）")
+    usage = item.usage if isinstance(item.usage, dict) else {}
+    usage_total = int(usage.get("total_tokens") or 0)
+    if usage_total:
+        cli = int((usage.get("cli") or {}).get("total_tokens") or 0)
+        llm = int((usage.get("llm") or {}).get("total_tokens") or 0)
+        lines.append(f"Token：{usage_total}（执行 {cli} / Agent {llm}）")
 
     if files:
         lines.append(f"改动文件（{len(files)}）：")

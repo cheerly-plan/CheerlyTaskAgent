@@ -78,7 +78,8 @@ class AutomationEngine:
                         "reason": "未配置可用的后端 Agent 模型（需 Base URL 与 API Key）",
                     })
                     continue
-                plan = await self._plan(item, candidates, agent)
+                plan, planner_llm = await self._plan(item, candidates, agent)
+                planner_usage = planner_llm.last_usage if planner_llm is not None else None
                 if plan is None:
                     skipped.append({"id": item_id, "reason": "自动规划未能确定仓库，请手动映射"})
                     continue
@@ -92,6 +93,9 @@ class AutomationEngine:
                 if item is None:
                     skipped.append({"id": item_id, "reason": "任务已不存在"})
                     continue
+                # 规划（选仓）的 token 也记进任务账本：它同样花的是模型钱。
+                if planner_usage:
+                    self.scheduler.record_usage(item, "llm", planner_usage)
                 # 规划结果统一落库，避免 LLM 返回空步骤时计划为空。
                 item.plan = plan_text
                 self.store.save(item)
@@ -145,16 +149,17 @@ class AutomationEngine:
 
     async def _plan(
         self, item: WorkItem, candidates, agent: AgentModel | None = None
-    ) -> Plan | None:
+    ) -> tuple[Plan | None, AgentLLM | None]:
         agent = agent or self._agent_model()
         # 单候选仓库走规则版短计划，不需要 LLM；只有多候选才依赖模型。
         if agent is None and len(candidates) > 1:
-            return None
+            return None, None
         llm = AgentLLM(agent) if agent is not None else None
-        return await plan_repo(
+        plan = await plan_repo(
             item, candidates, llm=llm, enabled=agent is not None,
             timeout_s=PLANNER_TIMEOUT_S, max_candidates=PLANNER_MAX_CANDIDATES,
         )
+        return plan, llm
 
     def _apply_plan(self, item: WorkItem, plan: Plan) -> None:
         self.scheduler.map_manually(item.id, plan.repo)

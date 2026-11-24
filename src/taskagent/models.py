@@ -164,6 +164,8 @@ class RunResult:
     # Number of agent runs in this execution (1 = single-shot, >1 = the
     # feedback loop retried after verification/review asked for changes).
     rounds: int = 0
+    # Token usage of the last CLI run (input/output/total/calls).
+    usage: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,6 +187,7 @@ class RunResult:
             "verification": self.verification,
             "diff": self.diff,
             "rounds": self.rounds,
+            "usage": self.usage,
         }
 
 
@@ -267,6 +270,8 @@ class WorkItem:
     parent_context: str = ""         # 父需求标题+描述快照，执行时注入子任务提示词
     spec: dict[str, Any] = field(default_factory=dict)  # TaskSpec（目标/验收/约束/风险）
     feedback: str = ""               # 上一轮验证/评审未通过的原因，注入下一轮提示词
+    # 本次执行的 token 账本（引擎维度聚合）：{cli:{...}, llm:{...}, total_tokens, calls}
+    usage: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -397,6 +402,7 @@ class WorkItem:
             "parent_context": self.parent_context,
             "spec": dict(self.spec),
             "feedback": self.feedback,
+            "usage": dict(self.usage),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -448,6 +454,7 @@ class WorkItem:
             parent_context=str(data.get("parent_context", "") or ""),
             spec=dict(data.get("spec") or {}),
             feedback=str(data.get("feedback", "") or ""),
+            usage=dict(data.get("usage") or {}),
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),
