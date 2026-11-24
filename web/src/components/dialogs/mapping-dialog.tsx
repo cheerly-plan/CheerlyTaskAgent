@@ -151,11 +151,6 @@ export function MappingDialog({
               />
             </Field>
           </div>
-          <p className="mb-3.5 -mt-1 text-[11px] leading-relaxed text-foreground/55">
-            交付默认关闭；开启后会先在任务分支做过滤提交，再按模式 push / 创建 PR。
-            自动合并仅在 PR 模式、CI 全部通过时生效；CI 失败或未配置时保持人工处理。
-          </p>
-
           <Field label="关联 TAPD 项目（可多选）">
             <FloatingRepoSelect
               options={[

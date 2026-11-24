@@ -297,24 +297,20 @@ export function SettingsPage() {
       )}
 
       <Card className="shrink-0 p-5">
-        <h3 className="mb-1 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+        <h3 className="mb-4 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
           <GitPullRequest className="size-4 text-primary" />
           交付与 PR 合并
         </h3>
-        <p className="mb-4 text-[11.5px] leading-relaxed text-foreground/55">
-          这里是「全局默认」：项目映射里的交付 / 合并选择「跟随系统设置」时用这里的值。
-          环境变量只作为首次启动的初始值，保存后以本页为准。
-        </p>
         <div className="grid gap-4 md:grid-cols-3">
           <Field label="默认交付模式" className="mb-0">
             <SelectField
               value={delivery.mode}
               onChange={(value) => patchDelivery('mode', value as DeliverySettings['mode'])}
               options={[
-                {value: 'off', label: '关闭（只写工作区）'},
-                {value: 'commit', label: '提交任务分支'},
+                {value: 'off', label: '关闭'},
+                {value: 'commit', label: '仅提交'},
                 {value: 'push', label: '提交并推送'},
-                {value: 'pr', label: '推送并创建 PR/MR'},
+                {value: 'pr', label: '创建 PR/MR'},
               ]}
             />
           </Field>
@@ -323,8 +319,8 @@ export function SettingsPage() {
               value={delivery.merge}
               onChange={(value) => patchDelivery('merge', value as DeliverySettings['merge'])}
               options={[
-                {value: 'manual', label: '人工合并'},
-                {value: 'auto', label: 'CI 通过后自动合并'},
+                {value: 'manual', label: '人工'},
+                {value: 'auto', label: 'CI 通过后自动'},
               ]}
             />
           </Field>
@@ -333,7 +329,7 @@ export function SettingsPage() {
               value={delivery.provider}
               onChange={(value) => patchDelivery('provider', value as DeliverySettings['provider'])}
               options={[
-                {value: '', label: '按远端域名自动识别'},
+                {value: '', label: '自动识别'},
                 {value: 'github', label: 'GitHub'},
                 {value: 'gitlab', label: 'GitLab'},
               ]}
@@ -361,11 +357,6 @@ export function SettingsPage() {
             />
           </Field>
         </div>
-        <p className="mt-3 text-[11px] leading-relaxed text-foreground/45">
-          PR/MR 与 CI 需要 <code className="rounded bg-secondary px-1 py-0.5">GITHUB_TOKEN</code> 或{' '}
-          <code className="rounded bg-secondary px-1 py-0.5">GITLAB_TOKEN</code>；
-          自动合并只在「PR 模式 + CI 全绿」时生效，CI 失败不会合并。
-        </p>
       </Card>
 
       <Card className="flex shrink-0 flex-wrap items-center gap-2 p-4">
