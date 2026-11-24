@@ -13,11 +13,15 @@ import pytest
 from taskagent.commitfilter import CommitFileFilter
 from taskagent.delivery import (
     DeliveryPolicy,
+    ci_status,
     commit_changes,
     create_pr,
+    finalize_ci,
+    merge_pr,
     parse_remote,
     policy_for,
     push_branch,
+    wait_for_ci,
 )
 from taskagent.executor import CodeBuddyExecutor
 from taskagent.models import LocalRepo, ProjectMapping, WorkItem
@@ -207,3 +211,224 @@ def test_policy_for_uses_repo_override_and_global_default() -> None:
     settings.delivery_mode = "push"
     empty = ProjectMapping(id="m2", name="demo2", path="/tmp/demo2")
     assert policy_for(item, settings=settings, mapping=empty).mode == "push"
+
+# ── CI 状态 / 合并 ───────────────────────────────────────────────────────────
+def _github_ci_transport(checks: list[dict], status_state: str = ""):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(200, json={"total_count": len(checks), "check_runs": checks})
+        if path.endswith("/status"):
+            return httpx.Response(200, json={"state": status_state})
+        return httpx.Response(404)
+    return httpx.MockTransport(handler)
+
+
+def _pr_policy(**overrides) -> DeliveryPolicy:
+    values = {"mode": "pr", "base": "main", "provider": "github", "token": "tkn"}
+    values.update(overrides)
+    return DeliveryPolicy(**values)
+
+
+def test_ci_status_github_success_failure_pending_and_none() -> None:
+    remote = "git@github.com:acme/repo.git"
+    success = ci_status(_pr_policy(), remote, "taskagent/x", transport=_github_ci_transport([
+        {"status": "completed", "conclusion": "success"},
+        {"status": "completed", "conclusion": "neutral"},
+    ]))
+    assert success["state"] == "success"
+
+    failure = ci_status(_pr_policy(), remote, "taskagent/x", transport=_github_ci_transport([
+        {"status": "completed", "conclusion": "failure"},
+    ]))
+    assert failure["state"] == "failure"
+
+    pending = ci_status(_pr_policy(), remote, "taskagent/x", transport=_github_ci_transport([
+        {"status": "in_progress", "conclusion": None},
+    ]))
+    assert pending["state"] == "pending"
+
+    none = ci_status(_pr_policy(), remote, "taskagent/x", transport=_github_ci_transport([]))
+    assert none["state"] == "none"
+
+
+def test_ci_status_falls_back_to_commit_status() -> None:
+    remote = "git@github.com:acme/repo.git"
+    transport = _github_ci_transport([], status_state="success")
+    assert ci_status(_pr_policy(), remote, "taskagent/x", transport=transport)["state"] == "success"
+
+
+def test_ci_status_gitlab_pipeline_states() -> None:
+    def transport_for(status: str):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[{"id": 1, "status": status}])
+        return httpx.MockTransport(handler)
+
+    policy = _pr_policy(provider="gitlab", token="gl")
+    remote = "git@gitlab.com:group/sub/repo.git"
+    assert ci_status(policy, remote, "b", transport=transport_for("success"))["state"] == "success"
+    assert ci_status(policy, remote, "b", transport=transport_for("failed"))["state"] == "failure"
+    assert ci_status(policy, remote, "b", transport=transport_for("running"))["state"] == "pending"
+    assert ci_status(policy, remote, "b", transport=transport_for("skipped"))["state"] == "none"
+
+
+def test_wait_for_ci_times_out_with_fake_clock() -> None:
+    state = {"now": 0.0, "polls": 0}
+
+    def clock() -> float:
+        return state["now"]
+
+    def sleep(seconds: float) -> None:
+        state["now"] += seconds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["polls"] += 1
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": [{"status": "in_progress"}]})
+        return httpx.Response(200, json={"state": "pending"})
+
+    policy = _pr_policy(ci_timeout_s=10, ci_poll_interval_s=5)
+    outcome = wait_for_ci(
+        policy, "git@github.com:acme/repo.git", "branch",
+        transport=httpx.MockTransport(handler), sleep=sleep, clock=clock,
+    )
+    assert outcome["state"] == "timeout"
+    assert state["polls"] >= 2
+    assert state["now"] >= 10
+
+
+def test_finalize_ci_auto_merges_only_when_green_and_policy_auto() -> None:
+    merged_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": [
+                {"status": "completed", "conclusion": "success"},
+            ]})
+        if path.endswith("/pulls/7/merge"):
+            merged_calls.append(request.method)
+            return httpx.Response(200, json={"merged": True})
+        return httpx.Response(200, json={"state": "success"})
+
+    outcome = finalize_ci(
+        _pr_policy(merge="auto"),
+        "git@github.com:acme/repo.git",
+        "branch",
+        7,
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome["ci"]["state"] == "success"
+    assert outcome["merged"] is True
+    assert merged_calls == ["PUT"]
+
+    # manual 策略：CI 绿也不合并
+    manual = finalize_ci(
+        _pr_policy(merge="manual"),
+        "git@github.com:acme/repo.git",
+        "branch",
+        7,
+        transport=httpx.MockTransport(handler),
+    )
+    assert manual["merged"] is False
+    assert merged_calls == ["PUT"]
+
+
+def test_finalize_ci_does_not_merge_on_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": [
+                {"status": "completed", "conclusion": "failure"},
+            ]})
+        return httpx.Response(200, json={"state": "failure"})
+
+    outcome = finalize_ci(
+        _pr_policy(merge="auto"),
+        "git@github.com:acme/repo.git",
+        "branch",
+        7,
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome["ci"]["state"] == "failure"
+    assert outcome["merged"] is False
+
+
+def test_merge_pr_github_and_gitlab() -> None:
+    def github_handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PUT"
+        assert str(request.url).endswith("/repos/acme/repo/pulls/7/merge")
+        return httpx.Response(200, json={"merged": True})
+
+    assert merge_pr(
+        _pr_policy(), "git@github.com:acme/repo.git", 7,
+        transport=httpx.MockTransport(github_handler),
+    )["ok"] is True
+
+    def gitlab_handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).endswith("/projects/group%2Fsub%2Frepo/merge_requests/3/merge")
+        return httpx.Response(200, json={"state": "merged"})
+
+    assert merge_pr(
+        _pr_policy(provider="gitlab", token="gl"),
+        "git@gitlab.com:group/sub/repo.git", 3,
+        transport=httpx.MockTransport(gitlab_handler),
+    )["ok"] is True
+
+
+def test_merge_pr_requires_number_and_token() -> None:
+    assert merge_pr(_pr_policy(), "git@github.com:acme/repo.git", 0)["ok"] is False
+    no_token = DeliveryPolicy(mode="pr", base="main", provider="github")
+    assert "GITHUB_TOKEN" in merge_pr(no_token, "git@github.com:acme/repo.git", 7)["error"]
+
+
+def test_policy_merge_override() -> None:
+    item = _item(Path("/tmp/demo"))
+    settings = SimpleNamespace(
+        delivery_mode="push", delivery_remote="origin", delivery_base="",
+        delivery_provider="", delivery_api_base="", delivery_merge="auto",
+        ci_timeout_s=60, ci_poll_interval_s=5,
+    )
+    mapping = ProjectMapping(id="m", name="demo", path="/tmp/demo", merge_policy="manual")
+    assert policy_for(item, settings=settings).merge == "auto"
+    assert policy_for(item, settings=settings, mapping=mapping).merge == "manual"
+
+
+def test_scheduler_finish_delivery_records_ci_and_merge(tmp_path: Path, monkeypatch) -> None:
+    import taskagent.delivery as delivery_mod
+    from taskagent.events import EventBus
+    from taskagent.executor import ExecutorRegistry
+    from taskagent.gitmap import GitProjectRegistry
+    from taskagent.scheduler import Scheduler, SchedulerSettings
+    from taskagent.store import TaskStore
+
+    scheduler = Scheduler(
+        store=TaskStore(tmp_path / "tasks"),
+        gitmap=GitProjectRegistry([]),
+        executors=ExecutorRegistry(),
+        events=EventBus(),
+        settings=SchedulerSettings(
+            reports_dir=tmp_path / "reports",
+            delivery_mode="pr", delivery_merge="auto",
+        ),
+    )
+    item = _item(tmp_path)
+    item.delivery = {
+        "mode": "pr", "commit": "abc", "branch": "taskagent/demo-1",
+        "pushed": True, "pr_url": "https://github.com/acme/repo/pull/7", "pr_number": 7,
+    }
+    monkeypatch.setattr(
+        scheduler, "_deliver_remote", lambda target, policy: target.delivery
+    )
+    monkeypatch.setattr(
+        delivery_mod, "finalize_ci",
+        lambda *args, **kwargs: {
+            "ci": {"state": "success", "detail": "ok"},
+            "merged": True, "merge_error": "",
+        },
+    )
+    policy = scheduler._delivery_policy(item)
+    suffix = scheduler._finish_delivery(item, policy, wait_ci=True)
+
+    assert item.delivery["ci_state"] == "success"
+    assert item.delivery["merged"] is True
+    assert "自动合并" in suffix

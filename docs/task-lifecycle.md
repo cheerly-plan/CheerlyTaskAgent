@@ -310,6 +310,10 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 | `pr` | push 后按远端域名创建 GitHub PR / GitLab MR（`GITHUB_TOKEN` / `GITLAB_TOKEN`；企业版可用 `TASKAGENT_DELIVERY_API_BASE`） |
 
 - 开关：仓库映射的 `delivery` 字段覆盖全局 `TASKAGENT_DELIVERY`；`""` = 跟随全局。
+- **CI 等待与合并策略**：`pr` 模式下自动任务会轮询 CI（GitHub check-runs / commit status、GitLab pipeline，`TASKAGENT_CI_TIMEOUT` / `TASKAGENT_CI_POLL_INTERVAL`），期间任务保持 `running`、stage 显示「等待 CI 并处理 PR…」。
+  - `merge_policy`（仓库映射）或 `TASKAGENT_DELIVERY_MERGE`（全局）为 `manual`（默认）：CI 绿也不合并，PR 留给人工；
+  - `auto`：CI 全部通过且门禁/评审已过，自动 squash 合并 PR；CI 失败 / 超时 / 未发现 CI / 查询失败都不合并，只记录状态。
+  - 人工触发的交付（点按钮/接口重试）不会等待 CI，避免请求挂 30 分钟；`POST /api/items/{id}/deliver` 对自动任务会等待。
 - 合并冲突（`blocked`）时仍会提交任务分支，但**不 push / 不建 PR**；处理完冲突点「合并」重试后会自动补交付。
 - 交付失败（push 被拒、缺 token、PR 被拒）**不会回滚已经落地的本地合并**：`item.delivery` 记录错误，报告与 TAPD 评论可见；`POST /api/items/{id}/deliver` 可重试。
 - 分支在 workspace 回收时保留（`keep_branch`），方便 `git log taskagent/...` review 或手工 cherry-pick。
@@ -415,7 +419,7 @@ stateDiagram-v2
 | `result.diff` | agent 改动 diff 节选（合并会删 worktree，所以执行后立刻留档，供评论/排查用） |
 | `result.rounds` | 本次执行跑了几轮 agent（>1 说明反馈循环修过） |
 | `usage` | 本次执行的 token 账本：`cli` / `llm` 各自的输入、输出、合计、调用次数 |
-| `delivery` | 交付结果：`mode/branch/commit/pushed/pr_url/error` |
+| `delivery` | 交付结果：`mode/branch/commit/pushed/pr_url/pr_number/ci_state/ci_detail/merged/error` |
 | `result.usage` | 最后一轮 CLI 的 token 用量（逐轮排查用） |
 | `spec` | 任务规格：目标 / 验收标准 / 约束 / 风险 / 来源（rule·llm） |
 | `feedback` | 最后一轮未通过的原因（下一轮提示词 / 报告用；重新执行时清空） |
@@ -440,6 +444,8 @@ stateDiagram-v2
 | 评审模型未配置/调用失败 | 门禁不回退失败 | 记为「未评审」，验证门禁照常生效 | 在「模型配置」里配一个可用的后端 Agent 模型 |
 | token 预算耗尽 | `failed` | 执行前/每轮后检查任务与当日预算；超限停止重试，主仓不写 | 调高 `TASKAGENT_TASK_TOKEN_BUDGET` / `TASKAGENT_DAILY_TOKEN_BUDGET`，或次日再跑 |
 | 交付失败（push / PR） | `succeeded`（本地已合并） | 任务分支提交保留，`item.delivery.error` 记录原因 | 修凭据/网络后 `POST /api/items/{id}/deliver` 重试 |
+| CI 失败 / 超时 | `succeeded`（本地已合并） | PR 不自动合并，`delivery.ci_state` 记录 failure/timeout | 看 PR 的 CI 日志修复后重跑；或人工决定是否合并 |
+| 未发现 CI / CI 查询失败 | `succeeded` | 不自动合并（fail-safe），记录 `ci_state=none/error` | 确认仓库有 CI，或配置 token/企业版 API 地址 |
 | 交付被跳过（无变更/全被过滤） | `succeeded` | `item.delivery.error` 标注；不影响本地合并 | 检查 commit 规则 / 是否有可提交文件 |
 | 合并冲突 | `succeeded` + `blocked` | 一个文件都不写，保留 worktree | 处理主仓冲突后点「合并」重试 |
 | dry-run 完成 | `succeeded` | 只生成本地方案；不改 TAPD 状态、不发评论 | 看本机报告后再决定是否 apply |
@@ -482,10 +488,10 @@ stateDiagram-v2
 4. **没有网络隔离**：检查进程不限制网络；只做了环境变量白名单与可选 `rlimits`（CPU/内存/文件大小）。
 5. **多候选仓库的自动选仓依赖后端 Agent 的 LLM**；没配（可用）模型时，多候选任务只能人工映射，系统不会猜。
 6. **验收标准不是可执行断言**：目前由 LLM 评审核对（以及仓库测试兜底），没有「从验收标准自动生成/运行测试」的能力；评审模型不可用时，验收标准只能靠人看。
-7. **循环没有成本预算**：只按轮次（`TASKAGENT_MAX_ROUNDS`）和单次超时兜底，没有 token / 费用上限；模型调用按轮次线性增加。
-8. **取消不是瞬间生效**：先 SIGTERM 进程组，2s 后才 SIGKILL；期间已写入 worktree 的中间结果不会合并。
-9. **任务规格只读**：规则/LLM 生成后直接使用，界面暂不支持编辑验收标准再重跑（要改就重新执行，或改工单后重新导入）。
-10. **预算只按 token 计，不算钱**：不同模型单价差异很大，且 CLI 不报 usage 时无法计量（记为 0）；需要金额成本时再叠加价格表。并发任务共享日预算，检查在调用前，可能小幅超额。
+7. **取消不是瞬间生效**：先 SIGTERM 进程组，2s 后才 SIGKILL；期间已写入 worktree 的中间结果不会合并。
+8. **任务规格只读**：规则/LLM 生成后直接使用，界面暂不支持编辑验收标准再重跑（要改就重新执行，或改工单后重新导入）。
+9. **预算只按 token 计，不算钱**：不同模型单价差异很大，且 CLI 不报 usage 时无法计量（记为 0）；需要金额成本时再叠加价格表。并发任务共享日预算，检查在调用前，可能小幅超额。
+10. **CI 等待只覆盖自动任务**：人工交付不等 CI（避免请求阻塞）；等待期间占用调度槽位（`max_concurrent`），CI 很慢时会拖住后续任务。自动合并只支持 GitHub/GitLab，且不回滚已落地的本地工作区。
 11. **单机单进程**：状态在本地 JSON，没有多实例协调；多副本会重复派发，账本也不是分布式锁。
 
 ---

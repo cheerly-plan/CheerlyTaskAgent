@@ -108,6 +108,8 @@ class MappingBody(BaseModel):
     tapd_workspace_id: str = ""
     # 交付覆盖：""=跟随全局，off/commit/push/pr
     delivery: str = ""
+    # 合并策略覆盖：""=跟随全局，manual/auto
+    merge_policy: str = ""
 
 
 class BrowseQuery(BaseModel):
@@ -317,6 +319,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             delivery_base=settings.delivery_base,
             delivery_provider=settings.delivery_provider,
             delivery_api_base=settings.delivery_api_base,
+            delivery_merge=settings.delivery_merge,
+            ci_timeout_s=settings.ci_timeout_s,
+            ci_poll_interval_s=settings.ci_poll_interval_s,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,

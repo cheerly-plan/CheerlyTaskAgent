@@ -91,6 +91,8 @@ class ProjectMapping:
     tapd_workspace_id: str = ""     # 兼容旧字段：取 tapd_workspace_ids 第一个
     # 交付策略覆盖：""=跟随全局，off/commit/push/pr（见 delivery.py）。
     delivery: str = ""
+    # 合并策略覆盖：""=跟随全局，manual/auto（CI 通过后是否自动合并 PR）。
+    merge_policy: str = ""
 
     def __post_init__(self) -> None:
         if not self.tapd_workspace_ids and self.tapd_workspace_id:
@@ -109,6 +111,7 @@ class ProjectMapping:
             "tapd_workspace_ids": list(self.tapd_workspace_ids),
             "tapd_workspace_id": self.tapd_workspace_ids[0] if self.tapd_workspace_ids else "",
             "delivery": self.delivery,
+            "merge_policy": self.merge_policy,
         }
 
     def to_local_repo(self) -> LocalRepo:
@@ -133,6 +136,7 @@ class ProjectMapping:
             note=str(data.get("note", "")),
             tapd_workspace_ids=ids,
             delivery=str(data.get("delivery") or "").strip().lower(),
+            merge_policy=str(data.get("merge_policy") or "").strip().lower(),
         )
 
 

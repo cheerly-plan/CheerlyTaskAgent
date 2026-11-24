@@ -71,6 +71,9 @@ class SchedulerSettings:
     delivery_base: str = ""
     delivery_provider: str = ""
     delivery_api_base: str = ""
+    delivery_merge: str = "manual"
+    ci_timeout_s: int = 1800
+    ci_poll_interval_s: int = 15
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -1096,6 +1099,7 @@ class Scheduler:
                 body=body,
             )
             record["pr_url"] = str(pr.get("url") or "")
+            record["pr_number"] = int(pr.get("number") or 0)
             record["provider"] = str(pr.get("provider") or "")
             if not pr.get("ok"):
                 record["error"] = str(pr.get("error") or "创建 PR/MR 失败")
@@ -1113,13 +1117,48 @@ class Scheduler:
             return
         item.delivery = self._deliver_commit(item, backend, result, policy)
 
-    def _finish_delivery(self, item: WorkItem, policy, *, prefix: str = "，") -> str:
-        """Push/PR after a successful merge; returns a short stage suffix."""
+    def _finish_delivery(
+        self, item: WorkItem, policy, *, prefix: str = "，", wait_ci: bool = False
+    ) -> str:
+        """Push/PR, optionally wait for CI, and merge when policy=auto.
+
+        Returns a short stage suffix. CI waiting is only enabled for automatic
+        tasks: a manual merge/deliver request should not hang for 30 minutes.
+        """
         if not policy.enabled or not (item.delivery or {}).get("commit"):
             return ""
         self._deliver_remote(item, policy)
         record = item.delivery or {}
+        if wait_ci and record.get("pr_url") and policy.mode == "pr" and item.repo:
+            from .delivery import finalize_ci, remote_url
+
+            outcome = finalize_ci(
+                policy,
+                remote_url(item.repo.path, policy.remote),
+                str(record.get("branch") or ""),
+                int(record.get("pr_number") or 0),
+            )
+            ci = outcome.get("ci") or {}
+            record["ci_state"] = str(ci.get("state") or "")
+            record["ci_detail"] = str(ci.get("detail") or "")
+            if outcome.get("merged"):
+                record["merged"] = True
+            if outcome.get("merge_error"):
+                record["merge_error"] = str(outcome["merge_error"])
+            item.delivery = record
+
+        if record.get("merged"):
+            return f"{prefix}CI 通过，已自动合并 PR"
         if record.get("pr_url"):
+            state = str(record.get("ci_state") or "")
+            if state == "success":
+                return f"{prefix}PR 已创建，CI 通过（待人工合并）"
+            if state:
+                label = {
+                    "failure": "失败", "timeout": "超时",
+                    "none": "未发现", "error": "查询失败",
+                }.get(state, state)
+                return f"{prefix}PR 已创建，CI {label}（未合并）"
             return f"{prefix}PR/MR：{record['pr_url']}"
         if record.get("pushed"):
             return f"{prefix}已推送任务分支 {record.get('branch')}"
@@ -1129,7 +1168,7 @@ class Scheduler:
             return f"{prefix}已提交 {record['commit']}（任务分支）"
         return ""
 
-    def deliver_item(self, item_id: str) -> WorkItem:
+    def deliver_item(self, item_id: str, *, wait_ci: bool | None = None) -> WorkItem:
         """Retry delivery (push/PR) for a task whose local commit already exists."""
         item = self.store.get(item_id)
         if item is None:
@@ -1147,7 +1186,9 @@ class Scheduler:
             if backend is None:
                 raise ValueError("没有可用的执行后端")
             item.delivery = self._deliver_commit(item, backend, item.result, policy)
-        self._deliver_remote(item, policy)
+        if wait_ci is None:
+            wait_ci = bool(item.auto and policy.mode == "pr")
+        self._finish_delivery(item, policy, wait_ci=wait_ci)
         self.store.save(item)
         self.events.publish(Event("item_delivered", item.id, {"delivery": dict(item.delivery)}))
         return item
@@ -1422,8 +1463,15 @@ class Scheduler:
                             await asyncio.to_thread(
                                 self._prepare_delivery, item, backend, result, policy
                             )
+                            wait_ci = bool(item.auto and policy.mode == "pr")
+                            if wait_ci:
+                                item.stage = "等待 CI 并处理 PR…"
+                                self.store.save(item)
+                                self.events.publish(Event("item_progress", item_id, {
+                                    "progress": 0.98, "stage": item.stage,
+                                }))
                             suffix = await asyncio.to_thread(
-                                self._finish_delivery, item, policy
+                                self._finish_delivery, item, policy, wait_ci=wait_ci
                             )
                             item.stage = (
                                 f"完成（已自动合并 {files} 个文件到工作区{note}）{suffix}"

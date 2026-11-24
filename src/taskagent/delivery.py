@@ -21,7 +21,9 @@ import logging
 import os
 import re
 import subprocess
+import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,10 +48,18 @@ class DeliveryPolicy:
     provider: str = ""      # "" = auto detect（github / gitlab）
     api_base: str = ""
     token: str = ""
+    # CI 通过后：manual = 留 PR 给人工合并；auto = 自动合并 PR。
+    merge: str = "manual"
+    ci_timeout_s: int = 1800
+    ci_poll_interval_s: int = 15
 
     @property
     def enabled(self) -> bool:
         return self.mode in {"commit", "push", "pr"}
+
+    @property
+    def auto_merge(self) -> bool:
+        return self.merge == "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +67,7 @@ class DeliveryPolicy:
             "remote": self.remote,
             "base": self.base,
             "provider": self.provider,
+            "merge": self.merge,
             # token 永远不出现在对外 JSON 里
         }
 
@@ -109,10 +120,18 @@ def policy_for(
     base = getattr(settings, "delivery_base", "") or (detect_base(repo) if repo else "")
     provider = getattr(settings, "delivery_provider", "") or ""
     api_base = getattr(settings, "delivery_api_base", "") or ""
+    merge = (mapping.merge_policy if mapping is not None else "") or getattr(
+        settings, "delivery_merge", "manual"
+    )
+    merge = "auto" if str(merge).strip().lower() == "auto" else "manual"
     # token 由 create_pr 按实际托管方从环境变量读取，避免在策略里猜 provider。
     return DeliveryPolicy(
         mode=mode, remote=remote, base=base,
-        provider=provider, api_base=api_base,
+        provider=provider, api_base=api_base, merge=merge,
+        ci_timeout_s=max(1, int(getattr(settings, "ci_timeout_s", 1800) or 1800)),
+        ci_poll_interval_s=max(
+            1, int(getattr(settings, "ci_poll_interval_s", 15) or 15)
+        ),
     )
 
 
@@ -253,10 +272,222 @@ def create_pr(
         except ValueError:
             payload = {}
         url = str(payload.get("html_url") or payload.get("web_url") or "")
-        return {"ok": True, "url": url, "provider": provider}
+        number = payload.get("number") or payload.get("iid") or 0
+        return {
+            "ok": True, "url": url, "provider": provider,
+            "number": int(number or 0),
+        }
     detail = " ".join(response.text.split())[:300]
     return {
         "ok": False,
         "error": f"{provider} 返回 HTTP {response.status_code}：{detail}",
         "provider": provider,
     }
+
+
+# ── CI 状态 / 合并 PR ────────────────────────────────────────────────────────
+def _request(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    **kwargs: Any,
+) -> httpx.Response | None:
+    try:
+        return client.request(method, url, headers=headers, **kwargs)
+    except httpx.HTTPError:
+        return None
+
+
+def _github_ci(client: httpx.Client, api: str, path: str, ref: str, token: str) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    checks = _request(
+        client, "GET", f"{api}/repos/{path}/commits/{ref}/check-runs",
+        headers=headers, params={"per_page": 100},
+    )
+    status = _request(
+        client, "GET", f"{api}/repos/{path}/commits/{ref}/status", headers=headers
+    )
+    runs: list[dict[str, Any]] = []
+    if checks is not None and checks.status_code < 400:
+        try:
+            runs = checks.json().get("check_runs") or []
+        except ValueError:
+            runs = []
+    failed_conclusions = {
+        "failure", "cancelled", "timed_out", "action_required", "stale",
+    }
+    conclusions = [
+        str(run.get("conclusion") or "") for run in runs if run.get("status") == "completed"
+    ]
+    if any(value in failed_conclusions for value in conclusions):
+        return {"state": "failure", "detail": "GitHub check 失败", "url": ""}
+    if any(run.get("status") != "completed" for run in runs):
+        return {"state": "pending", "detail": "GitHub check 运行中", "url": ""}
+    if runs:
+        return {"state": "success", "detail": f"{len(runs)} 个 check 通过", "url": ""}
+    # 没有 check-runs 时回退 commit status（老式 CI）。
+    state = ""
+    if status is not None and status.status_code < 400:
+        try:
+            state = str(status.json().get("state") or "")
+        except ValueError:
+            state = ""
+    if state in {"failure", "error"}:
+        return {"state": "failure", "detail": f"commit status={state}", "url": ""}
+    if state == "pending":
+        return {"state": "pending", "detail": "commit status pending", "url": ""}
+    if state == "success":
+        return {"state": "success", "detail": "commit status success", "url": ""}
+    return {"state": "none", "detail": "未发现 CI 检查", "url": ""}
+
+
+def _gitlab_ci(client: httpx.Client, api: str, path: str, ref: str, token: str) -> dict[str, Any]:
+    project = urllib.parse.quote(path, safe="")
+    response = _request(
+        client, "GET", f"{api}/projects/{project}/pipelines",
+        headers={"PRIVATE-TOKEN": token},
+        params={"ref": ref, "per_page": 1},
+    )
+    if response is None or response.status_code >= 400:
+        return {"state": "none", "detail": "未发现 CI pipeline", "url": ""}
+    try:
+        pipelines = response.json()
+    except ValueError:
+        pipelines = []
+    if not isinstance(pipelines, list) or not pipelines:
+        return {"state": "none", "detail": "未发现 CI pipeline", "url": ""}
+    pipeline = pipelines[0] if isinstance(pipelines[0], dict) else {}
+    status = str(pipeline.get("status") or "").lower()
+    if status == "success":
+        return {"state": "success", "detail": "GitLab pipeline 通过", "url": ""}
+    if status in {"failed", "canceled"}:
+        return {"state": "failure", "detail": f"GitLab pipeline {status}", "url": ""}
+    if status in {"running", "pending", "created", "preparing", "waiting_for_resource"}:
+        return {"state": "pending", "detail": f"GitLab pipeline {status}", "url": ""}
+    return {"state": "none", "detail": f"GitLab pipeline {status or 'unknown'}", "url": ""}
+
+
+def ci_status(
+    policy: DeliveryPolicy,
+    remote_url: str,
+    ref: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    """One CI snapshot for ``ref`` (branch or commit)."""
+    parsed = parse_remote(remote_url)
+    provider = policy.provider or parsed["provider"]
+    if provider not in {"github", "gitlab"}:
+        return {"state": "none", "detail": f"无法识别托管类型：{remote_url}", "url": ""}
+    token = _token_for(policy, provider)
+    if not token:
+        env = "GITHUB_TOKEN" if provider == "github" else "GITLAB_TOKEN"
+        return {"state": "error", "detail": f"未配置 {env}，无法查询 CI", "url": ""}
+    api = _api_base(policy, parsed["host"], provider)
+    try:
+        with httpx.Client(timeout=timeout_s, transport=transport) as client:
+            if provider == "github":
+                return _github_ci(client, api, parsed["path"], ref, token)
+            return _gitlab_ci(client, api, parsed["path"], ref, token)
+    except httpx.HTTPError as error:
+        return {"state": "error", "detail": f"查询 CI 失败：{error}", "url": ""}
+
+
+def wait_for_ci(
+    policy: DeliveryPolicy,
+    remote_url: str,
+    ref: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    timeout_s: int | None = None,
+    interval_s: int | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Poll until CI reaches a terminal state or the timeout elapses."""
+    deadline = clock() + float(timeout_s or policy.ci_timeout_s)
+    interval = float(interval_s or policy.ci_poll_interval_s)
+    last: dict[str, Any] = {"state": "pending", "detail": "等待 CI", "url": ""}
+    while True:
+        last = ci_status(policy, remote_url, ref, transport=transport)
+        if last["state"] in {"success", "failure", "none", "error"}:
+            return last
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return {
+                **last,
+                "state": "timeout",
+                "detail": f"等待 CI 超时（{int(timeout_s or policy.ci_timeout_s)}s）",
+            }
+        sleep(min(interval, max(0.0, remaining)))
+
+
+def merge_pr(
+    policy: DeliveryPolicy,
+    remote_url: str,
+    number: int,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Merge an existing PR/MR (only called when policy says auto + CI green)."""
+    if not number:
+        return {"ok": False, "error": "缺少 PR/MR 编号"}
+    parsed = parse_remote(remote_url)
+    provider = policy.provider or parsed["provider"]
+    token = _token_for(policy, provider)
+    if token == "":
+        env = "GITHUB_TOKEN" if provider == "github" else "GITLAB_TOKEN"
+        return {"ok": False, "error": f"未配置 {env}，无法合并"}
+    api = _api_base(policy, parsed["host"], provider)
+    try:
+        with httpx.Client(timeout=timeout_s, transport=transport) as client:
+            if provider == "github":
+                response = client.put(
+                    f"{api}/repos/{parsed['path']}/pulls/{number}/merge",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    json={"merge_method": "squash"},
+                )
+            else:
+                project = urllib.parse.quote(parsed["path"], safe="")
+                response = client.put(
+                    f"{api}/projects/{project}/merge_requests/{number}/merge",
+                    headers={"PRIVATE-TOKEN": token},
+                )
+    except httpx.HTTPError as error:
+        return {"ok": False, "error": f"合并请求失败：{error}"}
+    if response.status_code in {200, 201, 204}:
+        return {"ok": True, "provider": provider}
+    detail = " ".join(response.text.split())[:300]
+    return {"ok": False, "error": f"合并失败 HTTP {response.status_code}：{detail}"}
+
+
+def finalize_ci(
+    policy: DeliveryPolicy,
+    remote_url: str,
+    ref: str,
+    number: int,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Wait for CI, then merge the PR iff policy=auto and CI is green."""
+    ci = wait_for_ci(
+        policy, remote_url, ref, transport=transport, sleep=sleep, clock=clock
+    )
+    outcome: dict[str, Any] = {"ci": ci, "merged": False, "merge_error": ""}
+    if ci["state"] == "success" and policy.auto_merge and number:
+        merged = merge_pr(policy, remote_url, number, transport=transport)
+        outcome["merged"] = bool(merged.get("ok"))
+        outcome["merge_error"] = str(merged.get("error") or "")
+    return outcome

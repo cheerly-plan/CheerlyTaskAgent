@@ -208,6 +208,10 @@ class Settings:
     delivery_base: str = ""        # 空 = 自动探测 origin/HEAD、main、master
     delivery_provider: str = ""    # 空 = 按远端域名判断 github / gitlab
     delivery_api_base: str = ""    # 企业版 API 地址覆盖
+    # CI 通过后是否自动合并 PR（manual = 留给人工；仓库映射可覆盖）。
+    delivery_merge: str = "manual"
+    ci_timeout_s: int = 1800
+    ci_poll_interval_s: int = 15
     # Workspace/backup GC (P0-3): worktrees of merged/abandoned tasks are
     # removed and sync-backups are pruned so long-running servers don't bloat.
     gc_enabled: bool = True
@@ -244,6 +248,14 @@ class Settings:
             delivery_base=os.environ.get("TASKAGENT_DELIVERY_BASE", ""),
             delivery_provider=os.environ.get("TASKAGENT_DELIVERY_PROVIDER", "").lower(),
             delivery_api_base=os.environ.get("TASKAGENT_DELIVERY_API_BASE", ""),
+            delivery_merge=(
+                os.environ.get("TASKAGENT_DELIVERY_MERGE", "manual").strip().lower()
+                or "manual"
+            ),
+            ci_timeout_s=max(1, int(os.environ.get("TASKAGENT_CI_TIMEOUT", "1800"))),
+            ci_poll_interval_s=max(
+                1, int(os.environ.get("TASKAGENT_CI_POLL_INTERVAL", "15"))
+            ),
             project_map_file=(
                 Path(item).expanduser()
                 if (item := os.environ.get("TASKAGENT_PROJECT_MAP_FILE"))
