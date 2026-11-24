@@ -14,22 +14,35 @@ import {endpoints, readGitOrigin, type RepoProfile, type TapdWorkspace, type Ver
 import {cn} from '@/lib/utils';
 import {toast} from 'sonner';
 
-const DELIVERY_LABEL: Record<string, string> = {
-  '': '跟随全局',
-  off: '关闭',
-  commit: '提交',
-  push: '推送',
-  pr: 'PR',
+type DeliveryBadge = {
+  label: string;
+  variant: 'outline' | 'muted' | 'info' | 'purple' | 'success';
+  title: string;
 };
 
-function deliveryText(mapping: {delivery?: string; merge_policy?: string}): string {
+function deliveryBadge(mapping: {delivery?: string; merge_policy?: string}): DeliveryBadge {
   const mode = mapping.delivery ?? '';
-  const base = DELIVERY_LABEL[mode] ?? mode;
-  if (mode !== 'pr') return base;
   const merge = mapping.merge_policy === 'auto'
     ? '自动合并'
-    : mapping.merge_policy === 'manual' ? '人工合并' : '跟随合并策略';
-  return `${base}（${merge}）`;
+    : mapping.merge_policy === 'manual' ? '人工合并' : '跟随全局合并策略';
+  switch (mode) {
+    case '':
+      return {label: '跟随', variant: 'outline', title: '交付与合并策略都跟随全局环境变量'};
+    case 'off':
+      return {label: '关闭', variant: 'muted', title: '只写主仓库工作区，不提交 / 不推送'};
+    case 'commit':
+      return {label: '提交', variant: 'info', title: '任务分支上做过滤提交，不推送'};
+    case 'push':
+      return {label: '推送', variant: 'info', title: '过滤提交后推送任务分支，不创建 PR'};
+    case 'pr':
+      return {
+        label: merge === '自动合并' ? 'PR·自动' : merge === '人工合并' ? 'PR·人工' : 'PR',
+        variant: merge === '自动合并' ? 'purple' : 'success',
+        title: `创建 PR/MR；合并策略：${merge}`,
+      };
+    default:
+      return {label: mode, variant: 'outline', title: mode};
+  }
 }
 
 function IconTip({label, children}: {label: string; children: React.ReactNode}) {
@@ -176,17 +189,17 @@ export function MappingsPage() {
           title="暂无项目映射"
         />
       ) : (
-        <Table className="min-w-[1180px]" containerClassName="min-h-0 min-w-0 flex-1">
+        <Table className="min-w-[1100px]" containerClassName="min-h-0 min-w-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[160px] pl-5">项目名</TableHead>
-              <TableHead className="w-[220px]">本地路径</TableHead>
-              <TableHead className="w-[220px]">仓库信息 / 备注</TableHead>
-              <TableHead className="w-[130px]">仓库画像</TableHead>
+              <TableHead className="w-[140px] pl-5">项目名</TableHead>
+              <TableHead className="w-[200px]">本地路径</TableHead>
+              <TableHead className="w-[180px]">仓库信息 / 备注</TableHead>
+              <TableHead className="w-[110px]">仓库画像</TableHead>
               <TableHead className="w-[110px]">验证配置</TableHead>
-              <TableHead className="w-[130px]">TAPD 项目</TableHead>
-              <TableHead className="w-[150px]">交付</TableHead>
-              <TableHead className="w-[90px]">状态</TableHead>
+              <TableHead className="w-[120px]">TAPD 项目</TableHead>
+              <TableHead className="w-[100px]">交付</TableHead>
+              <TableHead className="w-[84px]">状态</TableHead>
               <TableHead className="sticky right-0 z-20 w-[80px] bg-[#fafafd] pr-5 text-right shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.18)]">操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -311,10 +324,19 @@ export function MappingsPage() {
                     );
                   })()}
                 </TableCell>
-                <TableCell>
-                  <span className="text-[12.5px] text-foreground/70">
-                    {deliveryText(mapping)}
-                  </span>
+                <TableCell className="whitespace-nowrap">
+                  {(() => {
+                    const badge = deliveryBadge(mapping);
+                    return (
+                      <Badge
+                        variant={badge.variant}
+                        className="whitespace-nowrap"
+                        title={badge.title}
+                      >
+                        {badge.label}
+                      </Badge>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
