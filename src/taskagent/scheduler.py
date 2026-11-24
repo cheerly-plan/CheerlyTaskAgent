@@ -507,8 +507,13 @@ class Scheduler:
         )
         return self._record_merge(item, result, merge)
 
-    def merge_item(self, item_id: str) -> WorkItem:
-        """Retry the atomic merge for a task whose automatic merge was blocked."""
+    def merge_item(self, item_id: str, *, force: bool = False) -> WorkItem:
+        """Retry the atomic merge for a task whose automatic merge was blocked.
+
+        ``force=True`` is the explicit human override for a task that failed the
+        verification gate; it is audited on the result and never used by the
+        automatic path.
+        """
         item = self.store.get(item_id)
         if item is None:
             raise ValueError(f"unknown item {item_id!r}")
@@ -517,17 +522,35 @@ class Scheduler:
         if item.result.dry_run:
             raise ValueError("dry-run 没有可合并的代码")
         verification = item.result.verification
-        if isinstance(verification, dict) and verification and not verification.get("ok", True):
-            raise ValueError("该任务验证未通过，不能合并；请修复后重新执行")
+        verify_failed = bool(
+            isinstance(verification, dict) and verification
+            and not verification.get("ok", True)
+        )
+        if verify_failed and not force:
+            raise ValueError("该任务验证未通过；如需跳过门禁请使用人工强制合并")
         if item.repo is None:
             raise ValueError("任务没有映射仓库")
         backend = self.executors.resolve(item.executor)
         if backend is None:
             raise ValueError("没有可用的执行后端")
+        if verify_failed:
+            item.result.verification = {
+                **verification,
+                "override": True,
+                "override_by": "user",
+                "override_at": _utcnow(),
+            }
+            item.approved_by = "user"
         ok = self._auto_merge(item, backend, item.result)
         files = len(item.result.synced_files) + len(item.result.sync_deleted)
         if ok:
-            item.stage = f"完成（已合并 {files} 个文件到工作区）"
+            if verify_failed:
+                item.status = ItemStatus.SUCCEEDED
+                item.error = None
+            item.stage = (
+                f"完成（人工强制合并 {files} 个文件，已跳过验证）"
+                if verify_failed else f"完成（已合并 {files} 个文件到工作区）"
+            )
             # Changes are in the main repo — the worktree has served its purpose.
             self._gc_after_success(item, backend)
         else:
@@ -549,6 +572,79 @@ class Scheduler:
                 self.on_finished(item, True)
             except Exception as error:  # noqa: BLE001 - 回填失败不影响合并结果
                 logger.warning("合并成功后状态回填失败 %s：%s", item.id, error)
+        return item
+
+    async def verify_item(self, item_id: str, *, merge: bool = True) -> WorkItem:
+        """Re-run the gate on an existing worktree, without re-running the agent.
+
+        Useful after a flaky failure, an environment fix, or an N/A/config
+        change. When the gate passes and the task is an auto task, it also
+        performs the normal atomic merge.
+        """
+        item = self.store.get(item_id)
+        if item is None:
+            raise ValueError(f"unknown item {item_id!r}")
+        if item.result is None or not item.result.ok:
+            raise ValueError("任务尚未成功执行，没有可验证的 worktree")
+        if item.result.dry_run:
+            raise ValueError("dry-run 没有可验证的代码")
+        worktree = item.result.worktree
+        if not worktree or not Path(worktree).expanduser().is_dir():
+            raise ValueError("worktree 不存在，请重新执行")
+        if item.repo is None:
+            raise ValueError("任务没有映射仓库")
+        item.stage = "重新验证中…"
+        self.store.save(item)
+        self.events.publish(Event("item_verifying", item_id, {"rerun": True}))
+        gate = await self._verify(item, item.result)
+        item.result.verification = gate
+        if not gate.get("ok"):
+            item.status = ItemStatus.FAILED
+            item.error = f"验证未通过：{gate.get('reason') or '未知原因'}"
+            item.stage = item.error
+            item.finished_at = _utcnow()
+            item.report_path = write_report(
+                item, self.settings.reports_dir, parent_title_of(item, self.store)
+            )
+            self.store.save(item)
+            self.events.publish(
+                Event("item_verify_failed", item_id, {"reason": item.error})
+            )
+            return item
+
+        item.status = ItemStatus.SUCCEEDED
+        item.error = None
+        backend = self.executors.resolve(item.executor)
+        if merge and item.hold_merge and backend is not None:
+            merged = self._auto_merge(item, backend, item.result)
+            if merged:
+                files = len(item.result.synced_files) + len(item.result.sync_deleted)
+                item.stage = f"完成（验证通过，已合并 {files} 个文件到工作区）"
+                self._gc_after_success(item, backend)
+            else:
+                conflicts = len(item.result.sync_conflicts)
+                item.stage = (
+                    f"完成（验证通过，但合并冲突 {conflicts} 个文件，未写入主仓）"
+                    if conflicts else "完成（验证通过，但合并失败，未写入主仓）"
+                )
+        else:
+            item.stage = "验证通过（未合并）"
+        item.finished_at = _utcnow()
+        item.report_path = write_report(
+            item, self.settings.reports_dir, parent_title_of(item, self.store)
+        )
+        self.store.save(item)
+        self.events.publish(
+            Event("item_succeeded", item_id, {
+                "report_path": item.report_path, "verification": gate,
+            })
+        )
+        if self.on_finished and item.source == SourceType.TAPD:
+            try:
+                done = bool(merge) and item.merge_state != "blocked"
+                await asyncio.to_thread(self.on_finished, item, done)
+            except Exception as exc:  # noqa: BLE001 - best effort
+                logger.warning("工作项 %s 状态回填失败：%s", item_id, exc)
         return item
 
     # ── workspace / backup GC ─────────────────────────────────────────────────

@@ -30,12 +30,13 @@ from .scheduler import Scheduler, SchedulerSettings
 from .sources import ManualSource, RawItem, parse_raw
 from .store import TaskStore
 from .tapd import TapdClient, TapdConfig, TapdError, TapdItem, is_closed_status
-from .verification import CATEGORIES
+from .verification import CATEGORIES, parse_na
 from .verifyconfig import (
     ensure_verify_config,
     is_stale,
     load_verify_config,
     prune_verify_config,
+    set_na,
 )
 
 logger = logging.getLogger("taskagent")
@@ -112,6 +113,27 @@ class BrowseQuery(BaseModel):
 class ScanBody(BaseModel):
     path: str = ""
     depth: int = 2
+
+
+class MergeBody(BaseModel):
+    """Manual merge options; ``force`` bypasses a failed verification gate."""
+
+    force: bool = False
+
+
+class VerifyBody(BaseModel):
+    """Re-run verification; ``merge`` controls the optional atomic merge."""
+
+    merge: bool = True
+
+
+class NaEntryBody(BaseModel):
+    reason: str = ""
+    expires_at: str = ""
+
+
+class NaBody(BaseModel):
+    na: dict[str, NaEntryBody] = Field(default_factory=dict)
 
 
 class BulkMappingBody(BaseModel):
@@ -848,11 +870,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             entry = repos.get(mapping.name)
             entry = entry if isinstance(entry, dict) else {}
             checks = entry.get("checks") if isinstance(entry.get("checks"), list) else []
-            raw_na = entry.get("na") if isinstance(entry.get("na"), dict) else {}
+            na_meta = parse_na(entry.get("na"))
             na = {
-                str(key): str(value) for key, value in raw_na.items()
-                if str(value).strip()
+                category: str(meta["reason"])
+                for category, meta in na_meta.items()
+                if not meta.get("expired")
             }
+            expired_na = [
+                category for category, meta in na_meta.items() if meta.get("expired")
+            ]
             present = {str(check.get("category")) for check in checks}
             missing = [
                 category for category in CATEGORIES
@@ -864,6 +890,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "path": mapping.path,
                 "checks": checks,
                 "na": na,
+                "na_meta": na_meta,
+                "expired_na": expired_na,
                 "missing_categories": missing,
                 "configured": bool(checks),
                 "complete": bool(checks) and not missing,
@@ -932,10 +960,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── 自动合并：冲突任务重试合并 / 查看 diff ─────────────────────────────
     @app.post("/api/items/{item_id}/merge")
-    async def api_merge_item(item_id: str) -> dict[str, Any]:
-        """重试原子合并：无冲突才写回主仓库工作区（不 commit）。"""
+    async def api_merge_item(item_id: str, body: MergeBody | None = None) -> dict[str, Any]:
+        """重试原子合并：无冲突才写回主仓库工作区（不 commit）。
+
+        ``force=true`` 是人工跳过验证门禁的显式操作，会记录在结果里。
+        """
+        force = bool(body.force) if body is not None else False
         try:
-            item = await asyncio.to_thread(scheduler.merge_item, item_id)
+            item = await asyncio.to_thread(scheduler.merge_item, item_id, force=force)
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
         return item.to_dict()
@@ -1131,6 +1163,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "repos": _verify_rows(),
         }
 
+    @app.put("/api/verify-config/{mapping_id}/na")
+    def api_verify_config_na(mapping_id: str, body: NaBody) -> dict[str, Any]:
+        """人工维护 N/A 豁免（理由 + 可选过期时间，记录批准人与时间）。"""
+        mapping = next((item for item in projects.list() if item.id == mapping_id), None)
+        if mapping is None:
+            raise HTTPException(404, "mapping not found")
+        payload = {key: value.model_dump() for key, value in body.na.items()}
+        try:
+            entry = set_na(verify_config_path, mapping.name, payload)
+        except (LookupError, TypeError) as error:
+            raise HTTPException(400, str(error)) from error
+        return {"entry": entry, "repos": _verify_rows()}
+
     @app.post("/api/repo-profiles/{mapping_id}/override")
     def api_repo_profile_override(mapping_id: str, body: RepoOverrideBody) -> dict[str, Any]:
         """人工覆盖角色 / 关键词；覆盖优先于自动推断。"""
@@ -1228,6 +1273,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).summary()
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
+
+    @app.post("/api/items/{item_id}/verify")
+    async def api_verify_item(item_id: str, body: VerifyBody | None = None) -> dict[str, Any]:
+        """Re-run the verification gate on the existing worktree (no agent run)."""
+        merge = body.merge if body is not None else True
+        try:
+            item = await scheduler.verify_item(item_id, merge=merge)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        return item.to_dict()
 
     @app.post("/api/items/{item_id}/cancel")
     def api_cancel_item(item_id: str) -> dict[str, Any]:

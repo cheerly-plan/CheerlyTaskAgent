@@ -3,6 +3,7 @@ import {FolderGit2, Pencil, RefreshCw, Search, Sparkles, Trash2} from 'lucide-re
 
 import {useApp} from '@/app-context';
 import {EmptyState, Mono} from '@/components/status-bits';
+import {VerifyNaDialog} from '@/components/dialogs/verify-na-dialog';
 import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
@@ -30,6 +31,9 @@ export function MappingsPage() {
   const [profiles, setProfiles] = React.useState<Record<string, RepoProfile>>({});
   const [rebuilding, setRebuilding] = React.useState(false);
   const [verifyRepos, setVerifyRepos] = React.useState<Record<string, VerifyRepo>>({});
+  const [naDialog, setNaDialog] = React.useState<{open: boolean; repo: VerifyRepo | null}>({
+    open: false, repo: null,
+  });
 
   const loadProfiles = React.useCallback(async () => {
     try {
@@ -120,6 +124,7 @@ export function MappingsPage() {
     });
 
   return (
+    <>
     <Card className="flex max-h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div>
@@ -247,6 +252,13 @@ export function MappingsPage() {
                         {verify.stale ? (
                           <span className="text-[11px] text-faint">待重建</span>
                         ) : null}
+                        <button
+                          type="button"
+                          className="text-[11px] text-primary hover:underline"
+                          onClick={() => setNaDialog({open: true, repo: verify})}
+                        >
+                          编辑 N/A
+                        </button>
                       </div>
                     );
                   })()}
@@ -322,5 +334,17 @@ export function MappingsPage() {
         </Table>
       )}
     </Card>
+    <VerifyNaDialog
+      open={naDialog.open}
+      repo={naDialog.repo}
+      onOpenChange={(open) => setNaDialog({open, repo: open ? naDialog.repo : null})}
+      onSaved={(repos) => {
+        const map: Record<string, VerifyRepo> = {};
+        for (const repo of repos ?? []) map[repo.mapping_id] = repo;
+        setVerifyRepos(map);
+        setNaDialog({open: false, repo: null});
+      }}
+    />
+    </>
   );
 }

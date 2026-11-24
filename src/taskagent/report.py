@@ -232,6 +232,14 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
     label = _VERIFY_STATE_LABELS.get(state, state or "未知")
     reason = str(verification.get("reason") or "")
     lines = ["### 验证", "", f"> 验证结果：**{label}**" + (f"（{reason}）" if reason else ""), ""]
+    if verification.get("override"):
+        lines += [
+            (
+                f"> ⚠️ 人工强制合并：{verification.get('override_by') or 'user'} 于 "
+                f"{verification.get('override_at') or '—'} 跳过验证门禁。"
+            ),
+            "",
+        ]
     test_files = verification.get("test_files") or []
     if test_files:
         lines += ["改动的测试文件：", ""] + [f"- `{name}`" for name in test_files] + [""]
@@ -276,6 +284,12 @@ def _verification_section(verification: dict[str, Any]) -> list[str]:
     missing = verification.get("missing_categories") or []
     if missing:
         lines += [f"> ⚠️ 缺少验证类别：{'、'.join(str(item) for item in missing)}", ""]
+    expired = verification.get("expired_na") or []
+    if expired:
+        lines += [
+            f"> ⚠️ N/A 已过期（不再生效）：{'、'.join(str(item) for item in expired)}",
+            "",
+        ]
     na = verification.get("na") or {}
     if isinstance(na, dict) and na:
         lines += ["未适用（N/A）：", ""] + [

@@ -369,3 +369,48 @@ def test_diff_too_large_blocks(tmp_path: Path) -> None:
     )
     assert result["ok"] is False
     assert result["state"] == "diff_too_large"
+
+
+def test_na_expiry_blocks(tmp_path: Path) -> None:
+    from taskagent.verification import parse_na
+
+    parsed = parse_na({"typecheck": {"reason": "no mypy", "expires_at": "2999-01-01"}})
+    assert parsed["typecheck"]["expired"] is False
+    parsed = parse_na({"typecheck": {"reason": "no mypy", "expires_at": "2000-01-01"}})
+    assert parsed["typecheck"]["expired"] is True
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{"id": "unit", "category": "test", "command": ["true"]}],
+            waive_missing=False,
+            na={
+                "lint": {"reason": "no linter"},
+                "typecheck": {"reason": "no mypy", "expires_at": "2999-01-01"},
+                "build": {"reason": "no build", "expires_at": "2000-01-01"},
+            },
+        ),
+    )
+    assert result["ok"] is False
+    assert result["state"] == "incomplete"
+    assert "build" in result["missing_categories"]
+    assert result["expired_na"] == ["build"]
+
+
+def test_cpu_rlimit_stops_runaway_check(tmp_path: Path) -> None:
+    result = _gate(
+        tmp_path,
+        _config(
+            tmp_path,
+            [{
+                "id": "cpu", "category": "test",
+                "command": ["sh", "-c", "while :; do :; done"],
+                "timeout_s": 5,
+                "rlimits": {"cpu_s": 1},
+            }],
+            retries=0,
+        ),
+    )
+    assert result["ok"] is False
+    assert result["state"] == "failed"
+    assert result["checks"][0]["timed_out"] is False

@@ -45,6 +45,12 @@ export interface WorkItem {
     sync_skipped?: string[];
     sync_conflicts?: string[];
     sync_error?: string | null;
+    verification?: {
+      ok: boolean;
+      state?: string;
+      reason?: string;
+      override?: boolean;
+    } | null;
   } | null;
   created_at?: string;
 }
@@ -86,12 +92,22 @@ export interface VerifyCheck {
   timeout_s?: number;
 }
 
+export interface NaMeta {
+  reason: string;
+  expires_at?: string;
+  expired?: boolean;
+  approved_at?: string;
+  approved_by?: string;
+}
+
 export interface VerifyRepo {
   mapping_id: string;
   name: string;
   path: string;
   checks: VerifyCheck[];
   na?: Record<string, string>;
+  na_meta?: Record<string, NaMeta>;
+  expired_na?: string[];
   missing_categories?: string[];
   configured: boolean;
   complete?: boolean;
@@ -278,7 +294,9 @@ export interface MappingDraft {
   tapd_workspace_id?: string;
 }
 
-export type ItemAction = 'map' | 'dry' | 'apply' | 'exec' | 'cancel' | 'delete' | 'report' | 'merge';
+export type ItemAction =
+  | 'map' | 'dry' | 'apply' | 'exec' | 'cancel' | 'delete' | 'report'
+  | 'merge' | 'verify' | 'force-merge';
 
 export class ApiError extends Error {}
 
@@ -337,7 +355,12 @@ export const endpoints = {
   // 任务中心手动触发：只自动执行勾选的任务。
   autoRun: (ids: string[]) => api<AutoRunResult>('/api/tasks/auto-run', jsonInit('POST', {ids})),
   // 自动合并冲突后重试（无冲突才写入主仓工作区）。
-  mergeItem: (id: string) => api<WorkItem>(`/api/items/${id}/merge`, {method: 'POST'}),
+  mergeItem: (id: string, body?: {force?: boolean}) =>
+    api<WorkItem>(`/api/items/${id}/merge`, jsonInit('POST', body ?? {})),
+  verifyItem: (id: string, body?: {merge?: boolean}) =>
+    api<WorkItem>(`/api/items/${id}/verify`, jsonInit('POST', body ?? {})),
+  updateVerifyNa: (mappingId: string, na: Record<string, NaMeta>) =>
+    api<{repos: VerifyRepo[]}>(`/api/verify-config/${mappingId}/na`, jsonInit('PUT', {na})),
   itemDiff: (id: string) =>
     api<{diff: string; stat: Record<string, number>; worktree: string}>(
       `/api/items/${id}/diff`,

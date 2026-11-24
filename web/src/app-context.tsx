@@ -510,6 +510,20 @@ export function AppProvider({
                 : '合并未成功，请查看报告',
             );
           }
+        } else if (action === 'verify') {
+          await endpoints.verifyItem(id);
+          toast.success('已重新运行验证');
+        } else if (action === 'force-merge') {
+          const ok = await confirm(
+            '该任务验证未通过。强制合并会跳过门禁，把 worktree 的改动直接写入主仓库工作区（仍不提交、不推送）。确认继续？',
+          );
+          if (!ok) return;
+          const merged = await endpoints.mergeItem(id, {force: true});
+          if (merged.merge_state === 'merged') {
+            toast.success('已强制合并到主仓库工作区（未提交）');
+          } else {
+            toast.warning('强制合并未成功，请查看报告');
+          }
         } else if (action === 'cancel') {
           await endpoints.cancelItem(id);
         } else if (action === 'delete') {

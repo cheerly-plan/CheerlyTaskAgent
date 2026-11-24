@@ -80,9 +80,11 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
       "na": {"typecheck": "未安装 mypy/pyright"},
       "baseline": "advisory", "retries": 1,
       "max_changed_files": 30, "max_diff_lines": 2000,
-      "total_timeout_s": 900
+      "total_timeout_s": 900,
+      "rlimits": {"cpu_s": 600, "memory_mb": 4096, "file_size_mb": 512}
     }}}
     ```
+- **N/A 与人工兜底**：N/A 在「项目映射 → 验证配置 → 编辑 N/A」维护，带理由、过期时间、批准人与时间；过期后自动失效，需要重新批准。验证失败的任务支持「重新验证」（只重跑检查、不重跑 agent，通过后自动合并）和「强制合并」（显式跳过门禁，报告记录 override）。可选 `rlimits`（`cpu_s` / `memory_mb` / `file_size_mb`，POSIX）限制检查进程资源；网络隔离未提供。
 - **自动同步（三方比较，防覆盖）**：apply 先建隔离 worktree，并把主仓库当前工作区的未提交改动叠加进去作为基线，所以 codebuddy 改的是你眼前的最新代码，而不是过期的已提交版本（叠加失败会安全回退到纯 HEAD 基线）。apply 成功后，codebuddy 的改动文件自动同步回主仓库工作区（无需手动从 worktree 拷贝），看板即显示「完成（已同步 N 个文件）」。对每个文件以 worktree 的 HEAD 为 base，与主仓库当前版本、codebuddy 结果做三方比较：**仅当主仓库自 base 以来未改动才直接覆盖**；若主仓库也已改动，先尝试三方合并（`git merge-file`，仅在无冲突时写入），否则**不覆盖**，把双方版本备份为 `.main` / `.codebuddy` 并在报告中列出冲突，看板显示「N 个文件冲突未覆盖」。这样过期 worktree 不会回滚主仓库里更新的改动。同步只碰改动文件、按忽略规则过滤（`.env`/`data/`/venv 等不同步）、拒绝路径逃逸；备份在 `<data_dir>/sync-backups/<item>/<时间>/`；失败写进报告但不否定 apply 结果。用 `TASKAGENT_AUTO_SYNC=0` 可关闭，回到纯隔离模式。
 - **可观测**：SSE 实时推送导入/映射/排队/执行/进度/成功/失败/重试；每单都有 Markdown 报告（含自动同步明细与备份位置）。
 
@@ -137,6 +139,7 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 | `POST` | `/api/mappings/bulk` | 批量新增 `{items:[...]}`，返回 added/failed |
 | `GET` | `/api/verify-config` | 自动生成的验证配置：每仓库的检查、是否已配置、仓库文件是否变化（stale） |
 | `POST` | `/api/verify-config/rebuild` | 按仓库文件强制重建全部验证配置（覆盖已有条目） |
+| `PUT` | `/api/verify-config/{mapping_id}/na` | 人工维护 N/A `{na:{category:{reason,expires_at}}}`（记录批准人/时间） |
 | `PUT` | `/api/mappings/{id}` | 编辑/启停（支持局部字段） |
 | `DELETE` | `/api/mappings/{id}` | 删除项目映射 |
 | `GET` | `/api/items` | 工作项列表 |
@@ -147,7 +150,8 @@ data/reports/<id>.md  ← 状态、提示词、命令、输出、改动文件
 | `POST` | `/api/items/{id}/cancel` | 取消 |
 | `GET` | `/api/items/{id}/report` | Markdown 报告 |
 | `POST` | `/api/tasks/auto-run` | 任务中心手动触发：`{ids:[...]}` 只自动执行勾选的任务 |
-| `POST` | `/api/items/{id}/merge` | 重试原子合并：无冲突才写回主仓库工作区（不 commit、不 push） |
+| `POST` | `/api/items/{id}/merge` | 重试原子合并 `{force?:bool}`：无冲突才写回主仓库工作区；`force` 为人工跳过验证门禁（不 commit、不 push） |
+| `POST` | `/api/items/{id}/verify` | 只重跑验证 `{merge?:bool}`（不重跑 agent；通过后可自动合并） |
 | `GET` | `/api/items/{id}/diff` | 查看该任务 worktree 的 diff（截断到 200KB） |
 | `GET` | `/api/events` | SSE 事件流 |
 

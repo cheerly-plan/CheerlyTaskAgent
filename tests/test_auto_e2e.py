@@ -173,3 +173,43 @@ def test_verification_failure_blocks_merge(tmp_path: Path):
         report = client.get(f"/api/items/{item_id}/report").text
         assert "### 验证" in report
         assert "未通过" in report
+
+        # 修好配置后只重跑验证（不重跑 agent）：通过则自动合并。
+        _write_verify(settings, ("true",))
+        verified = client.post(f"/api/items/{item_id}/verify")
+        assert verified.status_code == 200, verified.text
+        body = verified.json()
+        assert body["status"] == "succeeded", body
+        assert body["merge_state"] == "merged", body
+        assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")
+
+
+def test_force_merge_skips_verification(tmp_path: Path):
+    repo, settings = _setup(tmp_path, ("false",))
+    app = create_app(settings)
+    with TestClient(app) as client:
+        mapping = client.post("/api/mappings", json={"name": "demo", "path": str(repo)})
+        assert mapping.status_code == 201, mapping.text
+        created = client.post("/api/tasks/manual", json={
+            "title": "把返回值改成 2", "description": "main 返回 2",
+            "kind": "bug", "repo_name": "demo",
+            "exec_mode": "apply", "run_now": False, "approved": False,
+        })
+        item_id = created.json()["id"]
+        client.post("/api/tasks/auto-run", json={"ids": [item_id]})
+
+        item = None
+        for _ in range(200):
+            item = client.get(f"/api/items/{item_id}").json()
+            if item["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        assert item is not None and item["status"] == "failed", item
+
+        forced = client.post(f"/api/items/{item_id}/merge", json={"force": True})
+        assert forced.status_code == 200, forced.text
+        merged = forced.json()
+        assert merged["status"] == "succeeded", merged
+        assert merged["merge_state"] == "merged", merged
+        assert merged["result"]["verification"]["override"] is True
+        assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")

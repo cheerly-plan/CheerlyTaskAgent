@@ -236,3 +236,29 @@ def test_verify_config_api_reports_stale(tmp_path: Path) -> None:
         (repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
         after = client.get("/api/verify-config").json()["repos"][0]
         assert after["stale"] is True
+
+
+def test_verify_config_api_edits_na(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from taskagent.api import create_app
+    from taskagent.config import Settings
+
+    repo = _python_repo(tmp_path)
+    settings = Settings(data_dir=tmp_path / "data", project_roots=())
+    app = create_app(settings)
+    with TestClient(app) as client:
+        created = client.post("/api/mappings", json={"name": "demo", "path": str(repo)})
+        mapping_id = created.json()["id"]
+        updated = client.put(f"/api/verify-config/{mapping_id}/na", json={
+            "na": {
+                "typecheck": {"reason": "未安装 mypy"},
+                "build": {"reason": "暂无构建", "expires_at": "2000-01-01"},
+            },
+        })
+        assert updated.status_code == 200, updated.text
+        row = updated.json()["repos"][0]
+        assert row["na"]["typecheck"] == "未安装 mypy"
+        assert row["na_meta"]["typecheck"]["approved_by"] == "user"
+        assert "build" in row["expired_na"]
+        assert "build" in row["missing_categories"]

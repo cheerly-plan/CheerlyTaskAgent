@@ -42,7 +42,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .verification import DEFAULT_TEST_PATTERNS, DEFAULT_TIMEOUT_S
+from .verification import CATEGORIES, DEFAULT_TEST_PATTERNS, DEFAULT_TIMEOUT_S
 
 VERSION = 1
 _SKIP_DIRS = {
@@ -433,6 +433,39 @@ def ensure_verify_config(
         data["generated_at"] = _now()
         _write(config_path, data)
     return {"created": created, "rebuilt": rebuilt, "pruned": pruned, "repos": repos}
+
+
+def set_na(
+    path: str | Path,
+    repo_name: str,
+    na: dict[str, Any],
+) -> dict[str, Any]:
+    """Replace a repo's explicit N/A waivers (manual, audited)."""
+    config_path = Path(path).expanduser()
+    data = load_verify_config(config_path)
+    repos = data.setdefault("repos", {})
+    entry = repos.get(repo_name)
+    if entry is None:
+        raise LookupError(f"仓库 {repo_name} 还没有验证配置")
+    if not isinstance(entry, dict):
+        raise TypeError(f"仓库 {repo_name} 的验证配置格式不正确")
+    cleaned: dict[str, dict[str, str]] = {}
+    for category, value in (na or {}).items():
+        category = str(category).strip().lower()
+        if category not in CATEGORIES or not isinstance(value, dict):
+            continue
+        reason = str(value.get("reason") or "").strip()
+        if not reason:
+            continue
+        cleaned[category] = {
+            "reason": reason,
+            "expires_at": str(value.get("expires_at") or "").strip(),
+            "approved_at": _now(),
+            "approved_by": "user",
+        }
+    entry["na"] = cleaned
+    _write(config_path, data)
+    return entry
 
 
 def prune_verify_config(path: str | Path, alive_names: set[str]) -> int:

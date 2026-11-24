@@ -51,7 +51,9 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +198,11 @@ def normalise_checks(
             {str(key): str(value) for key, value in raw_env.items()}
             if isinstance(raw_env, dict) else {}
         )
+        raw_limits = item.get("rlimits")
+        rlimits = (
+            {str(key): value for key, value in raw_limits.items()}
+            if isinstance(raw_limits, dict) else {}
+        )
         checks.append({
             "id": identifier or f"check-{index + 1}",
             "label": label,
@@ -203,8 +210,56 @@ def normalise_checks(
             "command": argv,
             "timeout_s": float(item.get("timeout_s") or default_timeout_s),
             "env": env,
+            "rlimits": rlimits,
         })
     return checks
+
+
+def parse_na(raw: Any, now: datetime | None = None) -> dict[str, dict[str, Any]]:
+    """Normalise ``na`` waivers; supports both legacy strings and objects.
+
+    An object may carry ``reason``, ``expires_at`` (ISO date/time) and audit
+    fields.  Expired or malformed expiry dates no longer count as a waiver, so
+    a temporary N/A cannot silently become permanent.
+    """
+    current = now or datetime.now(UTC)
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        category = str(key).strip().lower()
+        if category not in CATEGORIES:
+            continue
+        if isinstance(value, str):
+            reason = value.strip()
+            meta: dict[str, Any] = {}
+        elif isinstance(value, dict):
+            reason = str(value.get("reason") or "").strip()
+            meta = value
+        else:
+            continue
+        if not reason:
+            continue
+        expires_at = str(meta.get("expires_at") or "").strip()
+        expired = False
+        if expires_at:
+            try:
+                # A plain YYYY-MM-DD means "valid through the end of that day".
+                text = f"{expires_at}T23:59:59" if len(expires_at) == 10 else expires_at
+                when = datetime.fromisoformat(text)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=UTC)
+                expired = when < current
+            except ValueError:
+                expired = True
+        out[category] = {
+            "reason": reason,
+            "expires_at": expires_at,
+            "expired": expired,
+            "approved_at": str(meta.get("approved_at") or ""),
+            "approved_by": str(meta.get("approved_by") or ""),
+        }
+    return out
 
 
 # ── guards ────────────────────────────────────────────────────────────────────
@@ -313,6 +368,7 @@ def _run_baseline(
     data_dir: Path,
     timeout_s: float,
     env_extra: dict[str, Any],
+    rlimits: dict[str, Any] | None,
     link_dirs: Any,
 ) -> dict[str, Any]:
     """Run one check at the pre-agent commit (worktree HEAD)."""
@@ -336,6 +392,7 @@ def _run_baseline(
             log_dir=data_dir / "verifications",
             timeout_s=timeout_s,
             env_extra=env_extra,
+            rlimits=rlimits,
         )
     finally:
         _git(worktree, "worktree", "remove", "--force", str(base))
@@ -349,6 +406,45 @@ def _safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "check"
 
 
+def _with_rlimits(
+    argv: list[str], limits: Any
+) -> tuple[list[str], dict[str, str]]:
+    """Wrap a command in a tiny Python pre-exec that applies POSIX rlimits.
+
+    Using a wrapper (instead of ``preexec_fn``) keeps this safe when the gate
+    itself runs in a worker thread.  Network isolation is *not* provided here.
+    """
+    if not isinstance(limits, dict):
+        return argv, {}
+    cpu = float(limits.get("cpu_s") or 0)
+    memory = int(limits.get("memory_mb") or 0)
+    file_size = int(limits.get("file_size_mb") or 0)
+    spec: dict[str, int] = {}
+    if cpu > 0:
+        spec["RLIMIT_CPU"] = int(cpu)
+    if memory > 0:
+        spec["RLIMIT_AS"] = memory * 1024 * 1024
+    if file_size > 0:
+        spec["RLIMIT_FSIZE"] = file_size * 1024 * 1024
+    if not spec:
+        return argv, {}
+    code = (
+        "import json,os,resource,sys\n"
+        "limits=json.loads(os.environ.get('TASKAGENT_RLIMITS','{}'))\n"
+        "for name,value in limits.items():\n"
+        "    try:\n"
+        "        resource.setrlimit(getattr(resource,name),(int(value),int(value)))\n"
+        "    except (AttributeError,ValueError,OSError):\n"
+        "        pass\n"
+        "os.environ.pop('TASKAGENT_RLIMITS',None)\n"
+        "os.execvp(sys.argv[1],sys.argv[1:])\n"
+    )
+    return (
+        [sys.executable, "-c", code, *argv],
+        {"TASKAGENT_RLIMITS": json.dumps(spec)},
+    )
+
+
 def _run_check(
     worktree: Path,
     check: dict[str, Any],
@@ -357,6 +453,7 @@ def _run_check(
     log_dir: Path,
     timeout_s: float | None = None,
     env_extra: dict[str, Any] | None = None,
+    rlimits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     timeout = float(timeout_s if timeout_s is not None else check["timeout_s"])
@@ -364,10 +461,12 @@ def _run_check(
     stdout = ""
     timed_out = False
     spawn_error = ""
-    env = _build_env({**(env_extra or {}), **(check.get("env") or {})})
+    limits = rlimits if rlimits is not None else check.get("rlimits")
+    argv, limit_env = _with_rlimits(list(check["command"]), limits)
+    env = _build_env({**(env_extra or {}), **(check.get("env") or {}), **limit_env})
     try:
         proc = subprocess.Popen(
-            check["command"],
+            argv,
             cwd=str(worktree),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -509,12 +608,13 @@ def run_gate(
     if not changed:
         return verdict("no_changes", False, "执行结果没有改动任何文件")
 
-    raw_na = entry.get("na")
+    na_meta = parse_na(entry.get("na"))
     na = {
-        str(key).strip().lower(): str(value).strip()
-        for key, value in (raw_na.items() if isinstance(raw_na, dict) else [])
-        if str(value).strip()
+        category: str(meta["reason"])
+        for category, meta in na_meta.items()
+        if not meta.get("expired")
     }
+    expired_na = [category for category, meta in na_meta.items() if meta.get("expired")]
     present = {str(check.get("category")) for check in checks}
     missing = [
         category for category in CATEGORIES
@@ -535,6 +635,8 @@ def run_gate(
             f"改动包含 {len(touched)} 个测试/快照文件，自动链路不合并",
             test_files=touched,
             na=na,
+            na_meta=na_meta,
+            expired_na=expired_na,
         )
 
     protected = [path for path in changed if _matches_patterns(path, _protected_patterns(entry))]
@@ -545,6 +647,8 @@ def run_gate(
             f"改动包含 {len(protected)} 个受保护文件（测试配置/CI/清单/锁文件），自动链路不合并",
             protected_files=protected,
             na=na,
+            na_meta=na_meta,
+            expired_na=expired_na,
         )
 
     max_files = int(entry.get("max_changed_files", DEFAULT_MAX_CHANGED_FILES) or 0)
@@ -554,6 +658,8 @@ def run_gate(
             False,
             f"改动文件 {len(changed)} 个，超过上限 {max_files}",
             na=na,
+            na_meta=na_meta,
+            expired_na=expired_na,
         )
 
     if missing:
@@ -564,11 +670,16 @@ def run_gate(
             f"缺少验证类别：{labels}（未配置且未标 N/A）",
             missing_categories=missing,
             na=na,
+            na_meta=na_meta,
+            expired_na=expired_na,
         )
 
     path = Path(worktree).expanduser() if worktree else None
     if path is None or not path.is_dir():
-        return verdict("error", False, "worktree 不存在，无法验证", na=na)
+        return verdict(
+            "error", False, "worktree 不存在，无法验证",
+            na=na, na_meta=na_meta, expired_na=expired_na,
+        )
 
     max_lines = int(entry.get("max_diff_lines", DEFAULT_MAX_DIFF_LINES) or 0)
     if max_lines > 0:
@@ -581,6 +692,8 @@ def run_gate(
                 f"改动行数 {total_lines} 超过上限 {max_lines}",
                 diff_lines=total_lines,
                 na=na,
+                na_meta=na_meta,
+                expired_na=expired_na,
             )
 
     retries = max(0, int(entry.get("retries", DEFAULT_RETRIES) or 0))
@@ -591,6 +704,7 @@ def run_gate(
     total = float(entry.get("total_timeout_s") or total_timeout_s)
     deadline = started + max(0.1, total)
     base_env = entry.get("env") if isinstance(entry.get("env"), dict) else {}
+    base_limits = entry.get("rlimits") if isinstance(entry.get("rlimits"), dict) else {}
     link_dirs = entry.get("link_dirs")
 
     linked = _link_dirs(path, repo_path, link_dirs)
@@ -612,12 +726,14 @@ def run_gate(
                 timeout_reason = f"总验证超时（{total:g}s）"
                 passed = False
                 break
+            check_limits = {**base_limits, **(check.get("rlimits") or {})}
             outcome = _run_check(
                 path, check,
                 item_id=item_id,
                 log_dir=log_dir,
                 timeout_s=min(float(check["timeout_s"]), remaining),
                 env_extra=base_env,
+                rlimits=check_limits,
             )
             outcome["attempts"] = attempts
             if outcome["ok"] or attempts > retries or outcome["error"]:
@@ -643,6 +759,7 @@ def run_gate(
                 data_dir=Path(data_dir).expanduser(),
                 timeout_s=max(0.2, min(float(check["timeout_s"]), remaining)),
                 env_extra=base_env,
+                rlimits={**base_limits, **(check.get("rlimits") or {})},
                 link_dirs=link_dirs,
             )
             outcome["baseline"] = baseline
@@ -665,16 +782,21 @@ def run_gate(
         reason = "全部验证通过" if not warnings else "通过（含既有失败/重试警告）"
         return verdict(
             state, True, reason,
-            linked_dirs=linked, na=na, warnings=warnings,
+            linked_dirs=linked, na=na, na_meta=na_meta,
+            expired_na=expired_na, warnings=warnings,
         )
 
     if timeout_reason:
         return verdict(
             "failed", False, timeout_reason,
-            linked_dirs=linked, na=na, warnings=warnings,
+            linked_dirs=linked, na=na, na_meta=na_meta,
+            expired_na=expired_na, warnings=warnings,
         )
     if not results:
-        return verdict("failed", False, "验证未能执行", linked_dirs=linked, na=na)
+        return verdict(
+            "failed", False, "验证未能执行",
+            linked_dirs=linked, na=na, na_meta=na_meta, expired_na=expired_na,
+        )
     failed = results[-1]
     reason = _failed_reason(failed)
     baseline = failed.get("baseline") or {}
@@ -682,5 +804,6 @@ def run_gate(
         reason = f"{reason}；基线同样失败" if baseline_mode != "advisory" else reason
     return verdict(
         "failed", False, reason,
-        linked_dirs=linked, na=na, warnings=warnings,
+        linked_dirs=linked, na=na, na_meta=na_meta,
+        expired_na=expired_na, warnings=warnings,
     )

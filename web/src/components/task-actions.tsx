@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
-import {MoreHorizontal, Plus, Square, Trash2, FileText, GitMerge, Play} from 'lucide-react';
+import {MoreHorizontal, Plus, RefreshCw, Square, Trash2, FileText, GitMerge, Play} from 'lucide-react';
 
 import {Button, type ButtonProps} from '@/components/ui/button';
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
@@ -181,6 +181,8 @@ export function TaskActions({
   const terminal = TERMINAL_STATUSES.includes(item.status) && !dryDone && !retryable;
   const running = ACTIVE_STATUSES.includes(item.status);
   const mergeBlocked = item.merge_state === 'blocked';
+  const verificationFailed = item.result?.verification?.ok === false
+    && item.merge_state !== 'merged';
 
   const backend = backends.find((entry) => entry.id === item.executor);
   const canPickModel = backend?.model_selection !== false;
@@ -220,6 +222,24 @@ export function TaskActions({
 
   // 主要操作（执行/取消）与状态相关操作
   const leading: ActionDef[] = [];
+  if (verificationFailed) {
+    leading.push({
+      key: 'verify',
+      label: '重新验证',
+      ariaLabel: '在现有 worktree 上重新运行验证（不重新执行 agent）',
+      icon: <RefreshCw />,
+      onClick: () => onAction('verify', item.id),
+      variant: 'outline',
+    });
+    leading.push({
+      key: 'force-merge',
+      label: '强制合并',
+      ariaLabel: '跳过验证门禁，把 worktree 的改动原子合并到主仓库工作区',
+      icon: <GitMerge />,
+      onClick: () => onAction('force-merge', item.id),
+      variant: 'danger',
+    });
+  }
   if (mergeBlocked) {
     leading.push({
       key: 'merge',
