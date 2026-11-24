@@ -109,19 +109,33 @@ def policy_for(
     *,
     settings: Any,
     mapping: ProjectMapping | None = None,
+    globals_cfg: dict[str, Any] | None = None,
 ) -> DeliveryPolicy:
-    """Resolve the per-repo override against the global default."""
+    """Resolve repo override > system settings ("global") > env-seeded defaults."""
+    g = globals_cfg if isinstance(globals_cfg, dict) else {}
     override = (mapping.delivery if mapping is not None else "") or ""
-    mode = _normalize_mode(override or getattr(settings, "delivery_mode", "off"))
+    mode = _normalize_mode(
+        override or str(g.get("mode") or "") or getattr(settings, "delivery_mode", "off")
+    )
     if mode == "off":
         return DeliveryPolicy(mode="off")
     repo = item.repo.path if item.repo else ""
-    remote = getattr(settings, "delivery_remote", "") or DEFAULT_REMOTE
-    base = getattr(settings, "delivery_base", "") or (detect_base(repo) if repo else "")
-    provider = getattr(settings, "delivery_provider", "") or ""
-    api_base = getattr(settings, "delivery_api_base", "") or ""
-    merge = (mapping.merge_policy if mapping is not None else "") or getattr(
-        settings, "delivery_merge", "manual"
+    remote = (
+        str(g.get("remote") or "")
+        or getattr(settings, "delivery_remote", "")
+        or DEFAULT_REMOTE
+    )
+    base = (
+        str(g.get("base") or "")
+        or getattr(settings, "delivery_base", "")
+        or (detect_base(repo) if repo else "")
+    )
+    provider = str(g.get("provider") or "") or getattr(settings, "delivery_provider", "") or ""
+    api_base = str(g.get("api_base") or "") or getattr(settings, "delivery_api_base", "") or ""
+    merge = (
+        (mapping.merge_policy if mapping is not None else "")
+        or str(g.get("merge") or "")
+        or getattr(settings, "delivery_merge", "manual")
     )
     merge = "auto" if str(merge).strip().lower() == "auto" else "manual"
     # token 由 create_pr 按实际托管方从环境变量读取，避免在策略里猜 provider。

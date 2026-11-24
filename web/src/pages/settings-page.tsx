@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Sparkles, Trash2} from 'lucide-react';
+import {GitPullRequest, Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Sparkles, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {Field, SelectField} from '@/components/select-field';
@@ -8,7 +8,7 @@ import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
 import {Switch} from '@/components/ui/switch';
-import type {BackendConfig, ModelChoice, UISettings} from '@/lib/api';
+import type {BackendConfig, DeliverySettings, ModelChoice, UISettings} from '@/lib/api';
 import {
   canonicalModelId,
   cliDefaultLabel,
@@ -17,6 +17,15 @@ import {
   modelMatches,
   sortModelsByCategory,
 } from '@/lib/utils';
+
+const DEFAULT_DELIVERY: DeliverySettings = {
+  mode: 'off',
+  merge: 'manual',
+  remote: 'origin',
+  base: '',
+  provider: '',
+  api_base: '',
+};
 
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
@@ -54,6 +63,13 @@ export function SettingsPage() {
 
   const patch = <K extends keyof UISettings>(key: K, value: UISettings[K]) =>
     setDraft((prev) => (prev ? {...prev, [key]: value} : prev));
+  const delivery = draft.delivery ?? DEFAULT_DELIVERY;
+  const patchDelivery = <K extends keyof DeliverySettings>(key: K, value: DeliverySettings[K]) =>
+    setDraft((prev) =>
+      prev
+        ? {...prev, delivery: {...DEFAULT_DELIVERY, ...(prev.delivery ?? {}), [key]: value}}
+        : prev,
+    );
 
   const backends = draft.backends ?? {};
   const backendEntries = Object.entries(backends);
@@ -279,6 +295,78 @@ export function SettingsPage() {
           </div>
         </Card>
       )}
+
+      <Card className="shrink-0 p-5">
+        <h3 className="mb-1 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+          <GitPullRequest className="size-4 text-primary" />
+          交付与 PR 合并
+        </h3>
+        <p className="mb-4 text-[11.5px] leading-relaxed text-foreground/55">
+          这里是「全局默认」：项目映射里的交付 / 合并选择「跟随系统设置」时用这里的值。
+          环境变量只作为首次启动的初始值，保存后以本页为准。
+        </p>
+        <div className="grid gap-4 md:grid-cols-3">
+          <Field label="默认交付模式" className="mb-0">
+            <SelectField
+              value={delivery.mode}
+              onChange={(value) => patchDelivery('mode', value as DeliverySettings['mode'])}
+              options={[
+                {value: 'off', label: '关闭（只写工作区）'},
+                {value: 'commit', label: '提交任务分支'},
+                {value: 'push', label: '提交并推送'},
+                {value: 'pr', label: '推送并创建 PR/MR'},
+              ]}
+            />
+          </Field>
+          <Field label="PR 合并策略" className="mb-0">
+            <SelectField
+              value={delivery.merge}
+              onChange={(value) => patchDelivery('merge', value as DeliverySettings['merge'])}
+              options={[
+                {value: 'manual', label: '人工合并'},
+                {value: 'auto', label: 'CI 通过后自动合并'},
+              ]}
+            />
+          </Field>
+          <Field label="托管类型" className="mb-0">
+            <SelectField
+              value={delivery.provider}
+              onChange={(value) => patchDelivery('provider', value as DeliverySettings['provider'])}
+              options={[
+                {value: '', label: '按远端域名自动识别'},
+                {value: 'github', label: 'GitHub'},
+                {value: 'gitlab', label: 'GitLab'},
+              ]}
+            />
+          </Field>
+          <Field label="远端名" className="mb-0">
+            <Input
+              value={delivery.remote}
+              placeholder="origin"
+              onChange={(event) => patchDelivery('remote', event.target.value)}
+            />
+          </Field>
+          <Field label="PR 目标分支" className="mb-0">
+            <Input
+              value={delivery.base}
+              placeholder="留空自动探测 main / master"
+              onChange={(event) => patchDelivery('base', event.target.value)}
+            />
+          </Field>
+          <Field label="企业版 API 地址" className="mb-0">
+            <Input
+              value={delivery.api_base}
+              placeholder="留空使用官方 API"
+              onChange={(event) => patchDelivery('api_base', event.target.value)}
+            />
+          </Field>
+        </div>
+        <p className="mt-3 text-[11px] leading-relaxed text-foreground/45">
+          PR/MR 与 CI 需要 <code className="rounded bg-secondary px-1 py-0.5">GITHUB_TOKEN</code> 或{' '}
+          <code className="rounded bg-secondary px-1 py-0.5">GITLAB_TOKEN</code>；
+          自动合并只在「PR 模式 + CI 全绿」时生效，CI 失败不会合并。
+        </p>
+      </Card>
 
       <Card className="flex shrink-0 flex-wrap items-center gap-2 p-4">
         <Button size="sm" onClick={() => void saveSettings(draft)}>

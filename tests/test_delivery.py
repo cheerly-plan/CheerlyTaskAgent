@@ -517,3 +517,31 @@ def test_startup_recovery_clears_pending_ci(tmp_path: Path) -> None:
     assert saved is not None
     assert saved.delivery["ci_pending"] is False
     assert "重启" in saved.delivery["error"]
+
+
+def test_policy_prefers_system_settings_then_repo_override() -> None:
+    item = _item(Path("/tmp/demo"))
+    settings = SimpleNamespace(
+        delivery_mode="off", delivery_remote="origin", delivery_base="",
+        delivery_provider="", delivery_api_base="", delivery_merge="manual",
+        ci_timeout_s=60, ci_poll_interval_s=5,
+    )
+    globals_cfg = {
+        "mode": "pr", "merge": "auto", "remote": "upstream",
+        "base": "develop", "provider": "github", "api_base": "",
+    }
+
+    policy = policy_for(item, settings=settings, globals_cfg=globals_cfg)
+    assert policy.mode == "pr"
+    assert policy.merge == "auto"
+    assert policy.remote == "upstream"
+    assert policy.base == "develop"
+    assert policy.provider == "github"
+
+    # 仓库自己的选择优先于系统设置。
+    mapping = ProjectMapping(
+        id="m", name="demo", path="/tmp/demo", delivery="off", merge_policy="manual",
+    )
+    override = policy_for(item, settings=settings, mapping=mapping, globals_cfg=globals_cfg)
+    assert override.mode == "off"
+    assert override.merge == "manual"

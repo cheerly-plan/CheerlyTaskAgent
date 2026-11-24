@@ -163,6 +163,8 @@ class UISettingsBody(BaseModel):
     tapd: dict[str, Any] = Field(default_factory=dict)
     # 单一数据源对象：type/name/enabled + 类型专属字段（目前仅 tapd）。
     data_source: dict[str, Any] = Field(default_factory=dict)
+    # 交付 / PR 合并的全局默认（系统设置页维护）。
+    delivery: dict[str, Any] = Field(default_factory=dict)
 
 
 class AutoRunBody(BaseModel):
@@ -322,6 +324,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             delivery_merge=settings.delivery_merge,
             ci_timeout_s=settings.ci_timeout_s,
             ci_poll_interval_s=settings.ci_poll_interval_s,
+            # 「系统设置 → 交付」改完即时生效，无需重启。
+            delivery_globals=lambda: settings.load_ui_settings().get("delivery", {}),
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,

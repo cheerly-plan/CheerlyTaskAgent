@@ -24,10 +24,10 @@ function deliveryBadge(mapping: {delivery?: string; merge_policy?: string}): Del
   const mode = mapping.delivery ?? '';
   const merge = mapping.merge_policy === 'auto'
     ? '自动合并'
-    : mapping.merge_policy === 'manual' ? '人工合并' : '跟随全局合并策略';
+    : mapping.merge_policy === 'manual' ? '人工合并' : '跟随系统设置';
   switch (mode) {
     case '':
-      return {label: '跟随', variant: 'outline', title: '交付与合并策略都跟随全局环境变量'};
+      return {label: '跟随', variant: 'outline', title: '交付与合并策略跟随「系统设置 → 交付」'};
     case 'off':
       return {label: '关闭', variant: 'muted', title: '只写主仓库工作区，不提交 / 不推送'};
     case 'commit':

@@ -258,3 +258,58 @@ def test_auto_run_endpoint_selects_only_requested(tmp_path):
         assert result["skipped"][0]["reason"] == "任务不存在"
         # 自动执行不再是一段可配置的全局设置。
         assert "automation" not in client.get("/api/settings").json()
+
+
+def test_delivery_global_settings_roundtrip(tmp_path):
+    s = Settings(
+        data_dir=tmp_path,
+        delivery_mode="commit",
+        delivery_merge="auto",
+        delivery_remote="upstream",
+    )
+    # 首次运行：全局默认由环境变量播种。
+    initial = s.load_ui_settings()["delivery"]
+    assert initial["mode"] == "commit"
+    assert initial["merge"] == "auto"
+    assert initial["remote"] == "upstream"
+
+    # 保存后以系统设置为准，且非法值被收敛。
+    s.save_ui_settings({"delivery": {
+        "mode": "pr", "merge": "manual", "remote": "origin",
+        "base": "main", "provider": "github", "api_base": "https://ghe/api/v3",
+    }})
+    loaded = s.load_ui_settings()["delivery"]
+    assert loaded["mode"] == "pr"
+    assert loaded["merge"] == "manual"
+    assert loaded["base"] == "main"
+    assert loaded["provider"] == "github"
+
+    # 局部更新不能把未提交的字段清空。
+    s.save_ui_settings({"delivery": {"merge": "auto"}})
+    loaded = s.load_ui_settings()["delivery"]
+    assert loaded["mode"] == "pr"
+    assert loaded["merge"] == "auto"
+
+    # 非法枚举回落到安全默认。
+    s.save_ui_settings({"delivery": {"mode": "wat", "merge": "x", "provider": "gitlab-x"}})
+    loaded = s.load_ui_settings()["delivery"]
+    assert loaded["mode"] == "off"
+    assert loaded["merge"] == "manual"
+    assert loaded["provider"] == ""
+
+
+def test_settings_api_saves_global_delivery(tmp_path):
+    app = create_app(Settings(data_dir=tmp_path))
+    with TestClient(app) as client:
+        saved = client.put("/api/settings", json={
+            "delivery": {
+                "mode": "pr", "merge": "auto", "remote": "origin",
+                "base": "main", "provider": "github", "api_base": "",
+            }
+        })
+        assert saved.status_code == 200, saved.text
+        current = client.get("/api/settings").json()
+        assert current["delivery"]["mode"] == "pr"
+        assert current["delivery"]["merge"] == "auto"
+        assert current["delivery"]["base"] == "main"
+        assert current["delivery"]["provider"] == "github"

@@ -241,6 +241,15 @@ export interface ModelConfig {
   enabled: boolean;
 }
 
+export interface DeliverySettings {
+  mode: 'off' | 'commit' | 'push' | 'pr';
+  merge: 'manual' | 'auto';
+  remote: string;
+  base: string;
+  provider: '' | 'github' | 'gitlab';
+  api_base: string;
+}
+
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
@@ -254,6 +263,7 @@ export interface UISettings {
   agent_model: string;
   tapd: TapdSettings;
   data_source: DataSource;
+  delivery: DeliverySettings;
 }
 
 export interface AutoRunResult {

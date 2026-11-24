@@ -131,7 +131,7 @@ export function MappingDialog({
                 value={form.delivery}
                 onChange={(value) => patch('delivery', value)}
                 options={[
-                  {value: '', label: '跟随全局'},
+                  {value: '', label: '跟随系统设置'},
                   {value: 'off', label: '关闭'},
                   {value: 'commit', label: '仅提交任务分支'},
                   {value: 'push', label: '提交并推送'},
@@ -144,7 +144,7 @@ export function MappingDialog({
                 value={form.mergePolicy}
                 onChange={(value) => patch('mergePolicy', value)}
                 options={[
-                  {value: '', label: '跟随全局'},
+                  {value: '', label: '跟随系统设置'},
                   {value: 'manual', label: '人工合并'},
                   {value: 'auto', label: 'CI 通过后自动合并'},
                 ]}

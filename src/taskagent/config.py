@@ -91,7 +91,15 @@ def tapd_to_data_source(tapd: dict[str, Any]) -> dict[str, Any]:
         "type": "tapd",
         "name": "TAPD",
         "enabled": bool(tapd.get("enabled", False)),
-        "tapd": {k: v for k, v in tapd.items() if k != "enabled"},
+        "delivery": {
+        "mode": "off",          # off | commit | push | pr
+        "merge": "manual",      # manual | auto
+        "remote": "origin",
+        "base": "",
+        "provider": "",         # "" 自动识别 | github | gitlab
+        "api_base": "",
+    },
+    "tapd": {k: v for k, v in tapd.items() if k != "enabled"},
     }
 
 
@@ -161,6 +169,14 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
         "enabled": False,
         "tapd": {},
     },
+    "delivery": {
+        "mode": "off",          # off | commit | push | pr
+        "merge": "manual",      # manual | auto
+        "remote": "origin",
+        "base": "",
+        "provider": "",         # "" 自动识别 | github | gitlab
+        "api_base": "",
+    },
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
@@ -180,6 +196,29 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
         "exec_mode": "dry-run",
     },
 }
+
+
+DELIVERY_MODES = {"off", "commit", "push", "pr"}
+DELIVERY_MERGES = {"manual", "auto"}
+DELIVERY_PROVIDERS = {"", "github", "gitlab"}
+
+
+def normalise_delivery(value: Any) -> dict[str, str]:
+    """Clamp UI-submitted delivery config to known values."""
+    base = dict(UI_SETTINGS_DEFAULTS["delivery"])
+    if isinstance(value, dict):
+        mode = str(value.get("mode") or "off").strip().lower()
+        merge = str(value.get("merge") or "manual").strip().lower()
+        provider = str(value.get("provider") or "").strip().lower()
+        base.update(
+            mode=mode if mode in DELIVERY_MODES else "off",
+            merge=merge if merge in DELIVERY_MERGES else "manual",
+            remote=str(value.get("remote") or "origin").strip() or "origin",
+            base=str(value.get("base") or "").strip(),
+            provider=provider if provider in DELIVERY_PROVIDERS else "",
+            api_base=str(value.get("api_base") or "").strip(),
+        )
+    return base
 
 
 @dataclass(frozen=True)
@@ -382,6 +421,15 @@ class Settings:
             "data_source": dict(UI_SETTINGS_DEFAULTS["data_source"]),
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
             "models": [],
+            # 交付的「全局」= 系统设置里的默认值；首次运行时用环境变量播种。
+            "delivery": {
+                "mode": self.delivery_mode,
+                "merge": self.delivery_merge,
+                "remote": self.delivery_remote,
+                "base": self.delivery_base,
+                "provider": self.delivery_provider,
+                "api_base": self.delivery_api_base,
+            },
         }
         path = self.ui_settings_path
         saved: dict[str, Any] = {}
@@ -414,6 +462,10 @@ class Settings:
                         elif key == "tapd" and isinstance(value, dict):
                             data[key].update(value)
                             data[key].pop("nick", None)  # 已移除：拉项目改走 company_id
+                        elif key == "delivery":
+                            data[key] = normalise_delivery(
+                                {**data[key], **value} if isinstance(value, dict) else data[key]
+                            )
                         elif key == "data_source" and isinstance(value, dict):
                             data[key] = normalise_data_source(value)
                         elif key == "models" and isinstance(value, list):
@@ -513,6 +565,8 @@ class Settings:
                     elif not isinstance(val, list):
                         tapd[list_key] = list(data["tapd"].get(list_key, []))
                 data["tapd"].update(tapd)
+            elif key == "delivery" and isinstance(value, dict):
+                data["delivery"] = normalise_delivery({**data["delivery"], **value})
             elif key == "data_source" and isinstance(value, dict):
                 # 单一对象：完整接管。空白密码保留旧值（UI 掩码显示）。
                 src = normalise_data_source(value)

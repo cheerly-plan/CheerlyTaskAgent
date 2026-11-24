@@ -74,6 +74,8 @@ class SchedulerSettings:
     delivery_merge: str = "manual"
     ci_timeout_s: int = 1800
     ci_poll_interval_s: int = 15
+    # 动态读取「系统设置 → 交付」的全局默认；None = 用上面的静态字段（测试/嵌入）。
+    delivery_globals: Callable[[], dict[str, Any]] | None = None
     # P0-3 workspace/backup GC: merged/abandoned worktrees are deleted and
     # sync-backups are capped by age + count.
     gc_enabled: bool = True
@@ -1041,8 +1043,17 @@ class Scheduler:
     def _delivery_policy(self, item: WorkItem):
         from .delivery import policy_for
 
+        globals_cfg: dict[str, Any] = {}
+        if self.settings.delivery_globals is not None:
+            try:
+                globals_cfg = self.settings.delivery_globals() or {}
+            except Exception:
+                logger.warning("读取交付全局配置失败", exc_info=True)
         return policy_for(
-            item, settings=self.settings, mapping=self._mapping_for(item)
+            item,
+            settings=self.settings,
+            mapping=self._mapping_for(item),
+            globals_cfg=globals_cfg,
         )
 
     def _deliver_commit(self, item: WorkItem, backend, result, policy) -> dict[str, Any]:

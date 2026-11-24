@@ -774,6 +774,14 @@ export function AppProvider({
             exec_mode: next.data_source.tapd.exec_mode === 'apply' ? 'apply' : 'dry-run',
           } : ({} as UISettings['tapd']),
         } : ({} as UISettings['data_source']),
+        delivery: {
+          mode: next.delivery?.mode ?? 'off',
+          merge: next.delivery?.merge ?? 'manual',
+          remote: (next.delivery?.remote || 'origin').trim(),
+          base: (next.delivery?.base || '').trim(),
+          provider: next.delivery?.provider ?? '',
+          api_base: (next.delivery?.api_base || '').trim(),
+        },
       };
       try {
         await endpoints.saveSettings(payload);

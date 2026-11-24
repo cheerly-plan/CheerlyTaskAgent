@@ -309,9 +309,9 @@ dry-run 不走以上步骤，只 `build_command` + 把提示词/命令写进报�
 | `push` | commit 后 `git push --set-upstream <remote> <branch>`（用本机 git 凭据） |
 | `pr` | push 后按远端域名创建 GitHub PR / GitLab MR（`GITHUB_TOKEN` / `GITLAB_TOKEN`；企业版可用 `TASKAGENT_DELIVERY_API_BASE`） |
 
-- 开关：在「项目映射」弹窗的「交付 / PR 合并」按仓库配置（也可用映射 API / `data/projects.json`）；`""` = 跟随全局 `TASKAGENT_DELIVERY`。
+- 开关：全局默认在「系统设置 → 交付与 PR 合并」维护（`data/settings.json` 的 `delivery`，环境变量只在首次启动时播种）；项目映射弹窗里的「交付 / PR 合并」按仓库覆盖，`""` = 跟随系统设置。
 - **CI 等待与合并策略**：`pr` 模式下自动任务会轮询 CI（GitHub check-runs / commit status、GitLab pipeline，`TASKAGENT_CI_TIMEOUT` / `TASKAGENT_CI_POLL_INTERVAL`）。等待是**后台任务**（`asyncio` 轮询，不占调度槽位），执行器与门禁已经结束，任务状态为 `succeeded`、`delivery.ci_pending=true`，stage 显示「PR 已创建，等待 CI…（后台）」；CI 结束后更新 `ci_state`、stage 与报告。
-  - `merge_policy`（仓库映射）或 `TASKAGENT_DELIVERY_MERGE`（全局）为 `manual`（默认）：CI 绿也不合并，PR 留给人工；
+  - `merge_policy`（仓库映射）或系统设置里的合并策略（全局）为 `manual`（默认）：CI 绿也不合并，PR 留给人工；
   - `auto`：CI 全部通过且门禁/评审已过，自动 squash 合并 PR；CI 失败 / 超时 / 未发现 CI / 查询失败都不合并，只记录状态。
   - 人工触发的交付（点按钮/接口重试）只补 push / PR，不重新等待 CI（避免请求挂几十分钟）；要重新等待可重新执行任务或看 PR 上的 CI。
 - 合并冲突（`blocked`）时仍会提交任务分支，但**不 push / 不建 PR**；处理完冲突点「合并」重试后会自动补交付。
