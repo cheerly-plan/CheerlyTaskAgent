@@ -151,14 +151,15 @@ def test_link_dirs_before_running_checks(tmp_path: Path) -> None:
         tmp_path,
         _config(
             tmp_path,
-            [{"id": "unit", "category": "test", "command": ["true"]}],
+            [{"id": "unit", "category": "test", "command": ["sh", "-c", "test -d .venv"]}],
             link_dirs=[".venv"],
         ),
         worktree=_worktree(tmp_path),
     )
     assert result["ok"] is True
     assert result["linked_dirs"] == [".venv"]
-    assert (tmp_path / "wt" / ".venv").is_symlink()
+    # Available to the checks, but not left in the worktree as a change.
+    assert not (tmp_path / "wt" / ".venv").exists()
 
 
 def test_missing_category_blocks(tmp_path: Path) -> None:
@@ -595,3 +596,36 @@ def test_checks_import_the_worktree_code(tmp_path: Path) -> None:
         worktree=repo,
     )
     assert result["ok"] is True, result
+
+
+def test_baseline_uses_absolute_base_path(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    from taskagent.verification import _run_baseline
+
+    repo = _git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "keep.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "src"], check=True)
+
+    # The gate runs from the project root with data_dir="data". A relative
+    # baseline target used to be created *inside* the worktree by
+    # `git -C <worktree> worktree add`, while the check cwd resolved it
+    # against the server cwd: ruff then saw an empty dir (E902).
+    monkeypatch.chdir(tmp_path)
+    outcome = _run_baseline(
+        worktree=repo,
+        repo_path=str(repo),
+        check={
+            "id": "unit", "label": "unit", "category": "test",
+            "command": ["sh", "-c", "test -f src/keep.py"], "timeout_s": 30,
+        },
+        item_id="baseline-rel",
+        data_dir=Path("data"),
+        timeout_s=30,
+        env_extra={},
+        rlimits=None,
+        link_dirs=None,
+    )
+    assert outcome["ok"] is True, outcome

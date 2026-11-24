@@ -310,7 +310,18 @@ def _link_dirs(worktree: Path, repo_path: str, dirs: Any) -> list[str]:
             continue
         source = Path(repo_path).expanduser() / rel
         target = worktree / rel
-        if not source.is_dir() or target.exists():
+        if not source.is_dir():
+            continue
+        if target.is_symlink():
+            # Reuse a link a previous gate run left behind, and report it so
+            # the next cleanup removes it from the worktree's git status.
+            try:
+                if target.resolve() == source.resolve():
+                    linked.append(rel)
+            except OSError:
+                pass
+            continue
+        if target.exists():
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -319,6 +330,21 @@ def _link_dirs(worktree: Path, repo_path: str, dirs: Any) -> list[str]:
         except OSError:
             continue
     return linked
+
+
+def _unlink_dirs(worktree: Path, linked: list[str]) -> None:
+    """Remove the dependency symlinks the gate added to a live worktree.
+
+    Leaving them behind made a later re-run's ``git status`` report ``.venv``
+    and ``web/node_modules`` as agent changes — they must not be merged.
+    """
+    for rel in linked:
+        target = worktree / rel
+        try:
+            if target.is_symlink():
+                target.unlink()
+        except OSError:
+            continue
 
 
 # ── environment / redaction ──────────────────────────────────────────────────
@@ -626,6 +652,11 @@ def _run_baseline(
     link_dirs: Any,
 ) -> dict[str, Any]:
     """Run one check at the pre-agent commit (worktree HEAD)."""
+    # Resolve before creating the worktree: a relative target would be resolved
+    # by `git -C <worktree> worktree add` inside the worktree, while the check
+    # cwd resolves against the server cwd — the check then ran in an empty
+    # phantom directory and every baseline looked broken (E902).
+    data_dir = Path(data_dir).expanduser().resolve()
     base_root = data_dir / "verification-baselines"
     base = base_root / f"{_safe_name(item_id)}-{time.time_ns()}"
     base_root.mkdir(parents=True, exist_ok=True)
@@ -1006,23 +1037,23 @@ def run_gate(
     grading: Path | None = None
     test_additions = new_tests + augmented_tests
     has_test_check = any(str(check.get("category")) == "test" for check in checks)
-    if test_additions and has_test_check:
-        grading, grading_error = _grading_worktree(
-            worktree=path,
-            repo_path=repo_path,
-            changed=changed,
-            kinds=kinds,
-            test_patterns=test_patterns,
-            item_id=item_id,
-            data_dir=Path(data_dir).expanduser(),
-            link_dirs=link_dirs,
-        )
-        if grading is None:
-            return verdict(
-                "error", False, f"无法准备基线测试评分 worktree：{grading_error}",
-                linked_dirs=linked, na=na, na_meta=na_meta, expired_na=expired_na,
-            )
     try:
+        if test_additions and has_test_check:
+            grading, grading_error = _grading_worktree(
+                worktree=path,
+                repo_path=repo_path,
+                changed=changed,
+                kinds=kinds,
+                test_patterns=test_patterns,
+                item_id=item_id,
+                data_dir=Path(data_dir).expanduser(),
+                link_dirs=link_dirs,
+            )
+            if grading is None:
+                return verdict(
+                    "error", False, f"无法准备基线测试评分 worktree：{grading_error}",
+                    linked_dirs=linked, na=na, na_meta=na_meta, expired_na=expired_na,
+                )
         return _run_checks(
             started=started,
             path=path,
@@ -1047,6 +1078,7 @@ def run_gate(
             linked=linked,
         )
     finally:
+        _unlink_dirs(path, linked)
         if grading is not None:
             _drop_detached_worktree(path, grading)
 
