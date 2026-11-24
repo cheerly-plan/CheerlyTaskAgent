@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {FolderGit2, Pencil, RefreshCw, Search, Sparkles, Trash2} from 'lucide-react';
+import {FolderGit2, GitBranch, Pencil, RefreshCw, Search, Sparkles, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {EmptyState, Mono} from '@/components/status-bits';
@@ -43,6 +43,26 @@ function deliveryBadge(mapping: {delivery?: string; merge_policy?: string}): Del
     default:
       return {label: mode, variant: 'outline', title: mode};
   }
+}
+
+function shortPath(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length <= 3 ? path : `…/${parts.slice(-2).join('/')}`;
+}
+
+function isGitNote(note: string): boolean {
+  return /^\s*git:\s*\S+/i.test(note);
+}
+
+function shortNote(note: string): string {
+  const git = note.match(/^\s*git:\s*(\S+)\s*$/i);
+  if (!git) return note;
+  const parts = git[1]
+    .replace(/\.git$/, '')
+    .split(/[/:]/)
+    .filter(Boolean);
+  const repo = parts[parts.length - 1] ?? '';
+  return repo || note;
 }
 
 function IconTip({label, children}: {label: string; children: React.ReactNode}) {
@@ -189,40 +209,50 @@ export function MappingsPage() {
           title="暂无项目映射"
         />
       ) : (
-        <Table className="min-w-[1090px] table-fixed" containerClassName="min-h-0 min-w-0 flex-1">
+        <Table className="min-w-[1120px] table-fixed" containerClassName="min-h-0 min-w-0 flex-1">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[140px] pl-5">项目名</TableHead>
+              <TableHead className="w-[160px] pl-5">项目名</TableHead>
               <TableHead className="w-[180px]">本地路径</TableHead>
-              <TableHead className="w-[160px]">仓库信息 / 备注</TableHead>
-              <TableHead className="w-[100px]">仓库画像</TableHead>
-              <TableHead className="w-[110px]">验证配置</TableHead>
-              <TableHead className="w-[120px]">TAPD 项目</TableHead>
+              <TableHead className="w-[150px]">仓库信息 / 备注</TableHead>
+              <TableHead className="w-[120px]">仓库画像</TableHead>
+              <TableHead className="w-[130px]">验证配置</TableHead>
+              <TableHead className="w-[140px]">TAPD 项目</TableHead>
               <TableHead className="w-[90px]">交付</TableHead>
               <TableHead className="w-[104px]">状态</TableHead>
-              <TableHead className="sticky right-0 z-20 w-[80px] bg-[#fafafd] pr-5 text-right shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.18)]">操作</TableHead>
+              <TableHead className="sticky right-0 z-20 w-[88px] bg-[#fafafd] pr-5 text-right shadow-[-8px_0_8px_-8px_rgba(15,17,21,0.18)]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {mappings.map((mapping) => (
-              <TableRow key={mapping.id}>
+              <TableRow key={mapping.id} className="[&>td]:py-2.5">
                 <TableCell className="pl-5">
                   <span className="block truncate font-semibold text-foreground" title={mapping.name}>
                     {mapping.name}
                   </span>
                 </TableCell>
                 <TableCell>
-                  <Mono className="block max-w-[200px] truncate" title={mapping.path}>
-                    {mapping.path}
+                  <Mono
+                    className="block max-w-full truncate bg-transparent px-0 py-0 text-[12px] text-foreground/55"
+                    title={mapping.path}
+                  >
+                    {shortPath(mapping.path)}
                   </Mono>
                 </TableCell>
                 <TableCell>
-                  <span
-                    className="block max-w-[200px] truncate text-[12.5px] text-foreground/70"
-                    title={mapping.note || undefined}
-                  >
-                    {mapping.note || '—'}
-                  </span>
+                  {mapping.note ? (
+                    <span
+                      className="flex min-w-0 items-center gap-1 text-[12px] text-foreground/55"
+                      title={mapping.note}
+                    >
+                      {isGitNote(mapping.note) ? (
+                        <GitBranch className="size-3 shrink-0 text-faint" />
+                      ) : null}
+                      <span className="truncate">{shortNote(mapping.note)}</span>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-faint">—</span>
+                  )}
                 </TableCell>
                 <TableCell>
                   {(() => {
@@ -239,23 +269,19 @@ export function MappingsPage() {
                       mobile: '移动端',
                       desktop: '桌面端',
                     };
+                    const text = roles.map((role) => label[role] ?? role).join(' · ');
                     return (
-                      <div className="flex flex-wrap gap-1">
-                        {roles.map((role) => (
-                          <Badge
-                            key={role}
-                            variant="purple"
-                            className="gap-1"
-                          >
-                            <Sparkles className="size-2.5" />
-                            {label[role] ?? role}
-                          </Badge>
-                        ))}
-                      </div>
+                      <span
+                        className="flex items-center gap-1 whitespace-nowrap text-[12px] text-[#6d3fc0]"
+                        title={text}
+                      >
+                        <Sparkles className="size-3 shrink-0" />
+                        <span className="truncate">{text}</span>
+                      </span>
                     );
                   })()}
                 </TableCell>
-                <TableCell>
+                <TableCell className="whitespace-nowrap">
                   {(() => {
                     const verify = verifyRepos[mapping.id];
                     if (!verify) return <span className="text-xs text-faint">—</span>;
@@ -264,8 +290,11 @@ export function MappingsPage() {
                     }
                     const missing = verify.missing_categories ?? [];
                     const naCount = Object.keys(verify.na ?? {}).length;
+                    const naTitle = Object.entries(verify.na ?? {})
+                      .map(([category, reason]) => `${category}: ${reason}`)
+                      .join('\n');
                     return (
-                      <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="flex items-center gap-1.5">
                         {missing.length ? (
                           <Badge
                             variant="destructive-muted"
@@ -274,29 +303,26 @@ export function MappingsPage() {
                             缺 {missing.length} 类
                           </Badge>
                         ) : (
-                          <Badge variant={verify.stale ? 'warning' : 'success'}>
+                          <Badge
+                            variant={verify.stale ? 'warning' : 'success'}
+                            title={verify.stale ? '仓库文件已变化，建议重建验证配置' : '四类检查齐全'}
+                          >
                             {verify.checks.length} 项
                           </Badge>
                         )}
                         {naCount ? (
-                          <span
-                            className="text-[11px] text-faint"
-                            title={Object.entries(verify.na ?? {})
-                              .map(([category, reason]) => `${category}: ${reason}`)
-                              .join('\n')}
-                          >
+                          <span className="text-[11px] text-faint" title={naTitle || undefined}>
                             N/A {naCount}
                           </span>
                         ) : null}
-                        {verify.stale ? (
-                          <span className="text-[11px] text-faint">待重建</span>
-                        ) : null}
                         <button
                           type="button"
-                          className="text-[11px] text-primary hover:underline"
+                          className="rounded p-0.5 text-faint transition-colors hover:bg-secondary hover:text-primary"
+                          title="编辑 N/A（理由与过期时间）"
+                          aria-label={`编辑 ${mapping.name} 的 N/A`}
                           onClick={() => setNaDialog({open: true, repo: verify})}
                         >
-                          编辑 N/A
+                          <Pencil className="size-3" />
                         </button>
                       </div>
                     );
@@ -316,7 +342,7 @@ export function MappingsPage() {
                           <Badge
                             key={id}
                             variant="info"
-                            className="max-w-[120px] truncate"
+                            className="max-w-[106px] truncate"
                             title={projectLabel(id)}
                           >
                             {projectLabel(id)}
@@ -352,7 +378,7 @@ export function MappingsPage() {
                       onCheckedChange={() => void toggleMapping(mapping.id)}
                       aria-label={`${mapping.enabled ? '停用' : '启用'} ${mapping.name}`}
                     />
-                    <span className={cn('whitespace-nowrap text-xs', mapping.enabled ? 'text-foreground/80' : 'text-faint')}>
+                    <span className={cn('whitespace-nowrap text-[11.5px]', mapping.enabled ? 'text-foreground/70' : 'text-faint')}>
                       {mapping.enabled ? '启用' : '停用'}
                     </span>
                   </div>
@@ -372,7 +398,8 @@ export function MappingsPage() {
                     <IconTip label="删除">
                       <Button
                         size="icon-sm"
-                        variant="danger"
+                        variant="ghost"
+                        className="text-foreground/45 hover:text-destructive"
                         onClick={() => void deleteMapping(mapping.id)}
                         aria-label={`删除 ${mapping.name}`}
                       >
