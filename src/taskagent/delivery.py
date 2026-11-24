@@ -246,17 +246,44 @@ def create_pr(
         with httpx.Client(timeout=timeout_s, transport=transport) as client:
             if provider == "github":
                 url = f"{api}/repos/{parsed['path']}/pulls"
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                }
                 response = client.post(
                     url,
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                    headers=headers,
                     json={"title": title, "head": branch, "base": policy.base, "body": body},
                 )
+                if response.status_code == 422:
+                    # 重试交付时 PR 已存在：复用已有 PR，而不是报错。
+                    owner = parsed["path"].split("/", 1)[0]
+                    existing = client.get(
+                        url,
+                        headers=headers,
+                        params={"head": f"{owner}:{branch}", "state": "open"},
+                    )
+                    if existing.status_code < 400:
+                        try:
+                            found = existing.json()
+                        except ValueError:
+                            found = []
+                        if isinstance(found, list) and found:
+                            pr = found[0] if isinstance(found[0], dict) else {}
+                            return {
+                                "ok": True,
+                                "url": str(pr.get("html_url") or ""),
+                                "provider": "github",
+                                "number": int(pr.get("number") or 0),
+                                "reused": True,
+                            }
             else:
                 project = urllib.parse.quote(parsed["path"], safe="")
                 url = f"{api}/projects/{project}/merge_requests"
+                headers = {"PRIVATE-TOKEN": token}
                 response = client.post(
                     url,
-                    headers={"PRIVATE-TOKEN": token},
+                    headers=headers,
                     json={
                         "source_branch": branch,
                         "target_branch": policy.base,
@@ -264,6 +291,26 @@ def create_pr(
                         "description": body,
                     },
                 )
+                if response.status_code in {400, 409}:
+                    existing = client.get(
+                        url,
+                        headers=headers,
+                        params={"source_branch": branch, "state": "opened"},
+                    )
+                    if existing.status_code < 400:
+                        try:
+                            found = existing.json()
+                        except ValueError:
+                            found = []
+                        if isinstance(found, list) and found:
+                            mr = found[0] if isinstance(found[0], dict) else {}
+                            return {
+                                "ok": True,
+                                "url": str(mr.get("web_url") or ""),
+                                "provider": "gitlab",
+                                "number": int(mr.get("iid") or 0),
+                                "reused": True,
+                            }
     except httpx.HTTPError as error:
         return {"ok": False, "error": f"请求 {provider} 失败：{error}"}
     if response.status_code in {200, 201}:

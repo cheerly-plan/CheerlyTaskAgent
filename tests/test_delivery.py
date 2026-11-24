@@ -432,3 +432,47 @@ def test_scheduler_finish_delivery_records_ci_and_merge(tmp_path: Path, monkeypa
     assert item.delivery["ci_state"] == "success"
     assert item.delivery["merged"] is True
     assert "自动合并" in suffix
+
+
+def test_create_pr_reuses_existing_github_pr_on_retry() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(422, json={"message": "A pull request already exists"})
+        assert request.method == "GET"
+        assert request.url.params["head"] == "acme:taskagent/demo-1"
+        return httpx.Response(200, json=[{
+            "number": 7, "html_url": "https://github.com/acme/repo/pull/7",
+        }])
+
+    outcome = create_pr(
+        policy=_pr_policy(),
+        remote_url="git@github.com:acme/repo.git",
+        branch="taskagent/demo-1",
+        title="修 bug",
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome["ok"] is True
+    assert outcome["reused"] is True
+    assert outcome["number"] == 7
+    assert outcome["url"].endswith("/pull/7")
+
+
+def test_create_pr_reuses_existing_gitlab_mr_on_retry() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(409, json={"message": "Another open merge request exists"})
+        assert request.url.params["source_branch"] == "taskagent/demo-1"
+        return httpx.Response(200, json=[{
+            "iid": 3, "web_url": "https://gitlab.com/group/sub/repo/-/merge_requests/3",
+        }])
+
+    outcome = create_pr(
+        policy=_pr_policy(provider="gitlab", token="gl"),
+        remote_url="git@gitlab.com:group/sub/repo.git",
+        branch="taskagent/demo-1",
+        title="修 bug",
+        transport=httpx.MockTransport(handler),
+    )
+    assert outcome["ok"] is True
+    assert outcome["reused"] is True
+    assert outcome["number"] == 3
