@@ -281,6 +281,7 @@ def test_summary_exposes_gate_verdict_without_full_result():
     item = WorkItem.create(title="t", description="d", kind="task")
     assert "result" not in item.summary()
     assert item.summary()["verification_ok"] is None
+    assert item.summary()["executed"] is False
 
     item.result = RunResult(
         ok=True, dry_run=False, command="codebuddy",
@@ -289,9 +290,13 @@ def test_summary_exposes_gate_verdict_without_full_result():
     summary = item.summary()
     assert "result" not in summary
     assert summary["verification_ok"] is False
+    assert summary["executed"] is True
 
     item.result.verification = {"ok": True}
     assert item.summary()["verification_ok"] is True
+
+    item.result.dry_run = True
+    assert item.summary()["executed"] is False
 
 
 async def test_run_model_override_and_clear(env):

@@ -183,7 +183,8 @@ export function TaskActions({
   const mergeBlocked = item.merge_state === 'blocked';
   // 列表接口只返回 summary（无 result），详情接口才有完整 result：两处都要兼容，
   // 否则任务中心里人工复核/合并入口会永远不显示。
-  const verificationFailed = (
+  // 只有「失败」任务才需要复核：skipped 是用户已主动放弃，succeeded 已经过门禁。
+  const verificationFailed = item.status === 'failed' && (
     item.verification_ok === false || item.result?.verification?.ok === false
   ) && item.merge_state !== 'merged';
 
@@ -279,6 +280,7 @@ export function TaskActions({
     !item.is_container &&
     !(item.children_ids?.length ?? 0) &&
     item.merge_state !== 'merged' &&
+    !item.executed &&
     !(item.result && item.result.dry_run === false) &&
     (item.kind === 'feature' || item.kind === 'task');
   if (canDecompose) {

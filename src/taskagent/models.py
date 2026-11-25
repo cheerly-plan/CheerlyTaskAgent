@@ -402,6 +402,10 @@ class WorkItem:
             "hold_merge": self.hold_merge,
             "merge_state": self.merge_state,
             "verification_ok": verification.get("ok") if verification else None,
+            # Cheap projection of ``result.dry_run`` so list-view actions can
+            # tell "already executed apply" from "not run yet" without the
+            # full result payload.
+            "executed": bool(self.result and not self.result.dry_run),
             "created_at": self.created_at,
         }
 
