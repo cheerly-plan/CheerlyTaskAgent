@@ -53,10 +53,12 @@ const AUTOMATION_KINDS = [
   {value: 'task', label: '任务'},
 ];
 
-// 四个面板共用同一套容器样式：统一顶部间距；只在选中时 flex，
-// 否则会覆盖 Radix 的 hidden，让空面板继续占位、把卡片挤到中间。
+// 四个面板共用同一套容器样式，保证切换 tab 时布局不跳动：
+// - pt-4 是统一约定的「卡片顶边 ↔ tab 栏底边」间距（16px），各 tab 完全一致；
+// - flex-1 + min-h-0 + overflow-y-auto 让内容区独立滚动，保存栏得以固定在底部；
+// - 只在选中时 flex，避免无条件 flex 覆盖 Radix 的 hidden 让空面板占位。
 const TAB_PANEL_CLASS =
-  'mt-0 flex flex-col gap-4 focus-visible:outline-none data-[state=active]:flex';
+  'mt-0 min-h-0 flex-1 flex-col gap-4 overflow-y-auto pt-4 focus-visible:outline-none data-[state=active]:flex';
 
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
@@ -234,34 +236,34 @@ export function SettingsPage() {
     .map(([id, cfg]) => ({value: id, label: cfg.label || id}));
 
   return (
-    <div className="flex min-h-0 flex-col gap-4">
-      <Tabs defaultValue="backends" className="flex flex-col gap-4">
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-          <TabsList className="h-9 rounded-lg bg-secondary/70 p-1">
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <Tabs defaultValue="backends" className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0">
+          <TabsList className="w-full justify-start">
             <TabsTrigger
               value="backends"
-              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="gap-1.5"
             >
               <Server className="size-3.5" />
               后端与调度
             </TabsTrigger>
             <TabsTrigger
               value="automation"
-              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="gap-1.5"
             >
               <ShieldCheck className="size-3.5" />
               自动执行
             </TabsTrigger>
             <TabsTrigger
               value="memory"
-              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="gap-1.5"
             >
               <Brain className="size-3.5" />
               任务记忆
             </TabsTrigger>
             <TabsTrigger
               value="delivery"
-              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              className="gap-1.5"
             >
               <GitPullRequest className="size-3.5" />
               交付与合并
@@ -498,55 +500,52 @@ export function SettingsPage() {
             <span>自动拆解多仓需求</span>
           </label>
         </div>
-        <details className="mt-3">
-          <summary className="cursor-pointer text-[11.5px] text-faint">高级</summary>
-          <div className="mt-3 grid gap-4 md:grid-cols-4">
-            <Field label="失败阈值" className="mb-0">
-              <Input
-                type="number"
-                min={1}
-                max={50}
-                value={automation.failure_threshold}
-                onChange={(event) =>
-                  patchAutomation('failure_threshold', Number(event.target.value))
-                }
-              />
-            </Field>
-            <Field label="冷却（分钟）" className="mb-0">
-              <Input
-                type="number"
-                min={1}
-                max={1440}
-                value={automation.cooldown_minutes}
-                onChange={(event) =>
-                  patchAutomation('cooldown_minutes', Number(event.target.value))
-                }
-              />
-            </Field>
-            <Field label="重排次数" className="mb-0">
-              <Input
-                type="number"
-                min={0}
-                max={10}
-                value={automation.max_recoveries}
-                onChange={(event) =>
-                  patchAutomation('max_recoveries', Number(event.target.value))
-                }
-              />
-            </Field>
-            <Field label="最多子任务" className="mb-0">
-              <Input
-                type="number"
-                min={2}
-                max={5}
-                value={automation.max_subtasks}
-                onChange={(event) =>
-                  patchAutomation('max_subtasks', Number(event.target.value))
-                }
-              />
-            </Field>
-          </div>
-        </details>
+        <div className="mt-4 grid gap-4 border-t border-border pt-4 md:grid-cols-4">
+          <Field label="失败阈值" className="mb-0">
+            <Input
+              type="number"
+              min={1}
+              max={50}
+              value={automation.failure_threshold}
+              onChange={(event) =>
+                patchAutomation('failure_threshold', Number(event.target.value))
+              }
+            />
+          </Field>
+          <Field label="冷却（分钟）" className="mb-0">
+            <Input
+              type="number"
+              min={1}
+              max={1440}
+              value={automation.cooldown_minutes}
+              onChange={(event) =>
+                patchAutomation('cooldown_minutes', Number(event.target.value))
+              }
+            />
+          </Field>
+          <Field label="重排次数" className="mb-0">
+            <Input
+              type="number"
+              min={0}
+              max={10}
+              value={automation.max_recoveries}
+              onChange={(event) =>
+                patchAutomation('max_recoveries', Number(event.target.value))
+              }
+            />
+          </Field>
+          <Field label="最多子任务" className="mb-0">
+            <Input
+              type="number"
+              min={2}
+              max={5}
+              value={automation.max_subtasks}
+              onChange={(event) =>
+                patchAutomation('max_subtasks', Number(event.target.value))
+              }
+            />
+          </Field>
+        </div>
         <div className="mt-4 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
           {openCircuits.length > 0 ? (
             <>
@@ -665,26 +664,21 @@ export function SettingsPage() {
               onChange={(event) => patchDelivery('remote', event.target.value)}
             />
           </Field>
+          <Field label="目标分支" className="mb-0">
+            <Input
+              value={delivery.base}
+              placeholder="自动"
+              onChange={(event) => patchDelivery('base', event.target.value)}
+            />
+          </Field>
+          <Field label="API 地址" className="mb-0">
+            <Input
+              value={delivery.api_base}
+              placeholder="官方"
+              onChange={(event) => patchDelivery('api_base', event.target.value)}
+            />
+          </Field>
         </div>
-        <details className="mt-4">
-          <summary className="cursor-pointer text-[11.5px] text-faint">高级</summary>
-          <div className="mt-3 grid gap-4 md:grid-cols-2">
-            <Field label="目标分支" className="mb-0">
-              <Input
-                value={delivery.base}
-                placeholder="自动"
-                onChange={(event) => patchDelivery('base', event.target.value)}
-              />
-            </Field>
-            <Field label="API 地址" className="mb-0">
-              <Input
-                value={delivery.api_base}
-                placeholder="官方"
-                onChange={(event) => patchDelivery('api_base', event.target.value)}
-              />
-            </Field>
-          </div>
-        </details>
       </Card>
         </TabsContent>
       </Tabs>
