@@ -53,10 +53,12 @@ const AUTOMATION_KINDS = [
   {value: 'task', label: '任务'},
 ];
 
-// 四个面板共用同一套容器样式：统一顶部间距；只在选中时 flex，
-// 否则会覆盖 Radix 的 hidden，让空面板继续占位、把卡片挤到中间。
+// 四个面板共用同一套容器样式，保证切换 tab 时布局不跳动：
+// - pt-4 是统一约定的「卡片顶边 ↔ tab 栏底边」间距（16px），各 tab 完全一致；
+// - flex-1 + min-h-0 + overflow-y-auto 让内容区独立滚动，保存栏得以固定在底部；
+// - 只在选中时 flex，避免无条件 flex 覆盖 Radix 的 hidden 让空面板占位。
 const TAB_PANEL_CLASS =
-  'mt-0 flex flex-col gap-4 focus-visible:outline-none data-[state=active]:flex';
+  'mt-0 min-h-0 flex-1 flex-col gap-4 overflow-y-auto pt-4 focus-visible:outline-none data-[state=active]:flex';
 
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
@@ -234,8 +236,8 @@ export function SettingsPage() {
     .map(([id, cfg]) => ({value: id, label: cfg.label || id}));
 
   return (
-    <div className="flex min-h-0 flex-col gap-4">
-      <Tabs defaultValue="backends" className="flex flex-col gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <Tabs defaultValue="backends" className="flex min-h-0 flex-1 flex-col">
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <TabsList className="h-9 rounded-lg bg-secondary/70 p-1">
             <TabsTrigger
