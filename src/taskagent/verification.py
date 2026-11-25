@@ -133,6 +133,24 @@ _LOG_LIMIT = 2_000_000
 _LOG_RETENTION_DAYS = 7
 _LOG_MAX_FILES = 2_000
 
+# Ruff/mypy/pyright emit diagnostics as ``file:line:col: CODE message`` or
+# ``file:line:col: message``; the code token is uppercase/lower-case with
+# digits and dashes (e.g. F401, ISC004, invalid-syntax).  Keeping these as
+# structured lines matters: the raw ``tail`` is the *end* of the output, so
+# for long lint runs the actual error locations get cut off and the feedback
+# loop only sees help text / diff fragments it cannot act on.
+_DIAGNOSTIC_RE = re.compile(
+    r"^(?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+):\s+"
+    r"(?:(?P<code>[A-Za-z][A-Za-z0-9_-]*):\s+)?(?P<message>.+)$"
+)
+# Ruff's own format is two lines: ``CODE message`` then ``--> file:line:col``.
+_RUFF_LOCATION_RE = re.compile(r"-->\s+(?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+)")
+_RUFF_RULE_RE = re.compile(
+    r"^(?P<code>[A-Za-z][A-Za-z0-9_-]*)(?::\s+|\s+)(?P<message>\S.*)$"
+)
+_MAX_DIAGNOSTICS = 20
+_MAX_DIAGNOSTIC_MSG = 240
+
 
 # ── config ────────────────────────────────────────────────────────────────────
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -721,6 +739,72 @@ def _with_rlimits(
     )
 
 
+def extract_diagnostics(output: str) -> list[str]:
+    """Pull ``file:line:col: CODE message`` lines out of a failed check.
+
+    Lint/type-check output grows from the top: the actionable errors come
+    first, while ``tail`` (the last N chars) mostly holds help text and diff
+    suggestions.  The feedback loop needs the former.  Each returned line is
+    self-contained and capped in both count and length so it stays within the
+    feedback budget even for a noisy run.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str, line_no: str, col: str, code: str, message: str) -> bool:
+        message = _clip_diagnostic(message)
+        if not message:
+            return False
+        entry = (
+            f"{path}:{line_no}:{col}: "
+            f"{code + ': ' if code else ''}{message}"
+        )
+        if entry in seen:
+            return False
+        seen.add(entry)
+        found.append(entry)
+        return len(found) >= _MAX_DIAGNOSTICS
+
+    lines = (output or "").splitlines()
+    # Ruff: rule text on one line, ``--> file:line:col`` on the next.  Pair
+    # each location line with the nearest preceding non-decorative line.
+    for index, raw in enumerate(lines):
+        loc = _RUFF_LOCATION_RE.search(raw)
+        if not loc:
+            continue
+        rule = ""
+        for previous in reversed(lines[max(0, index - 4):index]):
+            candidate = previous.strip()
+            if not candidate or candidate.startswith(("|", "~", "^", "--")):
+                continue
+            rule = candidate
+            break
+        match = _RUFF_RULE_RE.match(rule)
+        code = match.group("code") if match else ""
+        message = match.group("message") if match else rule
+        if add(loc.group("file"), loc.group("line"), loc.group("col"), code, message):
+            break
+    if found:
+        return found
+
+    # Generic single-line form: mypy / pyright / flake8 style.
+    for raw in lines:
+        match = _DIAGNOSTIC_RE.match(raw.strip())
+        if not match:
+            continue
+        if add(
+            match.group("file"), match.group("line"), match.group("col"),
+            match.group("code") or "", match.group("message") or "",
+        ):
+            break
+    return found
+
+
+def _clip_diagnostic(text: str) -> str:
+    text = " ".join(str(text or "").split())
+    return text[:_MAX_DIAGNOSTIC_MSG] + "…" if len(text) > _MAX_DIAGNOSTIC_MSG else text
+
+
 def _run_check(
     worktree: Path,
     check: dict[str, Any],
@@ -782,6 +866,7 @@ def _run_check(
     output = _redact(stdout or "", _secret_values())
     exit_code = proc.returncode if proc is not None else None
     ok = (not spawn_error) and (not timed_out) and exit_code == 0
+    diagnostics = extract_diagnostics(output) if not ok else []
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{_safe_name(item_id)}-{_safe_name(str(check['id']))}.log"
@@ -801,6 +886,7 @@ def _run_check(
         "duration_s": round(time.monotonic() - started, 2),
         "error": spawn_error,
         "tail": output[-_TAIL_CHARS:],
+        "diagnostics": diagnostics,
         "log_path": str(log_path) if log_path else "",
     }
 

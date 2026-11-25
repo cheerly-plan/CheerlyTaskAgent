@@ -7,7 +7,7 @@ import json
 import pytest
 
 from taskagent.executor import build_prompt
-from taskagent.models import WorkItem
+from taskagent.models import LocalRepo, WorkItem
 from taskagent.spec import (
     TaskSpec,
     build_spec_prompt,
@@ -133,6 +133,25 @@ def test_build_prompt_injects_spec_and_feedback() -> None:
     assert "风险等级" in prompt
     assert "上一轮未通过" in prompt
     assert "test_login" in prompt
+
+
+def test_build_prompt_injects_python_version_constraint(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nrequires-python = ">=3.11"\n', encoding="utf-8"
+    )
+    item = _item()
+    item.repo = LocalRepo(path=str(tmp_path), origin="", name="demo")
+    prompt = build_prompt(item)
+    assert "运行环境约束" in prompt
+    assert "3.11" in prompt
+    assert "f-string" in prompt
+    assert "反斜杠" in prompt
+
+    # 3.12+ projects do not need the warning.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nrequires-python = ">=3.12"\n', encoding="utf-8"
+    )
+    assert "运行环境约束" not in build_prompt(item)
 
 
 def test_build_spec_prompt_has_injection_guard() -> None:

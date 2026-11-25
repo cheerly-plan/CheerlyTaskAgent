@@ -113,8 +113,16 @@ def _check_lines(gate: dict[str, Any]) -> list[str]:
         else:
             reason = f"{label} 失败（退出码 {check.get('exit_code')}）"
         lines.append(f"- {reason}")
+        # Prefer structured diagnostics: they carry file:line:col and the rule
+        # code from the *head* of lint output.  ``tail`` is the end of the
+        # stream (help text / diff fragments) and was what the agent used to
+        # see, which is why repeated rounds never fixed the real errors.
+        diagnostics = [str(d) for d in (check.get("diagnostics") or []) if str(d).strip()]
+        if diagnostics:
+            lines.append("  错误定位（逐条修复，修完重跑该检查）：")
+            lines.extend(f"  {_clip(d, 320)}" for d in diagnostics[:12])
         tail = _clip(check.get("tail") or check.get("output") or "", MAX_CHECK_TAIL)
-        if tail:
+        if tail and not diagnostics:
             lines.append("  输出节选：")
             lines.extend(f"  {line}" for line in tail.splitlines()[:20])
     return lines

@@ -1906,8 +1906,16 @@ class Scheduler:
                     result.verification = gate
                     if not gate.get("ok"):
                         verify_failure = str(gate.get("reason") or "未知原因")
+                        # Surface a blocking review too: otherwise a single
+                        # "ruff failed" line hides the fact that the diff was
+                        # also rejected for missing core functions.
+                        review_note = ""
+                        review = gate.get("review") if isinstance(gate.get("review"), dict) else {}
+                        if review.get("state") == "done" and review.get("verdict") == "block":
+                            review_reason = str(review.get("reason") or "").strip()
+                            review_note = "；评审 block" + (f"：{review_reason[:80]}" if review_reason else "")
                         round_note = f"（第 {result.rounds} 轮）" if result.rounds > 1 else ""
-                        item.stage = f"验证未通过{round_note}：{verify_failure}"
+                        item.stage = f"验证未通过{round_note}：{verify_failure}{review_note}"
                     else:
                         # 门禁通过：先原子合并，再在 worktree 的任务分支上提交交付物。
                         # 顺序不能反：提交会移动 worktree HEAD（三方合并的基线）。
