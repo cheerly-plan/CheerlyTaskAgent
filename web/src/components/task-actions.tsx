@@ -328,10 +328,7 @@ export function TaskActions({
   const overflow = limit > 0 && allActions.length > limit;
   const visibleLimit = Math.max(1, limit - (overflow ? 1 : 0));
   const rowClass = cn(
-    'flex flex-nowrap items-center justify-end whitespace-nowrap',
-    maxVisibleActions
-      ? 'gap-1 [&_button]:!size-6 [&_button_svg]:!size-3'
-      : 'gap-1.5',
+    'flex flex-nowrap items-center justify-end gap-1.5 whitespace-nowrap',
   );
 
   if (overflow) {

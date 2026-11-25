@@ -53,6 +53,11 @@ const AUTOMATION_KINDS = [
   {value: 'task', label: '任务'},
 ];
 
+// 四个面板共用同一套容器样式：统一顶部间距；只在选中时 flex，
+// 否则会覆盖 Radix 的 hidden，让空面板继续占位、把卡片挤到中间。
+const TAB_PANEL_CLASS =
+  'mt-0 flex flex-col gap-4 focus-visible:outline-none data-[state=active]:flex';
+
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
   enabled: false,
@@ -229,8 +234,8 @@ export function SettingsPage() {
     .map(([id, cfg]) => ({value: id, label: cfg.label || id}));
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <Tabs defaultValue="backends" className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className="flex min-h-0 flex-col gap-4">
+      <Tabs defaultValue="backends" className="flex flex-col gap-4">
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <TabsList className="h-9 rounded-lg bg-secondary/70 p-1">
             <TabsTrigger
@@ -264,11 +269,8 @@ export function SettingsPage() {
           </TabsList>
         </div>
 
-        <TabsContent
-          value="backends"
-          className="mt-0 flex min-h-0 flex-1 flex-col gap-4 focus-visible:outline-none"
-        >
-      <Card className="flex min-h-[200px] min-h-0 flex-col overflow-hidden">
+        <TabsContent value="backends" className={TAB_PANEL_CLASS}>
+      <Card className="flex min-h-[200px] flex-col overflow-hidden">
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
@@ -442,11 +444,8 @@ export function SettingsPage() {
       )}
         </TabsContent>
 
-        <TabsContent
-          value="automation"
-          className="mt-0 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 focus-visible:outline-none"
-        >
-      <Card className="shrink-0 p-4">
+        <TabsContent value="automation" className={TAB_PANEL_CLASS}>
+      <Card className="p-4">
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="任务类型" className="mb-0">
             <div className="flex flex-wrap gap-2">
@@ -489,7 +488,7 @@ export function SettingsPage() {
             />
           </Field>
         </div>
-        <div className="mt-4 flex flex-wrap items-center gap-5 text-[12px] text-muted">
+        <div className="mt-4 flex flex-wrap items-center gap-5 text-[12px] text-muted-foreground">
           <label className="flex items-center gap-2">
             <Switch
               checked={automation.decompose}
@@ -548,7 +547,7 @@ export function SettingsPage() {
             </Field>
           </div>
         </details>
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-[12px] text-muted">
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
           {openCircuits.length > 0 ? (
             <>
               <span>
@@ -566,11 +565,8 @@ export function SettingsPage() {
       </Card>
         </TabsContent>
 
-        <TabsContent
-          value="memory"
-          className="mt-0 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 focus-visible:outline-none"
-        >
-      <Card className="shrink-0 p-4">
+        <TabsContent value="memory" className={TAB_PANEL_CLASS}>
+      <Card className="p-4">
         {memoryState ? (
           <>
             <div className="mb-4 grid gap-3 text-[12px] md:grid-cols-3">
@@ -594,7 +590,7 @@ export function SettingsPage() {
               </div>
             </div>
             {memoryState.clusters.length > 0 ? (
-              <ul className="mb-4 space-y-1.5 text-[12px] text-muted">
+              <ul className="mb-4 space-y-1.5 text-[12px] text-muted-foreground">
                 {memoryState.clusters.slice(0, 5).map((cluster) => (
                   <li key={`${cluster.repo}-${cluster.signature}`} className="flex gap-2">
                     <span className="shrink-0 rounded bg-primary-muted px-1.5 py-0.5 text-[11px] text-accent-foreground">
@@ -626,11 +622,8 @@ export function SettingsPage() {
       </Card>
         </TabsContent>
 
-        <TabsContent
-          value="delivery"
-          className="mt-0 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 focus-visible:outline-none"
-        >
-      <Card className="shrink-0 p-4">
+        <TabsContent value="delivery" className={TAB_PANEL_CLASS}>
+      <Card className="p-4">
         <div className="grid gap-4 md:grid-cols-3">
           <Field label="交付模式" className="mb-0">
             <SelectField
