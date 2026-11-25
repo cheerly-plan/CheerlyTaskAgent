@@ -153,6 +153,19 @@ def test_diff_helpers_cover_modified_and_new_files(tmp_path: Path, real_repo: Pa
     assert stat["added"] >= 2
 
 
+def test_build_diff_includes_tail_of_large_new_file(tmp_path: Path, real_repo: Path):
+    """评审必须能看到新模块 400 行之后的核心实现，而非只有开头。"""
+    wt = _worktree(real_repo, tmp_path / "wt")
+    lines = [f"# line {i}" for i in range(600)] + ["def core_implementation():", "    return 42"]
+    (wt / "big.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    diff = build_diff(wt, ["big.py"])
+
+    assert "# line 0" in diff
+    assert "def core_implementation" in diff
+    assert "return 42" in diff
+
+
 # ── 自动执行引擎 ─────────────────────────────────────────────────────────────
 def _ready_item(store: TaskStore, repo: Path, title: str) -> WorkItem:
     item = WorkItem.create(title=title, description="x", kind="bug")

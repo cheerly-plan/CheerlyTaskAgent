@@ -64,8 +64,12 @@ def build_diff(worktree: str | Path, changed: list[str], limit: int = 200_000) -
     tracked_diff = _git(path, "diff", "HEAD", "--no-color", "--", *changed) if changed else ""
     if tracked_diff:
         parts.append(tracked_diff)
+    consumed = len(tracked_diff) + 1
     # New files are invisible to `git diff HEAD` until intent-to-add; show them
-    # explicitly instead of mutating the worktree.
+    # explicitly instead of mutating the worktree.  A fixed line cap used to
+    # hide the core of large new modules from the reviewer (e.g. an 1000-line
+    # module cut at line 400), so budget by characters instead and keep the
+    # whole file whenever it fits.
     for rel in changed:
         if f"+++ b/{rel}" in tracked_diff:
             continue
@@ -76,9 +80,13 @@ def build_diff(worktree: str | Path, changed: list[str], limit: int = 200_000) -
             content = target.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        lines = content.splitlines()
-        body = "\n".join(f"+{line}" for line in lines[:400])
-        parts.append(f"diff --git a/{rel} b/{rel}\nnew file\n--- /dev/null\n+++ b/{rel}\n{body}\n")
+        header = f"diff --git a/{rel} b/{rel}\nnew file\n--- /dev/null\n+++ b/{rel}\n"
+        body = "\n".join(f"+{line}" for line in content.splitlines())
+        remaining = max(0, limit - consumed - len(header) - 1)
+        if len(body) > remaining:
+            body = body[:remaining] + "\n…（新文件过长，已按字符预算截断）"
+        parts.append(header + body + "\n")
+        consumed += len(header) + len(body) + 2
     text = "\n".join(parts)
     if len(text) > limit:
         text = text[:limit] + f"\n…（diff 共 {len(text)} 字符，已截断）\n"
