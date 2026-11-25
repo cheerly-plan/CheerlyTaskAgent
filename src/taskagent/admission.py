@@ -34,6 +34,9 @@ VALID_KINDS = ("bug", "feature", "task")
 AUTOMATION_DEFAULTS: dict[str, Any] = {
     "allowed_kinds": [],      # 空 = bug / feature / task 全允许
     "repo_allowlist": [],     # 空 = 所有已映射仓库都允许
+    # 策略建议被人工确认后写入：即使 allowlist 为空（放行全部），名单里的
+    # 仓库也一律拒绝。默认空 = 原有行为完全不变。
+    "repo_denylist": [],
     "failure_threshold": 3,   # 同仓连续失败 N 次 -> 熔断
     "cooldown_minutes": 30,   # 熔断冷却时长；到期后放行一次试探
     "max_recoveries": 1,      # 服务重启后每个自动任务最多自动重排几次
@@ -49,6 +52,7 @@ def normalise_automation(value: Any) -> dict[str, Any]:
         **AUTOMATION_DEFAULTS,
         "allowed_kinds": list(AUTOMATION_DEFAULTS["allowed_kinds"]),
         "repo_allowlist": list(AUTOMATION_DEFAULTS["repo_allowlist"]),
+        "repo_denylist": list(AUTOMATION_DEFAULTS["repo_denylist"]),
     }
     if not isinstance(value, dict):
         return base
@@ -77,6 +81,17 @@ def normalise_automation(value: Any) -> dict[str, Any]:
                 repos.append(text)
         base["repo_allowlist"] = repos[:200]
 
+    raw_deny = value.get("repo_denylist")
+    if isinstance(raw_deny, str):
+        raw_deny = raw_deny.split(",")
+    if isinstance(raw_deny, (list, tuple)):
+        denied: list[str] = []
+        for repo in raw_deny:
+            text = str(repo or "").strip()
+            if text and text not in denied:
+                denied.append(text)
+        base["repo_denylist"] = denied[:200]
+
     def _int(key: str, low: int, high: int) -> int:
         try:
             number = int(value.get(key, base[key]))
@@ -103,6 +118,8 @@ class AutomationPolicy:
     max_recoveries: int = 1
     decompose: bool = False
     max_subtasks: int = 4
+    # 追加在末尾：插在中间会让外部位置参数构造静默错位到这个字段。
+    repo_denylist: tuple[str, ...] = ()
 
     @classmethod
     def from_settings(cls, value: Any) -> AutomationPolicy:
@@ -110,6 +127,7 @@ class AutomationPolicy:
         return cls(
             allowed_kinds=tuple(data["allowed_kinds"]),
             repo_allowlist=tuple(data["repo_allowlist"]),
+            repo_denylist=tuple(data["repo_denylist"]),
             failure_threshold=int(data["failure_threshold"]),
             cooldown_minutes=int(data["cooldown_minutes"]),
             max_recoveries=int(data["max_recoveries"]),
@@ -121,7 +139,11 @@ class AutomationPolicy:
         return not self.allowed_kinds or str(kind).lower() in self.allowed_kinds
 
     def allows_repo(self, repo: str) -> bool:
-        return not self.repo_allowlist or str(repo) in self.repo_allowlist
+        name = str(repo)
+        # 收紧后的仓库无论白名单是否为空，都先被拒绝。
+        if name in self.repo_denylist:
+            return False
+        return not self.repo_allowlist or name in self.repo_allowlist
 
 
 @dataclass

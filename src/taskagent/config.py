@@ -190,6 +190,7 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "automation": {
         "allowed_kinds": [],
         "repo_allowlist": [],
+        "repo_denylist": [],
         "failure_threshold": 3,
         "cooldown_minutes": 30,
         "max_recoveries": 1,
@@ -199,6 +200,15 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     # 方案层（复杂需求多方案 + 评分 + 人工确认）。默认关闭，保证既有
     # 简单需求的单方案执行路径与对外契约完全不变；见 plans.py。
     "plan_layer": normalise_plan_layer({}),
+    # 高频失败 -> 策略建议（见 policy.py）。内联文档化默认值以避免
+    # config <-> policy 顶层循环导入；实际加载时由环境变量播种（见
+    # load_ui_settings），UI 已保存的值再逐字段覆盖。
+    "policy": {
+        "threshold": 3,
+        "window_minutes": 60,
+        "cooldown_minutes": 1440,
+        "auto_apply": False,
+    },
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
@@ -444,6 +454,18 @@ class Settings:
     def ui_settings_path(self) -> Path:
         return self.data_dir / "settings.json"
 
+    @staticmethod
+    def _policy_defaults() -> dict[str, Any]:
+        """Env-seeded policy defaults; lazy import avoids a top-level cycle.
+
+        UI-saved values (when present) override these field by field, so
+        ``TASKAGENT_POLICY_*`` really takes effect in a running process while
+        explicit UI settings still win.
+        """
+        from .policy import PolicyConfig
+
+        return PolicyConfig.from_env().to_dict()
+
     def load_ui_settings(self) -> dict[str, Any]:
         """Return UI-managed settings, starting from env values on first run."""
         backends = _default_backends()
@@ -462,6 +484,7 @@ class Settings:
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
             "automation": normalise_automation(UI_SETTINGS_DEFAULTS["automation"]),
             "plan_layer": normalise_plan_layer(UI_SETTINGS_DEFAULTS["plan_layer"]),
+            "policy": self._policy_defaults(),
             "models": [],
             # 交付的「全局」= 系统设置里的默认值；首次运行时用环境变量播种。
             "delivery": {
@@ -512,6 +535,9 @@ class Settings:
                             data[key] = normalise_automation(value)
                         elif key == "plan_layer":
                             data[key] = normalise_plan_layer(value)
+                        elif key == "policy" and isinstance(value, dict):
+                            # 逐字段覆盖：未保存的字段继续取环境变量播种的默认值。
+                            data[key] = {**data[key], **value}
                         elif key == "data_source" and isinstance(value, dict):
                             data[key] = normalise_data_source(value)
                         elif key == "models" and isinstance(value, list):
@@ -625,6 +651,9 @@ class Settings:
                     {**data.get("plan_layer", {}), **value}
                     if isinstance(value, dict) else value
                 )
+            elif key == "policy" and isinstance(value, dict):
+                # 局部更新合并，保留环境变量播种的其余字段。
+                data["policy"] = {**data.get("policy", {}), **value}
             elif key == "data_source" and isinstance(value, dict):
                 # 单一对象：完整接管。空白密码保留旧值（UI 掩码显示）。
                 src = normalise_data_source(value)

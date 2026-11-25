@@ -41,6 +41,7 @@ from .plans import (
     normalise_plan_layer,
     reject_plan,
 )
+from .policy import PolicyAdvisor
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .repoprofile import RepoProfileStore, ensure_profiles
 from .report import parent_title_of, render_report
@@ -210,6 +211,8 @@ class UISettingsBody(BaseModel):
     delivery: dict[str, Any] = Field(default_factory=dict)
     # 自动执行准入/熔断（系统设置 → 自动执行）。
     automation: dict[str, Any] = Field(default_factory=dict)
+    # 高频失败策略建议（阈值/时间窗/冷却/自动应用开关）。
+    policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class AutoRunBody(BaseModel):
@@ -228,6 +231,25 @@ class MemoryClearBody(BaseModel):
     """Clear remembered outcomes for one repo, or everything when omitted."""
 
     repo: str | None = None
+
+
+class PolicyApplyBody(BaseModel):
+    """Human confirmation for a policy suggestion.
+
+    ``allowed_repos`` is kept for backwards compatibility but is never used as
+    the source of the effective allowlist: applying only removes the target
+    repo from the current config source, so this endpoint cannot widen access.
+    ``actor`` records who confirmed, for the apply audit trail.
+    """
+
+    allowed_repos: list[str] | None = None
+    actor: str = ""
+
+
+class PolicyRevertBody(BaseModel):
+    """Undo a mistaken confirmation; ``actor`` is recorded for the audit trail."""
+
+    actor: str = ""
 
 
 class DecomposeBody(BaseModel):
@@ -331,6 +353,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     circuit = CircuitBreaker(settings.data_dir / "automation-circuit.json")
     # 跨任务记忆：成功经验 + 失败聚类，执行前注入提示词。
     memory = TaskMemory(settings.data_dir / "memory.json")
+    # 从提示词记忆升级而来的策略建议：独立存储、需人工确认，绝不自动应用。
+    policy = PolicyAdvisor(settings.data_dir / "policy-advisor.json")
+
+    def remember_outcome(item: Any) -> None:
+        """One terminal-item hook: keep prompt memory intact + observe failures."""
+        memory.record(item)
+        try:
+            policy.observe(item, settings=settings)
+        except Exception:  # 策略记账失败不能影响原有记忆写入
+            logger.warning("策略建议记账失败：%s", getattr(item, "id", ""), exc_info=True)
 
     # 启动时就用「已保存的 UI 设置」而不是环境变量：保存过的并发数/后端配置
     # 重启后应当继续生效，而不是被 env 默认值覆盖。
@@ -415,7 +447,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
         on_finished=backfill_tapd,
-        on_item_done=memory.record,
+        on_item_done=remember_outcome,
         on_children_done=backfill_children,
     )
     # A server restart kills in-flight asyncio tasks. Auto tasks are re-queued
@@ -853,7 +885,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.ctx = SimpleNamespace(
         settings=settings, store=store, gitmap=gitmap, projects=projects,
         browser=browser, events=events, executor=executor, executors=executor_registry,
-        scheduler=scheduler,
+        scheduler=scheduler, memory=memory, policy=policy, automation=automation,
     )
 
     # 前端由 `web/` 的 Vite 工程构建到 web_dir；产物不入仓，因此首次运行需先 build。
@@ -945,6 +977,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_memory_clear(body: MemoryClearBody | None = None) -> dict[str, Any]:
         repo = (body.repo or "").strip() if body is not None else ""
         return {"removed": memory.clear(repo or None)}
+
+    @app.get("/api/policy/suggestions")
+    def api_policy_suggestions(repo: str = "") -> dict[str, Any]:
+        """策略建议只读查询：完整建议内容 + 当前生效配置。"""
+        name = (repo or "").strip() or None
+        return {
+            "config": policy.config(settings).to_dict(),
+            "suggestions": policy.suggestions(name),
+        }
+
+    @app.post("/api/policy/suggestions/{suggestion_id}/apply")
+    def api_policy_apply(
+        suggestion_id: str,
+        body: PolicyApplyBody | None = None,
+    ) -> dict[str, Any]:
+        """显式确认入口：只有这里会更新生效白名单，并立刻被现有准入拒绝命中仓库。"""
+        allowed = body.allowed_repos if body is not None else None
+        actor = (body.actor if body is not None else "") or "operator"
+        result = policy.apply(
+            suggestion_id, allowed_repos=allowed, settings=settings,
+            source="api", actor=actor,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=404, detail=str(result.get("error") or "建议不存在"))
+        # 立即刷新运行期执行器/并发；准入策略由 AutomationEngine 每次读取最新设置。
+        apply_runtime_settings()
+        return result
+
+    @app.post("/api/policy/suggestions/{suggestion_id}/revert")
+    def api_policy_revert(
+        suggestion_id: str,
+        body: PolicyRevertBody | None = None,
+    ) -> dict[str, Any]:
+        """人工撤销误确认：恢复应用前白名单并移除 denylist 条目。"""
+        actor = (body.actor if body is not None else "") or "operator"
+        result = policy.revert(
+            suggestion_id, settings=settings, source="api", actor=actor,
+        )
+        if not result.get("ok"):
+            error = str(result.get("error") or "建议不存在")
+            status = 404 if error == "建议不存在" else 400
+            raise HTTPException(status_code=status, detail=error)
+        apply_runtime_settings()
+        return result
 
     def apply_runtime_settings() -> None:
         """Rebuild executors and concurrency from the saved UI settings.
