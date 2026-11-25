@@ -32,6 +32,14 @@ from .models import (
     SourceType,
     WorkItem,
 )
+from .plans import (
+    ERR_PLAN_MISMATCH,
+    ERR_PLAN_NOT_CONFIRMED,
+    PlanCandidate,
+    PlanError,
+    is_complex,
+    normalise_plan_layer,
+)
 from .projectmap import ProjectRegistry
 from .report import parent_context_of, parent_title_of, write_report
 from .sources import RawItem, parse_raw
@@ -84,6 +92,10 @@ class SchedulerSettings:
     backup_max_per_task: int = 5
     # 自动执行准入/熔断/重排配置（系统设置 → 自动执行）。None = 用默认值。
     automation_policy: Callable[[], dict[str, Any]] | None = None
+    # 方案层：开启后复杂需求必须存在 confirmed 方案才能执行。
+    # None / 默认配置 = 关闭，沿用既有单方案执行路径。
+    plan_store: Any | None = None
+    plan_policy: Callable[[], dict[str, Any]] | None = None
     # 执行租约 TTL（秒）：心跳每 ttl/3 续期；进程崩溃后到期即可被重排。
     lease_ttl_s: float = 180.0
     # 跨任务记忆召回：执行前调用，返回 {similar, failures, stats} 注入提示词。
@@ -688,6 +700,57 @@ class Scheduler:
             logger.info("启动恢复：接上 %d 个待等待的 CI", len(resumed))
         return resumed
 
+    # ── 方案层硬门禁 ───────────────────────────────────────────────────────────
+    def _plan_layer_config(self) -> dict[str, Any]:
+        raw: dict[str, Any] = {}
+        if self.settings.plan_policy is not None:
+            try:
+                raw = self.settings.plan_policy() or {}
+            except Exception as error:  # 配置读取失败必须 fail closed
+                raise PlanError(
+                    ERR_PLAN_NOT_CONFIRMED, f"读取方案层配置失败，禁止执行：{error}"
+                ) from error
+        return normalise_plan_layer(raw)
+
+    def _plan_gate(self, item: WorkItem) -> PlanCandidate | None:
+        """执行前硬门禁；只读检查，不写存储、不入队、不调用执行器。
+
+        返回 ``None`` 表示方案层关闭或该需求不复杂，继续走原有单方案路径。
+        复杂需求没有 ``confirmed`` 方案时抛 ``PLAN_NOT_CONFIRMED``；确认后
+        把唯一 confirmed 的 plan_id 与步骤绑到 item，保证只执行那一个方案。
+        """
+        cfg = self._plan_layer_config()
+        store = self.settings.plan_store
+        # 「需要确认」在生成方案时固化到 item.plan_required，并以磁盘上是否
+        # 已有方案文件兜底。绝不在这里按当前 spec/仓库映射重算复杂度：否则
+        # 执行前删掉验收项、补上映射或关掉开关就能绕过门禁。
+        has_plans = bool(store.list_by_requirement(item.id)) if store is not None else False
+        needs_plan = (
+            item.plan_required
+            or has_plans
+            or (cfg["enabled"] and is_complex(item, cfg))
+        )
+        if not needs_plan:
+            return None
+        if store is None:
+            # 开启了方案层却没给存储：宁可拒绝，也不能静默放行执行。
+            raise PlanError(ERR_PLAN_NOT_CONFIRMED, "方案层已开启但未配置方案存储")
+        confirmed = store.confirmed_plan(item.id)
+        if confirmed is None:
+            raise PlanError(
+                ERR_PLAN_NOT_CONFIRMED,
+                f"复杂需求 {item.id} 尚无 confirmed 方案，禁止执行",
+            )
+        if item.selected_plan_id and item.selected_plan_id != confirmed.plan_id:
+            raise PlanError(
+                ERR_PLAN_MISMATCH,
+                f"已锁定方案 {item.selected_plan_id} 与 confirmed 方案 "
+                f"{confirmed.plan_id} 不一致",
+            )
+        item.selected_plan_id = confirmed.plan_id
+        item.plan = confirmed.steps_text()
+        return confirmed
+
     # ── run / cancel ───────────────────────────────────────────────────────────
     def run(
         self,
@@ -702,6 +765,8 @@ class Scheduler:
         item = self.store.get(item_id)
         if item is None:
             raise ValueError(f"unknown item {item_id!r}")
+        # 硬门禁必须位于任何状态变更 / 落盘 / 入队 / 工具调用之前。
+        self._plan_gate(item)
         if item.is_container:
             raise ValueError("父需求容器只用于分组，不进入执行队列")
         if item.parent_ref:
@@ -776,6 +841,8 @@ class Scheduler:
         item = self.store.get(item_id)
         if item is None:
             raise ValueError(f"unknown item {item_id!r}")
+        # 无人值守/人工勾选的自动链路同样受方案层门禁约束（无副作用拒绝）。
+        self._plan_gate(item)
         if item.repo is None:
             raise ValueError("no local repo mapped; map the item first")
         if exec_mode not in {"dry-run", "apply"}:
@@ -787,7 +854,8 @@ class Scheduler:
         item.exec_mode = exec_mode
         # dry-run 永远不进入合并路径；apply 才需要原子合并。
         item.hold_merge = exec_mode == "apply"
-        if plan:
+        if plan and not item.selected_plan_id:
+            # 方案层已绑定 confirmed 计划时，不允许外部 plan 覆盖它。
             item.plan = plan
         # dry-run 不算“已派发”：它没改代码，评估后切到 apply 还应能补跑一次。
         item.auto_dispatched_at = _utcnow() if exec_mode == "apply" else ""

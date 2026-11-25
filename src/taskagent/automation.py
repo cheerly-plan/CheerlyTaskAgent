@@ -35,6 +35,7 @@ from .events import Event
 from .llm import AgentLLM, AgentModel, resolve_agent_model
 from .models import ItemKind, ItemStatus, WorkItem
 from .planner import Plan, build_short_plan, plan_repo
+from .plans import PlanError
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,15 @@ class AutomationEngine:
                     fresh.id, plan=plan_text, exec_mode=mode, manual=bool(force)
                 )
                 started.append(fresh.id)
+            except PlanError as error:
+                # 方案门禁拒绝：跳过并记录事件，不让自动调度循环因异常中断。
+                code = getattr(error, "code", "")
+                self.scheduler.events.publish(Event("plan_gate_skipped", fresh.id, {
+                    "code": code, "reason": error.message,
+                }))
+                skipped.append({
+                    "id": fresh.id, "reason": error.message, "code": code,
+                })
             except ValueError as error:
                 skipped.append({"id": fresh.id, "reason": str(error)})
 

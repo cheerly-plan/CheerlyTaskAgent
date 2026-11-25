@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .admission import normalise_automation
+from .plans import normalise_plan_layer
 
 # NOTE: model IDs are no longer hard-coded here. The supported-model list is
 # discovered at runtime from the default backend's CLI ``--help`` output (see
@@ -195,6 +196,9 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
         "decompose": False,
         "max_subtasks": 4,
     },
+    # 方案层（复杂需求多方案 + 评分 + 人工确认）。默认关闭，保证既有
+    # 简单需求的单方案执行路径与对外契约完全不变；见 plans.py。
+    "plan_layer": normalise_plan_layer({}),
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
@@ -369,6 +373,11 @@ class Settings:
         return self.data_dir / "worktrees"
 
     @property
+    def plans_dir(self) -> Path:
+        """方案层持久化目录（只新增文件，不改既有任务文件格式）。"""
+        return self.data_dir / "plans"
+
+    @property
     def web_dir(self) -> Path:
         return Path(__file__).parent / "web"
 
@@ -452,6 +461,7 @@ class Settings:
             "data_source": dict(UI_SETTINGS_DEFAULTS["data_source"]),
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
             "automation": normalise_automation(UI_SETTINGS_DEFAULTS["automation"]),
+            "plan_layer": normalise_plan_layer(UI_SETTINGS_DEFAULTS["plan_layer"]),
             "models": [],
             # 交付的「全局」= 系统设置里的默认值；首次运行时用环境变量播种。
             "delivery": {
@@ -500,6 +510,8 @@ class Settings:
                             )
                         elif key == "automation":
                             data[key] = normalise_automation(value)
+                        elif key == "plan_layer":
+                            data[key] = normalise_plan_layer(value)
                         elif key == "data_source" and isinstance(value, dict):
                             data[key] = normalise_data_source(value)
                         elif key == "models" and isinstance(value, list):
@@ -605,6 +617,12 @@ class Settings:
                 # 局部更新合并到现有配置，避免只改阈值就把白名单清空。
                 data["automation"] = normalise_automation(
                     {**data.get("automation", {}), **value}
+                    if isinstance(value, dict) else value
+                )
+            elif key == "plan_layer":
+                # 局部更新：只改开关/阈值不会把评分权重清空。
+                data["plan_layer"] = normalise_plan_layer(
+                    {**data.get("plan_layer", {}), **value}
                     if isinstance(value, dict) else value
                 )
             elif key == "data_source" and isinstance(value, dict):

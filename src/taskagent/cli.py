@@ -11,6 +11,7 @@ from .backends import build_registry
 from .config import Settings
 from .events import EventBus
 from .gitmap import GitProjectRegistry
+from .plans import PlanError, PlanStore
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .reviewer import llm_from_settings as review_llm
 from .scheduler import Scheduler, SchedulerSettings
@@ -41,6 +42,8 @@ def _build(settings: Settings):
             backup_retention_days=settings.backup_retention_days,
             backup_max_per_task=settings.backup_max_per_task,
             review_provider=lambda: review_llm(settings),
+            plan_store=PlanStore(settings.plans_dir),
+            plan_policy=lambda: settings.load_ui_settings().get("plan_layer", {}),
         ),
         projects=projects,
     )
@@ -139,7 +142,11 @@ async def demo(settings: Settings) -> None:
         if item.repo is None:
             print(f"  [跳过] {item.title[:40]} — 无本地仓库映射")
             continue
-        scheduler.run(item.id, exec_mode="dry-run")
+        try:
+            scheduler.run(item.id, exec_mode="dry-run")
+        except PlanError as error:
+            # 方案门禁拒绝：跳过这一条，demo 继续跑其余任务。
+            print(f"  [跳过] {item.title[:40]} — 方案未确认（{error.code}）")
 
     for _ in range(100):
         await asyncio.sleep(0.05)

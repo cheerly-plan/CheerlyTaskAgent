@@ -285,6 +285,12 @@ class WorkItem:
     hold_merge: bool = False
     merge_state: str = ""            # "" | "merged" | "blocked"（自动合并结果）
     plan: str = ""                   # LLM/规则规划出的执行步骤，注入提示词
+    # 方案层：复杂需求确认后锁定的 plan_id。空 = 未走方案层（沿用单方案路径）。
+    # 执行时只执行该 plan 的步骤，未确认的候选不会进入执行。
+    selected_plan_id: str = ""
+    # 生成方案时固化的「必须人工确认」标记。之后即便关掉开关或改小 spec，
+    # 执行门禁仍按此标记拒绝，避免运行前动态重算复杂度绕过确认。
+    plan_required: bool = False
     parent_context: str = ""         # 父需求标题+描述快照，执行时注入子任务提示词
     spec: dict[str, Any] = field(default_factory=dict)  # TaskSpec（目标/验收/约束/风险）
     feedback: str = ""               # 上一轮验证/评审未通过的原因，注入下一轮提示词
@@ -406,6 +412,7 @@ class WorkItem:
             # tell "already executed apply" from "not run yet" without the
             # full result payload.
             "executed": bool(self.result and not self.result.dry_run),
+            "selected_plan_id": self.selected_plan_id,
             "created_at": self.created_at,
         }
 
@@ -442,6 +449,8 @@ class WorkItem:
             "hold_merge": self.hold_merge,
             "merge_state": self.merge_state,
             "plan": self.plan,
+            "selected_plan_id": self.selected_plan_id,
+            "plan_required": self.plan_required,
             "parent_context": self.parent_context,
             "spec": dict(self.spec),
             "feedback": self.feedback,
@@ -502,6 +511,8 @@ class WorkItem:
             hold_merge=bool(data.get("hold_merge", False)),
             merge_state=str(data.get("merge_state", "") or ""),
             plan=str(data.get("plan", "") or ""),
+            selected_plan_id=str(data.get("selected_plan_id", "") or ""),
+            plan_required=bool(data.get("plan_required", False)),
             parent_context=str(data.get("parent_context", "") or ""),
             spec=dict(data.get("spec") or {}),
             feedback=str(data.get("feedback", "") or ""),

@@ -26,6 +26,21 @@ from .events import Event, EventBus, sse_frame
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
 from .memory import TaskMemory
+from .plans import (
+    ERR_INVALID_TRANSITION,
+    ERR_PLAN_CONFLICT,
+    ERR_PLAN_MISMATCH,
+    ERR_PLAN_NOT_CONFIRMED,
+    ERR_PLAN_NOT_FOUND,
+    PlanError,
+    PlanStatus,
+    PlanStore,
+    confirm_plan,
+    generate_candidates,
+    is_complex,
+    normalise_plan_layer,
+    reject_plan,
+)
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .repoprofile import RepoProfileStore, ensure_profiles
 from .report import parent_title_of, render_report
@@ -46,6 +61,26 @@ from .verifyconfig import (
 )
 
 logger = logging.getLogger("taskagent")
+
+
+def _plan_http_error(error: PlanError) -> HTTPException:
+    """把方案层错误码映射为可断言的 HTTP 状态 + detail.code。"""
+    conflict = {
+        ERR_PLAN_NOT_CONFIRMED,
+        ERR_PLAN_MISMATCH,
+        ERR_INVALID_TRANSITION,
+        ERR_PLAN_CONFLICT,
+    }
+    if error.code in conflict:
+        status = 409
+    elif error.code == ERR_PLAN_NOT_FOUND:
+        status = 404
+    else:
+        status = 400
+    return HTTPException(
+        status_code=status,
+        detail={"code": error.code, "message": error.message},
+    )
 
 
 class ImportBody(BaseModel):
@@ -81,6 +116,10 @@ class RunBody(BaseModel):
     approved: bool = False
     model: str | None = None
     executor: str | None = None
+
+
+class PlanDecisionBody(BaseModel):
+    operator: str = ""   # 留空 = 复用数据源里配置的 current_user
 
 
 class CommitBody(BaseModel):
@@ -264,6 +303,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings.worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     store = TaskStore(settings.tasks_dir)
+    # 方案层独立存储：只新增 <data_dir>/plans/*.json，不改任务文件既有字段语义。
+    plan_store = PlanStore(settings.plans_dir)
     gitmap = GitProjectRegistry(list(settings.project_roots))
     gitmap.scan()
     project_store = ProjectMappingStore(
@@ -365,6 +406,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             delivery_globals=lambda: settings.load_ui_settings().get("delivery", {}),
             # 「系统设置 → 自动执行」：准入/熔断/重启重排，同样即时生效。
             automation_policy=lambda: settings.load_ui_settings().get("automation", {}),
+            # 方案层：开关/阈值即时生效；未确认的复杂需求一律拒绝执行。
+            plan_store=plan_store,
+            plan_policy=lambda: settings.load_ui_settings().get("plan_layer", {}),
             lease_ttl_s=settings.lease_ttl_s,
             memory_provider=memory.recall,
         ),
@@ -1174,6 +1218,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     executor=body.executor, model=body.model,
                 )
             return item.to_dict()
+        except PlanError as error:
+            raise _plan_http_error(error) from error
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 
@@ -1383,6 +1429,134 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "item not found")
         return item.to_dict()
 
+    # ── 方案层：多候选方案 + 评分 + 人工确认 ──────────────────────────────────
+    def _plan_settings() -> dict[str, Any]:
+        return normalise_plan_layer(settings.load_ui_settings().get("plan_layer", {}))
+
+    def _plan_operator(operator: str) -> str:
+        # 复用现有身份体系：数据源里配置的 current_user；不新增鉴权入口。
+        # 本应用是无 HTTP 鉴权的本地工具，请求体 operator 仅作为本地 UI 的
+        # 显式署名；留空时一律回落到配置身份，不再使用硬编码的假用户名。
+        configured = str(
+            settings.load_ui_settings().get("tapd", {}).get("current_user") or ""
+        ).strip()
+        return operator.strip() or configured
+
+    @app.get("/api/items/{item_id}/plans")
+    def api_list_plans(item_id: str) -> dict[str, Any]:
+        """列出同一需求的全部候选方案，按 score 降序（新端点，不改旧契约）。"""
+        item = store.get(item_id)
+        if item is None:
+            raise HTTPException(404, "任务不存在")
+        cfg = _plan_settings()
+        plans = plan_store.list_by_requirement(item_id)
+        confirmed = next(
+            (plan for plan in plans if plan.status == PlanStatus.CONFIRMED), None
+        )
+        return {
+            "requirement_id": item_id,
+            "plan_layer_enabled": cfg["enabled"],
+            "complex": is_complex(item, cfg),
+            "confirmed_plan_id": confirmed.plan_id if confirmed else "",
+            "plans": [plan.to_dict() for plan in plans],
+        }
+
+    @app.post("/api/items/{item_id}/plans/generate", status_code=201)
+    def api_generate_plans(item_id: str) -> dict[str, Any]:
+        """人工触发生成 ≥2 个候选方案；纯规则生成，不调用模型或付费服务。"""
+        item = store.get(item_id)
+        if item is None:
+            raise HTTPException(404, "任务不存在")
+        if item.is_container:
+            raise HTTPException(400, "父需求容器不生成执行方案")
+        existing = plan_store.list_by_requirement(item_id)
+        if any(plan.status != PlanStatus.PENDING_CONFIRMATION for plan in existing):
+            # 已有 rejected/superseded/confirmed = 人工已决策过。全量覆盖会把
+            # 这些终态静默重置回 pending，等价于绕过状态机白名单。
+            raise HTTPException(
+                409,
+                {
+                    "code": ERR_PLAN_CONFLICT,
+                    "message": "已有人工决策的候选方案，不能重新生成",
+                },
+            )
+        cfg = _plan_settings()
+        plans = generate_candidates(item, cfg)
+        plan_store.save(plans)
+        # 固化「必须人工确认」：之后改 spec、补仓库映射或关开关都无法放行。
+        if not item.plan_required:
+            item.plan_required = True
+            item.touch()
+            store.save(item)
+        events.publish(Event("plans_generated", item_id, {
+            "count": len(plans), "complex": is_complex(item, cfg),
+        }))
+        return {
+            "requirement_id": item_id,
+            "complex": is_complex(item, cfg),
+            "plans": [plan.to_dict() for plan in plans],
+        }
+
+    @app.post("/api/items/{item_id}/plans/{plan_id}/confirm")
+    def api_confirm_plan(
+        item_id: str, plan_id: str, body: PlanDecisionBody | None = None
+    ) -> dict[str, Any]:
+        """人工确认唯一方案；同需求其余候选自动 superseded，记录操作人与时间。"""
+        # 先校验需求存在，再决策：错误路径不得先改方案存储再报 404。
+        item = store.get(item_id)
+        if item is None:
+            raise HTTPException(404, "任务不存在")
+        try:
+            confirmed, plans = confirm_plan(
+                plan_store,
+                item_id,
+                plan_id,
+                operator=_plan_operator(body.operator if body else ""),
+            )
+        except PlanError as error:
+            raise _plan_http_error(error) from error
+        # 幂等：重复确认不重复写任务、不触发任何执行。
+        if item.selected_plan_id != confirmed.plan_id:
+            item.selected_plan_id = confirmed.plan_id
+            item.plan = confirmed.steps_text()
+            store.save(item)
+        events.publish(Event("plan_confirmed", item_id, {
+            "plan_id": confirmed.plan_id,
+            "operator": confirmed.operator,
+            "decided_at": confirmed.decided_at,
+        }))
+        return {
+            "plan": confirmed.to_dict(),
+            "plans": [plan.to_dict() for plan in plans],
+        }
+
+    @app.post("/api/items/{item_id}/plans/{plan_id}/reject")
+    def api_reject_plan(
+        item_id: str, plan_id: str, body: PlanDecisionBody | None = None
+    ) -> dict[str, Any]:
+        """人工驳回单个候选方案；不改变同需求其他候选的状态。"""
+        # 先校验需求存在，再决策：错误路径不得先改方案存储再报 404。
+        if store.get(item_id) is None:
+            raise HTTPException(404, "任务不存在")
+        try:
+            rejected, plans = reject_plan(
+                plan_store,
+                item_id,
+                plan_id,
+                operator=_plan_operator(body.operator if body else ""),
+            )
+        except PlanError as error:
+            raise _plan_http_error(error) from error
+        events.publish(Event("plan_rejected", item_id, {
+            "plan_id": rejected.plan_id,
+            "operator": rejected.operator,
+            "decided_at": rejected.decided_at,
+        }))
+        return {
+            "plan": rejected.to_dict(),
+            "plans": [plan.to_dict() for plan in plans],
+        }
+
     @app.post("/api/items/{item_id}/map")
     def api_map_item(item_id: str, body: MapBody) -> dict[str, Any]:
         try:
@@ -1481,6 +1655,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 item_id, exec_mode=body.exec_mode, approved=body.approved,
                 executor=body.executor, model=body.model, _model_supplied=supplied,
             ).summary()
+        except PlanError as error:
+            # 未确认方案：409 + detail.code 可断言；此时调度器未落盘也未入队。
+            raise _plan_http_error(error) from error
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
 
