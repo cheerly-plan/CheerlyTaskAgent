@@ -66,7 +66,7 @@ export function TaskCard({
           ) : (
             <>
               <MergeBadge state={item.merge_state} />
-              <StatusBadge status={item.status} />
+              {item.merge_state === 'blocked' ? null : <StatusBadge status={item.status} />}
             </>
           )}
         </span>

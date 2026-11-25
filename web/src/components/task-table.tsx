@@ -340,7 +340,9 @@ export function TaskTable({
             <Badge variant="secondary">父需求</Badge>
           ) : (
             <div className="flex flex-wrap items-center gap-1.5">
-              <StatusBadge status={info.row.original.status} />
+              {info.row.original.merge_state === 'blocked' ? null : (
+                <StatusBadge status={info.row.original.status} />
+              )}
               <MergeBadge state={info.row.original.merge_state} />
             </div>
           ),

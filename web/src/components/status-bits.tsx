@@ -20,7 +20,15 @@ export function StatusBadge({status, className}: {status: Status; className?: st
 
 export function MergeBadge({state}: {state?: string}) {
   // 成功合并是正常结果，不再额外打「已合并」；只有没合进去的才需要提示。
-  if (state === 'blocked') return <Badge variant="destructive">合并冲突</Badge>;
+  // 这个状态已经覆盖了底层执行状态（执行成功但没能写回主仓），调用方
+  // 会同时隐藏 StatusBadge，避免出现「失败 + 合并冲突」两个徽章。
+  if (state === 'blocked') {
+    return (
+      <Badge variant="destructive" title="执行已成功，但改动未能合并进主仓库，需人工处理">
+        合并冲突
+      </Badge>
+    );
+  }
   return null;
 }
 
