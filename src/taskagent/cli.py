@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from .backends import build_registry
 from .config import Settings
@@ -155,12 +158,95 @@ async def demo(settings: Settings) -> None:
     print("\ndemo done. 用 `taskagent serve` 打开界面查看完整报告。")
 
 
-def main() -> None:
+# ── spec 断言：可复现命令 ──────────────────────────────────────────────────────
+def _read_spec(path: str | None) -> dict[str, Any]:
+    """读取 spec JSON；同时接受 ``{"spec": {...}}`` 形式的工作项文件。"""
+    raw = sys.stdin.read() if not path or path == "-" else Path(path).expanduser().read_text(
+        encoding="utf-8"
+    )
+    try:
+        data = json.loads(raw)
+    except ValueError as error:
+        raise SystemExit(f"spec 不是合法 JSON：{error}") from error
+    if not isinstance(data, dict):
+        raise SystemExit("spec 必须是 JSON 对象")
+    if "spec" in data and "acceptance" not in data and isinstance(data["spec"], dict):
+        return data["spec"]
+    return data
+
+
+def gen_tests(args: argparse.Namespace) -> int:
+    """从 spec 生成确定性用例；同一输入两次输出字节级一致。"""
+    from .assertions import compile_spec, render_cases
+
+    compilation = compile_spec(_read_spec(args.spec), spec_id=args.spec_id or "")
+    text = render_cases(compilation)
+    if args.out:
+        Path(args.out).expanduser().write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def spec_gate(args: argparse.Namespace) -> int:
+    """只按 spec 用例结果判定，输出机器可读 JSON 报告并返回约定退出码。"""
+    from .assertions import gate_exit_code, run_assertion_gate
+
+    config: dict[str, Any] = {"enabled": True}
+    if args.assertions_config:
+        try:
+            loaded = json.loads(
+                Path(args.assertions_config).expanduser().read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as error:
+            raise SystemExit(f"断言配置读取失败：{error}") from error
+        if isinstance(loaded, dict):
+            config.update(loaded)
+    if args.unverified_policy:
+        config["unverified_policy"] = args.unverified_policy
+    if args.timeout is not None:
+        config["timeout_s"] = args.timeout
+
+    report = run_assertion_gate(
+        _read_spec(args.spec),
+        worktree=args.worktree or ".",
+        assertions=config,
+        spec_id=args.spec_id or "",
+    )
+    text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if args.out:
+        Path(args.out).expanduser().write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return gate_exit_code(report)
+
+
+_GEN_TESTS_COMMANDS = ("gen-tests", "spec-cases", "spec-tests", "compile-spec")
+_SPEC_GATE_COMMANDS = ("spec-gate", "assert-gate")
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(prog="taskagent")
-    parser.add_argument("command", choices=["serve", "scan", "demo", "web-build"])
+    parser.add_argument(
+        "command",
+        choices=["serve", "scan", "demo", "web-build",
+                 *_GEN_TESTS_COMMANDS, *_SPEC_GATE_COMMANDS],
+    )
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--spec", default=None, help="spec JSON 文件；'-' 表示 stdin")
+    parser.add_argument("--spec-id", default=None)
+    parser.add_argument("--out", default=None, help="报告/用例输出路径（默认 stdout）")
+    parser.add_argument("--worktree", default=None, help="用例执行的隔离目录")
+    parser.add_argument("--assertions-config", default=None, help="断言门禁配置 JSON")
+    parser.add_argument("--unverified-policy", default=None)
+    parser.add_argument("--timeout", type=float, default=None, help="单用例超时秒数")
     args = parser.parse_args()
+
+    if args.command in _GEN_TESTS_COMMANDS:
+        return gen_tests(args)
+    if args.command in _SPEC_GATE_COMMANDS:
+        return spec_gate(args)
 
     base = Settings.from_env()
     # Replace only the CLI-overridable fields. Hand-assembling Settings here
@@ -170,14 +256,14 @@ def main() -> None:
 
     if args.command == "web-build":
         build_web()
-        return
-    if args.command == "serve":
+    elif args.command == "serve":
         serve(settings)
     elif args.command == "scan":
         scan(settings)
     else:
         asyncio.run(demo(settings))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

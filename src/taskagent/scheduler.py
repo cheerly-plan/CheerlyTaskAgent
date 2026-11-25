@@ -50,6 +50,10 @@ class SchedulerSettings:
     verify_config_file: Path | None = None
     verify_default_timeout_s: int = 300
     verify_total_timeout_s: int = 900
+    # 把 spec 验收标准编译为可执行断言并据此判定（默认关闭，保持旧门禁行为）。
+    # 也可在 verify.json 的 repos.<name>.assertions 中开启/覆盖。
+    assertions_enabled: bool = False
+    assertions_config: dict[str, Any] | None = None
     # LLM 代码评审（仅自动链路）。provider 延迟调用，UI 里配置的模型改完即生效；
     # None = 未启用评审。评审结论并入上面的验证门禁。
     review_provider: Callable[[], Any] | None = None
@@ -1553,17 +1557,31 @@ class Scheduler:
         cannot freeze the event loop (SSE / UI / other tasks).
         """
         from .reviewer import apply_review, review_enabled
-        from .verification import gc_verification_logs, run_gate
+        from .verification import gc_verification_logs, load_config, repo_config, run_gate
 
         config_file = self.settings.verify_config_file or (
             self.settings.reports_dir.parent / "verify.json"
         )
         repo = item.repo
+        repo_name = repo.name if repo else ""
+        repo_path = repo.path if repo else ""
+        configured = repo_config(load_config(config_file), repo_name, repo_path).get("assertions")
+        assertions = dict(self.settings.assertions_config or {})
+        assertions_enabled = (
+            self.settings.assertions_enabled
+            or bool(isinstance(configured, dict) and configured.get("enabled"))
+            or bool(assertions.get("enabled"))
+        )
+        if assertions_enabled:
+            assertions["enabled"] = True
+        else:
+            # 未显式开启时不传 spec/配置，避免仅设 timeout_s 就意外改变默认门禁。
+            assertions = {}
         try:
             outcome = await asyncio.to_thread(
                 run_gate,
-                repo_name=repo.name if repo else "",
-                repo_path=repo.path if repo else "",
+                repo_name=repo_name,
+                repo_path=repo_path,
                 worktree=result.worktree,
                 changed=list(result.changed_files),
                 item_id=item.id,
@@ -1571,11 +1589,17 @@ class Scheduler:
                 data_dir=self.settings.reports_dir.parent,
                 default_timeout_s=self.settings.verify_default_timeout_s,
                 total_timeout_s=self.settings.verify_total_timeout_s,
+                spec=item.spec if assertions_enabled else None,
+                assertions=assertions or None,
             )
-            # LLM 评审结论并入门禁：block / 大 diff / 高风险转人工，不自动合并。
+            # 断言门禁开启时，verdict 只由用例结果决定；LLM 评审降级为参考信息。
+            assertion_mode = bool(
+                (outcome.get("assertions") or {}).get("enabled")
+                if isinstance(outcome.get("assertions"), dict) else False
+            )
             if review_enabled():
                 review = await self._review(item, result)
-                outcome = apply_review(outcome, review)
+                outcome = apply_review(outcome, review, deciding=not assertion_mode)
             # Keep the verification log directory bounded; best effort.
             await asyncio.to_thread(
                 gc_verification_logs, self.settings.reports_dir.parent
