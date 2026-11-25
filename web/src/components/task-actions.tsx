@@ -181,8 +181,11 @@ export function TaskActions({
   const terminal = TERMINAL_STATUSES.includes(item.status) && !dryDone && !retryable;
   const running = ACTIVE_STATUSES.includes(item.status);
   const mergeBlocked = item.merge_state === 'blocked';
-  const verificationFailed = item.result?.verification?.ok === false
-    && item.merge_state !== 'merged';
+  // 列表接口只返回 summary（无 result），详情接口才有完整 result：两处都要兼容，
+  // 否则任务中心里人工复核/合并入口会永远不显示。
+  const verificationFailed = (
+    item.verification_ok === false || item.result?.verification?.ok === false
+  ) && item.merge_state !== 'merged';
 
   const backend = backends.find((entry) => entry.id === item.executor);
   const canPickModel = backend?.model_selection !== false;
@@ -233,8 +236,8 @@ export function TaskActions({
     });
     leading.push({
       key: 'force-merge',
-      label: '强制合并',
-      ariaLabel: '跳过验证门禁，把 worktree 的改动原子合并到主仓库工作区',
+      label: '人工复核并合并',
+      ariaLabel: '人工复核改动后跳过验证门禁，把 worktree 的改动原子合并到主仓库工作区（不提交、不推送，操作会被审计）',
       icon: <GitMerge />,
       onClick: () => onAction('force-merge', item.id),
       variant: 'danger',
@@ -332,9 +335,10 @@ export function TaskActions({
   );
 
   if (overflow) {
-    // 优先保留「执行/取消/报告/合并」，删除等低频或危险操作收进更多菜单。
+    // 验证失败时人工复核入口优先于「执行」：否则表格只留 2 个按钮位，
+    // force-merge 会被收进「更多」，用户看不到可用的合并路径。
     const picked = new Set<string>();
-    for (const key of ['exec', 'apply', 'cancel', 'report', 'merge', 'verify', 'force-merge', 'decompose', 'delete']) {
+    for (const key of ['force-merge', 'verify', 'exec', 'apply', 'cancel', 'report', 'merge', 'decompose', 'delete']) {
       if (picked.size >= visibleLimit) break;
       if (allActions.some((action) => action.key === key)) picked.add(key);
     }

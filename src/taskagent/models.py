@@ -371,6 +371,10 @@ class WorkItem:
         return self.status in (ItemStatus.FAILED, ItemStatus.CANCELLED)
 
     def summary(self) -> dict[str, Any]:
+        # The list view deliberately omits ``result`` (it carries diffs, logs and
+        # worktree paths). Surface just the gate verdict so the UI can decide
+        # whether to offer manual review / force-merge without loading details.
+        verification = (self.result.verification or {}) if self.result else {}
         return {
             "id": self.id,
             "title": self.title,
@@ -397,6 +401,7 @@ class WorkItem:
             "approved_by": self.approved_by,
             "hold_merge": self.hold_merge,
             "merge_state": self.merge_state,
+            "verification_ok": verification.get("ok") if verification else None,
             "created_at": self.created_at,
         }
 

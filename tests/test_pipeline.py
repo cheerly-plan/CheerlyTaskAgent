@@ -276,6 +276,24 @@ def test_create_manual_persists_model(env):
     assert item.summary()["model"] == "glm-5.3"
 
 
+def test_summary_exposes_gate_verdict_without_full_result():
+    """列表视图刻意不带 result，但必须给出门禁结论，否则人工复核入口永远不显示。"""
+    item = WorkItem.create(title="t", description="d", kind="task")
+    assert "result" not in item.summary()
+    assert item.summary()["verification_ok"] is None
+
+    item.result = RunResult(
+        ok=True, dry_run=False, command="codebuddy",
+        verification={"ok": False, "state": "review_blocked"},
+    )
+    summary = item.summary()
+    assert "result" not in summary
+    assert summary["verification_ok"] is False
+
+    item.result.verification = {"ok": True}
+    assert item.summary()["verification_ok"] is True
+
+
 async def test_run_model_override_and_clear(env):
     """Explicit model on re-run overrides; supplying None clears to default."""
     scheduler, store, _, _, _ = env

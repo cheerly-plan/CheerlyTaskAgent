@@ -20,6 +20,8 @@ export interface WorkItem {
   tapd_workspace_id?: string;
   auto?: boolean;
   merge_state?: '' | 'merged' | 'blocked';
+  /** 列表接口不返回 result，只带这个轻量门禁结论，供人工复核入口判定。 */
+  verification_ok?: boolean | null;
   git_url?: string;
   parent_ref?: string;
   parent_title?: string;

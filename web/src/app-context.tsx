@@ -514,15 +514,16 @@ export function AppProvider({
           await endpoints.verifyItem(id);
           toast.success('已重新运行验证');
         } else if (action === 'force-merge') {
+          const reason = item?.stage || '该任务未通过验证门禁';
           const ok = await confirm(
-            '该任务验证未通过。强制合并会跳过门禁，把 worktree 的改动直接写入主仓库工作区（仍不提交、不推送）。确认继续？',
+            `${reason}。人工复核确认后将跳过门禁，把 worktree 的改动原子合并到主仓库工作区（仍不提交、不推送），并记为人工覆盖。确认继续？`,
           );
           if (!ok) return;
           const merged = await endpoints.mergeItem(id, {force: true});
           if (merged.merge_state === 'merged') {
-            toast.success('已强制合并到主仓库工作区（未提交）');
+            toast.success('已人工复核并合并到主仓库工作区（未提交）');
           } else {
-            toast.warning('强制合并未成功，请查看报告');
+            toast.warning('人工复核合并未成功，请查看报告');
           }
         } else if (action === 'decompose') {
           const ok = await confirm(
