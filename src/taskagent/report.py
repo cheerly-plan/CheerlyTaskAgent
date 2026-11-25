@@ -226,6 +226,10 @@ _VERIFY_STATE_LABELS: dict[str, str] = {
     "incomplete": "验证类别不齐",
     "review_blocked": "LLM 评审 block",
     "review_needs_human": "LLM 评审转人工审批",
+    "assertion_failed": "验收断言未通过",
+    "assertion_unverified": "验收断言无法验证",
+    "assertion_error": "验收断言执行异常",
+    "needs_review": "需人工复核（未验证条目）",
     "error": "验证出错",
     "disabled": "已禁用",
 }
@@ -262,15 +266,57 @@ def _review_section(review: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _assertion_section(assertions: dict[str, Any], verdict: str = "") -> list[str]:
+    """Render spec -> case -> result mapping and explicitly unverified items."""
+    summary = assertions.get("summary") or {}
+    lines = [
+        "### 验收断言",
+        "",
+        (
+            f"> spec_id：`{assertions.get('spec_id') or '—'}`；verdict：{verdict or '—'}；"
+            f"通过 {summary.get('pass', 0)} / 失败 {summary.get('fail', 0)} / "
+            f"错误 {summary.get('error', 0)} / 超时 {summary.get('timeout', 0)} / "
+            f"未验证 {summary.get('unverified', 0)}"
+        ),
+        "",
+    ]
+    mapping = assertions.get("mapping") or {}
+    cases = assertions.get("cases") or []
+    if mapping or cases:
+        lines += ["| 验收 ID | 用例 ID | 结果 | 耗时 | 摘要 |", "|---|---|---|---|---|"]
+        for case in cases:
+            error = str(case.get("error") or "").replace("|", "\\|")[:120]
+            lines.append(
+                f"| {case.get('acceptance_id') or '—'} | `{case.get('id') or '—'}` "
+                f"| {case.get('status') or '—'} | {case.get('duration', 0)}s | {error} |"
+            )
+        lines.append("")
+    unverified = assertions.get("unverified") or []
+    if unverified:
+        lines += ["无法编译为断言的验收条目（不会被静默丢弃）：", ""]
+        for item in unverified:
+            lines.append(
+                f"- `{item.get('acceptance_id') or '—'}`：{item.get('reason') or 'unverified'}"
+            )
+        lines.append("")
+    return lines
+
+
 def _verification_section(verification: dict[str, Any]) -> list[str]:
     """Render the post-execution gate verdict (empty for legacy/dry-run)."""
-    state = str(verification.get("state") or "")
+    # 断言门禁下旧 state/reason 保持原语义；展示优先用新增的断言判定字段。
+    state = str(verification.get("assertion_state") or verification.get("state") or "")
     label = _VERIFY_STATE_LABELS.get(state, state or "未知")
-    reason = str(verification.get("reason") or "")
+    reason = str(verification.get("assertion_reason") or verification.get("reason") or "")
     lines = ["### 验证", "", f"> 验证结果：**{label}**" + (f"（{reason}）" if reason else ""), ""]
     review = verification.get("review") or {}
     if isinstance(review, dict) and review:
         lines += _review_section(review)
+    assertions = verification.get("assertions") or {}
+    if isinstance(assertions, dict) and assertions:
+        lines += _assertion_section(
+            assertions, str(verification.get("verdict") or "")
+        )
     if verification.get("override"):
         lines += [
             (

@@ -931,7 +931,7 @@ def _failed_reason(outcome: dict[str, Any]) -> str:
     return f"{outcome['label']} 未通过（退出码 {outcome['exit_code']}）"
 
 
-def run_gate(
+def _run_gate_checks(
     *,
     repo_name: str,
     repo_path: str,
@@ -943,7 +943,7 @@ def run_gate(
     default_timeout_s: float = DEFAULT_TIMEOUT_S,
     total_timeout_s: float = DEFAULT_TOTAL_TIMEOUT_S,
 ) -> dict[str, Any]:
-    """Run the gate and return a JSON-able verdict.
+    """Run the legacy checks gate and return a JSON-able verdict.
 
     ``ok=False`` means "do not merge".  ``state`` is one of: ``passed``,
     ``passed_with_warnings``, ``failed``, ``incomplete``, ``unconfigured``,
@@ -1338,3 +1338,70 @@ def _run_checks(
         linked_dirs=linked, na=na, na_meta=na_meta,
         expired_na=expired_na, warnings=warnings,
     )
+
+
+# ── spec 断言门禁（可选，默认关闭）────────────────────────────────────────────
+def run_gate(
+    *,
+    repo_name: str,
+    repo_path: str,
+    worktree: str | None,
+    changed: list[str],
+    item_id: str,
+    config_path: str | Path,
+    data_dir: str | Path,
+    default_timeout_s: float = DEFAULT_TIMEOUT_S,
+    total_timeout_s: float = DEFAULT_TOTAL_TIMEOUT_S,
+    spec: Any = None,
+    assertions: Any = None,
+    assertion_policy: str | None = None,
+) -> dict[str, Any]:
+    """兼容旧入口的门禁；可选地把 spec 编译为断言并据此判定。
+
+    默认 ``assertions`` 未开启时行为与旧版完全一致（旧字段不删除、不改语义）。
+    开启方式二选一：verify.json 中 ``repos.<name>.assertions.enabled=true``，或调用方
+    传入 ``assertions={"enabled": True}``。仅传 ``spec`` 或仅设置 ``timeout_s`` 等其它
+    配置项都不会改变默认门禁行为；开启后通过 ``assertions.legacy_mode=false`` 标注。
+    """
+    from .assertions import apply_assertion_gate, assertion_options
+
+    outcome = _run_gate_checks(
+        repo_name=repo_name,
+        repo_path=repo_path,
+        worktree=worktree,
+        changed=changed,
+        item_id=item_id,
+        config_path=config_path,
+        data_dir=data_dir,
+        default_timeout_s=default_timeout_s,
+        total_timeout_s=total_timeout_s,
+    )
+    from_config = repo_config(load_config(config_path), repo_name, repo_path).get("assertions")
+    merged: dict[str, Any] = {}
+    if isinstance(from_config, dict):
+        merged.update(from_config)
+    if isinstance(assertions, dict):
+        merged.update(assertions)
+    config = assertion_options(merged or None)
+    # 仅显式 enabled=true 才开启：只给 spec 或只设 timeout_s 不得改变默认行为。
+    if not config["enabled"]:
+        return outcome
+    if assertion_policy:
+        config["unverified_policy"] = str(assertion_policy)
+    try:
+        return apply_assertion_gate(
+            outcome,
+            spec=spec,
+            worktree=worktree,
+            assertions=config,
+        )
+    except Exception as error:  # noqa: BLE001 - 断言失败必须 fail-closed
+        return {
+            **outcome,
+            "ok": False,
+            "verdict": "fail",
+            "state": "assertion_error",
+            "reason": f"断言门禁执行异常：{type(error).__name__}: {error}",
+            "decision_source": "assertion",
+            "assertions": {"enabled": True, "error": str(error)[:500]},
+        }

@@ -117,7 +117,8 @@ def _risks(gate: dict[str, Any]) -> list[str]:
 def failure_signature(item: Any) -> tuple[str, str]:
     """Stable key + human summary for one failing outcome."""
     gate = _gate_of(item)
-    state = str(gate.get("state") or "")
+    # 断言门禁保留旧 state 语义，失败签名优先用新增的 assertion_state。
+    state = str(gate.get("assertion_state") or gate.get("state") or "")
     checks = _failed_checks(gate)
     risks = _risks(gate)
     review = gate.get("review") if isinstance(gate.get("review"), dict) else {}

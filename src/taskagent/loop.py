@@ -46,6 +46,7 @@ REPAIRABLE_STATES = frozenset({
     "too_many_files",
     "diff_too_large",
     "no_changes",          # 声称做完了但没有改动
+    "assertion_failed",    # 验收断言可执行但没通过，下一轮有机会修复
 })
 
 _STATE_HINTS = {
@@ -55,6 +56,9 @@ _STATE_HINTS = {
     "diff_too_large": "缩小改动范围，去掉与需求无关的重构。",
     "no_changes": "上一轮没有产生任何文件改动；请实际修改代码，不要只输出说明。",
     "review_needs_human": "评审判定需要人工审批；这不是继续改代码能解决的。",
+    "needs_review": "存在无法编译为断言的验收条目，需要人工复核；继续改代码无法解决。",
+    "assertion_unverified": "验收条目无法编译为断言，需要人工复核。",
+    "assertion_error": "断言执行环境异常，需要人工排查而非继续改代码。",
 }
 
 
@@ -71,8 +75,16 @@ class LoopOutcome:
 
 
 def repairable(gate: dict[str, Any]) -> bool:
-    """Whether another agent round could plausibly fix this gate verdict."""
-    return str(gate.get("state") or "") in REPAIRABLE_STATES
+    """Whether another agent round could plausibly fix this gate verdict.
+
+    断言门禁保留旧 ``state`` 语义，新判定在 ``assertion_state``；两者都看才能
+    在不改写旧字段的前提下继续触发修复轮次。
+    """
+    states = {
+        str(gate.get("state") or ""),
+        str(gate.get("assertion_state") or ""),
+    }
+    return bool(states & REPAIRABLE_STATES)
 
 
 def _clip(text: str, limit: int) -> str:

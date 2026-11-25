@@ -309,9 +309,25 @@ def review_enabled() -> bool:
 
 
 # ── merge gate ───────────────────────────────────────────────────────────────
-def apply_review(gate: dict[str, Any], review: Review | None) -> dict[str, Any]:
-    """把评审结论并入验证门禁结果；只读入 ``ok`` 为 True 的门禁才可能被改判。"""
+def apply_review(
+    gate: dict[str, Any], review: Review | None, *, deciding: bool = True
+) -> dict[str, Any]:
+    """把评审结论并入门禁报告。
+
+    ``deciding=False``（spec 断言门禁模式）时评审仅作为参考信息：绝不修改
+    ``ok`` / ``state`` / ``reason`` / ``verdict`` / ``decision_source``，更不会
+    把断言判定的 fail 覆盖成 pass。默认 ``deciding=True`` 保留原有评审能力。
+    """
     outcome = dict(gate)
+    if not deciding:
+        outcome["review_is_reference"] = True
+        if review is None:
+            outcome["review"] = Review.not_reviewed(
+                "skipped", "断言门禁模式下 LLM 评审不参与判定"
+            ).to_dict()
+        else:
+            outcome["review"] = review.to_dict()
+        return outcome
     if review is None:
         outcome["review"] = Review.not_reviewed(
             "skipped", "未配置模型或未执行 LLM 评审"
