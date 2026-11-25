@@ -164,6 +164,28 @@ async def test_cancel_stops_between_rounds() -> None:
     assert backend.calls == 1
 
 
+def test_build_feedback_prefers_structured_diagnostics_over_tail() -> None:
+    gate = {
+        "ok": False, "state": "failed", "reason": "ruff 未通过（退出码 1）",
+        "checks": [{
+            "id": "lint", "label": "ruff", "ok": False, "exit_code": 1,
+            "diagnostics": [
+                "src/a.py:290:68: invalid-syntax: Cannot use backslash in f-string",
+                "tests/test_a.py:15:5: F401 imported but unused",
+            ],
+            "tail": "help: Did you forget a comma?\n290 | f\"...\"\nFound 8 errors.",
+        }],
+    }
+    feedback = build_feedback(gate, round_no=1, max_rounds=2)
+    assert "错误定位" in feedback
+    assert "src/a.py:290:68" in feedback
+    assert "invalid-syntax" in feedback
+    assert "tests/test_a.py:15:5" in feedback
+    # Raw help/diff tail should not be repeated when diagnostics are available.
+    assert "Did you forget a comma" not in feedback
+    assert "290 |" not in feedback
+
+
 def test_build_feedback_includes_hints_checks_and_caps_length() -> None:
     feedback = build_feedback(FAILED_GATE, round_no=1, max_rounds=2)
     assert "第 1/2 轮" in feedback

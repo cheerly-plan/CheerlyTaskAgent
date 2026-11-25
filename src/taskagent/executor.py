@@ -250,6 +250,41 @@ def _no_execution_detected(stdout: str) -> bool:
     return dialect.no_execution_detected(stdout)
 
 
+def _python_version_hint(item: WorkItem) -> str:
+    """Warn about Python-version-sensitive syntax from the mapped repo.
+
+    Returns an empty string for non-Python repos, missing manifests, or when
+    the declared floor is 3.12+ (where f-string backslashes are legal).  The
+    main checkout is authoritative: the worktree is checked out from it, so
+    reading ``item.repo.path`` here is enough.
+    """
+    repo = item.repo
+    if not repo or not repo.path:
+        return ""
+    try:
+        import tomllib
+
+        manifest = Path(repo.path) / "pyproject.toml"
+        if not manifest.is_file():
+            return ""
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        requires = str((data.get("project") or {}).get("requires-python") or "")
+    except (OSError, ValueError, TypeError):
+        return ""
+    match = re.search(r"(?:>=|~=|==|>)\s*(\d+)\.(\d+)", requires)
+    if not match:
+        return ""
+    major, minor = int(match.group(1)), int(match.group(2))
+    if major > 3 or (major == 3 and minor >= 12):
+        return ""
+    return (
+        f"运行环境：本仓库 requires-python = {requires!r}，代码必须能在 Python "
+        f"{major}.{minor} 上编译并通过 lint。不要使用更高版本才支持的语法——"
+        "尤其是 f-string 表达式里不能出现反斜杠（如 `\\\\|`），这是 Python 3.12+ 才允许的；"
+        "必须用变量预先算好再插值。提交前先运行本仓库配置的 lint 与测试，确认通过再结束。\n"
+    )
+
+
 def build_prompt(item: WorkItem) -> str:
     """A bounded, explicit prompt. Email content is delimited to limit injection."""
     text = (
@@ -284,6 +319,9 @@ def build_prompt(item: WorkItem) -> str:
         "3. 如果能运行相关测试或构建，执行并报告结果。\n"
         "4. 最后用简短列表总结：改动了哪些文件、为什么、验证结果。\n"
     )
+    version_hint = _python_version_hint(item)
+    if version_hint:
+        text += f"\n--- 运行环境约束（本轮必须遵守）---\n{version_hint}--- 约束结束 ---\n"
     if item.plan:
         text += (
             "\n--- 已确认的执行方案（来自规划阶段）---\n"

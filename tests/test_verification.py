@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from taskagent.verification import CATEGORIES, is_test_file, load_config, run_gate
+from taskagent.verification import (
+    CATEGORIES,
+    extract_diagnostics,
+    is_test_file,
+    load_config,
+    run_gate,
+)
 
 
 def _config(
@@ -407,6 +413,35 @@ def test_output_redacts_secrets(tmp_path: Path) -> None:
     tail = result["checks"][0]["tail"]
     assert "abc123" not in tail
     assert "***" in tail
+
+
+def test_extract_diagnostics_pulls_locations_from_lint_output() -> None:
+    raw = (
+        "ISC004 Implicit string concat\n"
+        "   --> src/taskagent/report.py:276:9\n"
+        "invalid-syntax: Cannot use escape in f-string\n"
+        "   --> src/taskagent/report.py:290:68\n"
+        "   |\n"
+        '290 | f"{x.replace(\'|\',\'\\\\|\')}"\n'
+        "   |\n"
+        "help: Wrap implicitly concatenated strings in parentheses\n"
+        "Found 2 errors."
+    )
+    diagnostics = extract_diagnostics(raw)
+    assert len(diagnostics) == 2
+    assert "report.py:276:9" in diagnostics[0]
+    assert "ISC004" in diagnostics[0]
+    assert "report.py:290:68" in diagnostics[1]
+    assert "invalid-syntax" in diagnostics[1]
+    # Help text and diff fragments must not leak into the actionable list.
+    assert all("help:" not in line and "290 |" not in line for line in diagnostics)
+
+
+def test_extract_diagnostics_caps_count_and_length() -> None:
+    raw = "\n".join(f"src/f{i}.py:{i}:1: E501 line too long {'x' * 400}" for i in range(50))
+    diagnostics = extract_diagnostics(raw)
+    assert len(diagnostics) == 20
+    assert all(len(line) <= 260 for line in diagnostics)
 
 
 def test_flaky_retry_passes(tmp_path: Path) -> None:
