@@ -174,6 +174,13 @@ class RunResult:
     rounds: int = 0
     # Token usage of the last CLI run (input/output/total/calls).
     usage: dict[str, int] = field(default_factory=dict)
+    # 执行前的基线同步结果（fetch/快进/落后统计，见 baseline.py）。
+    # 空 dict = 未同步（off、dry-run 或老结果）。
+    baseline: dict[str, Any] = field(default_factory=dict)
+    # 失败归因："" / "repo" = 代码/门禁类（计入仓库熔断）；
+    # "environment" = CLI 缺失/超时/建 worktree 失败；"budget" = token 预算。
+    # 非仓库类失败不应把仓库熔断打开。
+    failure_scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +203,8 @@ class RunResult:
             "diff": self.diff,
             "rounds": self.rounds,
             "usage": self.usage,
+            "baseline": self.baseline,
+            "failure_scope": self.failure_scope,
         }
 
 
@@ -267,7 +276,8 @@ class WorkItem:
     commit: CommitResult | None = None
     report_path: str = ""
     # ── 自动执行 / 待办评审 ────────────────────────────────────────────────
-    # 自动链路（非人工点击）派发的任务：auto=True、approved_by="auto"。
+    # 自动链路派发的任务：auto=True。approved_by="auto" 表示无人值守派发
+    # （参与熔断记账）；"user" 表示人工在任务中心勾选批量执行（不参与熔断）。
     auto: bool = False
     approved_by: str = ""            # user | auto（谁批准的 apply）
     auto_dispatched_at: str = ""     # 已自动派发时间；非空即不再重复出队
@@ -278,10 +288,24 @@ class WorkItem:
     parent_context: str = ""         # 父需求标题+描述快照，执行时注入子任务提示词
     spec: dict[str, Any] = field(default_factory=dict)  # TaskSpec（目标/验收/约束/风险）
     feedback: str = ""               # 上一轮验证/评审未通过的原因，注入下一轮提示词
+    # 跨任务记忆召回：{similar:[...], failures:[...]}，执行前注入提示词/报告。
+    memory: dict[str, Any] = field(default_factory=dict)
     # 本次执行的 token 账本（引擎维度聚合）：{cli:{...}, llm:{...}, total_tokens, calls}
     usage: dict[str, Any] = field(default_factory=dict)
     # 交付结果：mode/branch/commit/pushed/pr_url/error（见 delivery.py）
     delivery: dict[str, Any] = field(default_factory=dict)
+    # 执行租约（P1）：owner 是调度进程实例 id，心跳持续续期。进程崩溃后
+    # 租约到期，其他实例/重启后的调度器可以安全重排，而不是永远显示“执行中”。
+    lease_owner: str = ""
+    lease_until: str = ""
+    lease_heartbeat_at: str = ""
+    # 服务重启后已自动重排的次数；超过 automation.max_recoveries 就交回人工。
+    recovered: int = 0
+    # 父容器是否已经汇总过子任务结果（避免重复回填/重复通知）。
+    aggregated: bool = False
+    # 拆解出的子任务可以声明前置依赖（前置子任务的 source_ref 列表）。
+    # 执行前必须全部是 succeeded 且已合并，否则跳过并写明原因。
+    depends_on: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -412,8 +436,15 @@ class WorkItem:
             "parent_context": self.parent_context,
             "spec": dict(self.spec),
             "feedback": self.feedback,
+            "memory": dict(self.memory),
             "usage": dict(self.usage),
             "delivery": dict(self.delivery),
+            "lease_owner": self.lease_owner,
+            "lease_until": self.lease_until,
+            "lease_heartbeat_at": self.lease_heartbeat_at,
+            "recovered": self.recovered,
+            "aggregated": self.aggregated,
+            "depends_on": list(self.depends_on),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "started_at": self.started_at,
@@ -465,8 +496,15 @@ class WorkItem:
             parent_context=str(data.get("parent_context", "") or ""),
             spec=dict(data.get("spec") or {}),
             feedback=str(data.get("feedback", "") or ""),
+            memory=dict(data.get("memory") or {}),
             usage=dict(data.get("usage") or {}),
             delivery=dict(data.get("delivery") or {}),
+            lease_owner=str(data.get("lease_owner", "") or ""),
+            lease_until=str(data.get("lease_until", "") or ""),
+            lease_heartbeat_at=str(data.get("lease_heartbeat_at", "") or ""),
+            recovered=int(data.get("recovered", 0) or 0),
+            aggregated=bool(data.get("aggregated", False)),
+            depends_on=[str(dep) for dep in data.get("depends_on") or [] if str(dep).strip()],
             created_at=data.get("created_at") or _now(),
             updated_at=data.get("updated_at") or _now(),
             started_at=data.get("started_at"),

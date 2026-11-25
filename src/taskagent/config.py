@@ -9,12 +9,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .admission import normalise_automation
+
 # NOTE: model IDs are no longer hard-coded here. The supported-model list is
 # discovered at runtime from the default backend's CLI ``--help`` output (see
 # ``Executor.list_models``), so the UI always matches the installed CLI instead
 # of a hand-written list that drifts as the CLI upgrades. ``TASKAGENT_MODELS``
 # remains an explicit allow-list the operator can set to narrow the choices;
 # it wins over discovery when present.
+
+def _baseline_mode(value: str) -> str:
+    """Parse TASKAGENT_BASELINE_SYNC into off | fetch | ff."""
+    mode = (value or "").strip().lower()
+    return mode if mode in {"off", "fetch", "ff"} else "ff"
+
 
 # Settings managed from the UI "系统设置" tab. Stored in <data_dir>/settings.json
 # so the values survive restarts; env-derived values are used as the initial
@@ -177,6 +185,16 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
         "provider": "",         # "" 自动识别 | github | gitlab
         "api_base": "",
     },
+    # 自动执行准入与熔断（见 admission.py）。空名单 = 不限制。
+    "automation": {
+        "allowed_kinds": [],
+        "repo_allowlist": [],
+        "failure_threshold": 3,
+        "cooldown_minutes": 30,
+        "max_recoveries": 1,
+        "decompose": False,
+        "max_subtasks": 4,
+    },
     "tapd": {
         "enabled": False,
         "base_url": "https://api.tapd.cn",
@@ -256,6 +274,13 @@ class Settings:
     gc_enabled: bool = True
     backup_retention_days: int = 7    # keep snapshots newer than N days (0 = no age limit)
     backup_max_per_task: int = 5      # keep at most N snapshots per task (0 = no count limit)
+    # 执行前基线同步（P1）：off = 不动；fetch = 只 fetch 记录落后/领先；
+    # ff = fetch 后对「干净且仅落后」的仓库做快进（仅自动任务）。
+    baseline_sync: str = "ff"
+    baseline_remote: str = "origin"
+    fetch_timeout_s: float = 20.0
+    # 执行租约：心跳间隔 = ttl/3；进程意外退出后租约到期即可重排。
+    lease_ttl_s: float = 180.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -323,6 +348,12 @@ class Settings:
             backup_max_per_task=max(
                 0, int(os.environ.get("TASKAGENT_BACKUP_MAX_PER_TASK", "5"))
             ),
+            baseline_sync=_baseline_mode(os.environ.get("TASKAGENT_BASELINE_SYNC", "ff")),
+            baseline_remote=os.environ.get("TASKAGENT_BASELINE_REMOTE", "origin"),
+            fetch_timeout_s=max(
+                1.0, float(os.environ.get("TASKAGENT_FETCH_TIMEOUT", "20"))
+            ),
+            lease_ttl_s=max(30.0, float(os.environ.get("TASKAGENT_LEASE_TTL", "180"))),
         )
 
     @property
@@ -420,6 +451,7 @@ class Settings:
             "auto_sync": self.auto_sync,
             "data_source": dict(UI_SETTINGS_DEFAULTS["data_source"]),
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
+            "automation": normalise_automation(UI_SETTINGS_DEFAULTS["automation"]),
             "models": [],
             # 交付的「全局」= 系统设置里的默认值；首次运行时用环境变量播种。
             "delivery": {
@@ -466,6 +498,8 @@ class Settings:
                             data[key] = normalise_delivery(
                                 {**data[key], **value} if isinstance(value, dict) else data[key]
                             )
+                        elif key == "automation":
+                            data[key] = normalise_automation(value)
                         elif key == "data_source" and isinstance(value, dict):
                             data[key] = normalise_data_source(value)
                         elif key == "models" and isinstance(value, list):
@@ -567,6 +601,12 @@ class Settings:
                 data["tapd"].update(tapd)
             elif key == "delivery" and isinstance(value, dict):
                 data["delivery"] = normalise_delivery({**data["delivery"], **value})
+            elif key == "automation":
+                # 局部更新合并到现有配置，避免只改阈值就把白名单清空。
+                data["automation"] = normalise_automation(
+                    {**data.get("automation", {}), **value}
+                    if isinstance(value, dict) else value
+                )
             elif key == "data_source" and isinstance(value, dict):
                 # 单一对象：完整接管。空白密码保留旧值（UI 掩码显示）。
                 src = normalise_data_source(value)

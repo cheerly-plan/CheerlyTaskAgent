@@ -121,7 +121,8 @@ def test_manual_task_auto_runs_and_merges(tmp_path: Path):
 
         assert item is not None and item["status"] == "succeeded", item
         assert item["exec_mode"] == "apply"
-        assert item["approved_by"] == "auto"
+        # 人工在任务中心勾选「自动执行」= 用户授权（不参与仓库熔断记账）。
+        assert item["approved_by"] == "user"
         # 无冲突 → 自动合并写回主仓工作区。
         assert item["merge_state"] == "merged", item
         assert "return 2" in (repo / "app.py").read_text(encoding="utf-8")

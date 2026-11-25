@@ -667,7 +667,8 @@ def test_recover_interrupted_items_on_restart(env):
     store.save(queued)
 
     recovered = scheduler.recover_interrupted()
-    assert recovered == 2
+    assert recovered["failed"] == 2
+    assert recovered["requeued"] == []
     for iid in (running.id, queued.id):
         item = store.get(iid)
         assert item.status == ItemStatus.FAILED
@@ -676,7 +677,7 @@ def test_recover_interrupted_items_on_restart(env):
     assert any(e.type == "item_failed" and e.data.get("recovered") for e in events.replay())
 
     # A second pass is a no-op.
-    assert scheduler.recover_interrupted() == 0
+    assert scheduler.recover_interrupted()["total"] == 0
 
 
 def test_import_raw_with_bound_repo_name(env, tmp_path):

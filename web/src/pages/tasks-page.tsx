@@ -135,6 +135,10 @@ export function TasksPage() {
           !item.is_container &&
           !(item.children_ids?.length ?? 0) &&
           ((item.status === 'ready' && Boolean(item.repo)) ||
+            // dry-run 成功只出了方案：切到 apply 后可在这里补跑（不改仓库的评估已完成）。
+            (item.status === 'succeeded' &&
+              item.exec_mode === 'dry-run' &&
+              Boolean(item.repo)) ||
             // TAPD 项目绑了多个仓库时任务会停在 discovered，交给 LLM 规划仓库。
             (item.status === 'discovered' && Boolean(item.tapd_workspace_id))),
       ),

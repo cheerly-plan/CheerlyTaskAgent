@@ -63,6 +63,10 @@ flowchart LR
 | `usage.py` | Token 运行账本：从 CLI stdout / OpenAI 兼容响应解析用量，按任务聚合、按天持久化（`data/usage.json`），提供任务/日预算判定。 |
 | `loop.py` | 有界执行-反馈循环：每轮「执行 → 验证 + 评审」，未通过时把失败检查输出、评审问题与状态提示写成反馈注入下一轮；自动任务最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2），人工 apply 固定 1 轮；不可修复状态立即停止。 |
 | `reviewer.py` | LLM 代码评审 + 风险升级：diff + 任务规格 → approve/comment/block + 问题清单 + 风险标签；大 diff、敏感文件、高风险标签转人工；结论并入门禁（`apply_review`），模型未配置/失败降级为「未评审」。 |
+| `admission.py` | 自动执行**准入 + 熔断**：类型白名单、仓库白名单、同仓连续失败熔断（状态落 `data/automation-circuit.json`，跨重启保留，冷却到期自动清零）。只回答“能不能自动派发”；验证/评审/合并门禁仍在其后。人工勾选是显式授权，默认绕过准入。 |
+| `baseline.py` | 执行前**基线同步**：`git fetch` + ahead/behind 统计；`mode=ff` 时仅对「干净且仅落后」做 `--ff-only`，不动用户分支、不阻塞执行；结果写进 `RunResult.baseline` 与报告。 |
+| `decompose.py` | **需求拆解**：多仓/多步骤需求先用后端 Agent 模型拆成 2-5 个子任务，再做确定性校验（仓库必须在候选、依赖只能指向更早步骤、数量上限）；通过后父需求变容器、子任务按顺序建单。失败整份丢弃并回退单仓规划。 |
+| `memory.py` | **跨任务记忆**：apply 结束记录成功/失败签名（最多 1000 条），执行前按仓库 + 词重合召回同类成功经验、聚合高频失败，注入执行提示词；只作提示，不参与门禁。 |
 | `gitmap.py` | 扫描根目录 git 仓库的 `origin`，`normalize_git_url` 把 HTTPS/SSH/SCP/裸地址统一成 `host/owner/repo`，`resolve()` 映射到 `LocalRepo`。 |
 | `projectmap.py` | 用户维护的「项目名/别名 → 本地文件夹」映射（`data/projects.json`），中文子串/英文词边界匹配、多命中取最长、可停用。`ProjectMapping` 带 `tapd_workspace_id`，`find_by_workspace()` 供 TAPD 建单时反查绑定的本地仓库——实现 TAPD 项目 ↔ 本地映射双向关联（数据源页与映射页改的是同一份数据）。 |
 | `models.py` | `WorkItem` 状态机 `discovered→ready→queued→running→succeeded/failed/skipped/cancelled`；`RunResult`、`LocalRepo`；`executor` 字段记录任务用哪类后端（缺省 codebuddy，旧数据兼容）；`ProjectMapping.tapd_workspace_id` 记录绑定的 TAPD 项目。 |
@@ -83,7 +87,7 @@ flowchart LR
 
 **执行**：`run(id, exec_mode, model)`。`dry-run` 直接生成命令；`apply` 要求 `approved=true`，建 worktree，`<backend> -p` 在 worktree cwd 执行，收集 stdout/改动文件。**模型**：`WorkItem.model` 为按任务选择的模型（`build_command` 里 `item.model or executor.model`），新建时可选、卡片上可随时切换；`model=None` 回退该后端的 `model` 字段。候选列表不再写死——由默认执行后端 `Executor.list_models()` 动态解析其 CLI `--help` 的 `--model` 参数实时获取，`TASKAGENT_MODELS` 环境变量可收窄候选；`/api/config` 的 `default_model` 即默认后端的 `model` 字段，新建任务据此回填（全局默认选了哪个就回填哪个）。apply 走**执行-反馈循环**（`loop.py`）：门禁/评审未通过且可修时，把失败检查输出与评审问题注入下一轮提示词，在同一个 worktree 继续修，自动任务最多 `TASKAGENT_MAX_ROUNDS` 轮（默认 2），人工 apply 固定 1 轮。合并由 scheduler 在循环结束后做一次原子合并：`sync_to_repo()` 把改动文件**自动同步回主仓库工作区**——归一化路径→忽略规则过滤（复用 commit 规则）→拒绝绝对路径/`..`/符号链接逃逸→覆盖或删除前先备份到 `<data_dir>/sync-backups/<item>/<时间>/`；结果写入 RunResult 与报告，失败不否定 apply 本身。`TASKAGENT_AUTO_SYNC=0` 可关闭。只重试可重试错误（timeout/429/5xx）。
 
-**恢复**：状态与报告落盘；进程重启后可从 `data/tasks` 重建；`running` 中断的项后续可加 lease 重派（当前为手动重跑）。
+**恢复**：状态与报告落盘；进程重启后从 `data/tasks` 重建。执行期间持**租约 + 心跳**（`lease_owner/lease_until`），重启时自动任务按 `automation.max_recoveries` 重新排队并由调度器续跑（worktree 保留，接着改），人工任务标记中断等人工决定；心跳停止后租约到期，后台巡检同样会回收。CI 等待在重启后由 `resume_ci_watches()` 自动接上。异常退出的任务由 `_mark_crashed` 立即落 failed，不会停在 RUNNING。
 
 ## 4. 安全设计
 
@@ -128,11 +132,15 @@ flowchart LR
 
 **任务规格 / 执行-反馈循环 / LLM 评审**：`spec.py`（规则版建单即生成，自动任务 LLM 升级）、`loop.py`（有界反馈循环，默认 2 轮，失败原因回灌提示词）、`reviewer.py`（diff + 规格评审，block/大 diff/敏感文件/高风险转人工，并入门禁）、`usage.py`（CLI/LLM token 账本 + 任务/日预算，`data/usage.json`）、`delivery.py`（可选交付：任务分支过滤提交 / push / PR-MR，默认关闭）。
 
+**P0/P1 可靠性**：`admission.py`（类型/仓库白名单 + 同仓连续失败熔断，熔断状态跨重启持久化；无人值守链路遵守数据源 `exec_mode`，`dry-run` 不再落盘）、`baseline.py`（执行前 fetch，自动任务干净且仅落后时快进）、租约心跳 + 重启/过期重排 + CI 续等（`scheduler.recover_interrupted / sweep_expired_leases / resume_ci_watches`）。
+
+**P2 认知增强**：`decompose.py`（LLM 拆解 + 确定性校验 + 父容器/子任务建单，支持手动按钮与「多仓需求自动拆解」开关）、`memory.py`（`data/memory.json`，成功经验召回 + 失败聚类 + 提示词注入，`GET /api/memory` 可查）。
+
 **下一步（按优先级）**：
 1. 申请 TAPD 应用凭证 + 项目授权（读 + 写权限），在「数据源」Tab 填入并开启；在 TAPD 后台配置 Webhook 事件订阅。
 2. 装 codebuddy CLI，先用 dry-run 审提示词，再对低风险仓库小范围 apply。
 3. 如需接内部自研工单 Web：有开放 API 则复用 TAPD 同一套适配器扩展；只能人工看页面则不适合自动化。
-4. 需求拆解（一个需求跨多仓/多任务）与交付闭环（commit / PR / CI）仍待补齐。
+4. 多仓并行 DAG 调度（当前同父子任务串行，依赖靠创建顺序保证）与记忆的语义检索仍待补齐。
 
 ## 9. 待确认
 

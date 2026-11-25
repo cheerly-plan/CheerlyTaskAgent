@@ -256,8 +256,11 @@ def test_auto_run_endpoint_selects_only_requested(tmp_path):
         result = client.post("/api/tasks/auto-run", json={"ids": ["missing"]}).json()
         assert result["started"] == []
         assert result["skipped"][0]["reason"] == "任务不存在"
-        # 自动执行不再是一段可配置的全局设置。
-        assert "automation" not in client.get("/api/settings").json()
+        # 自动执行准入/熔断是一份结构化配置，默认不限制类型与仓库。
+        automation = client.get("/api/settings").json()["automation"]
+        assert automation["allowed_kinds"] == []
+        assert automation["repo_allowlist"] == []
+        assert automation["failure_threshold"] == 3
 
 
 def test_delivery_global_settings_roundtrip(tmp_path):
@@ -313,3 +316,72 @@ def test_settings_api_saves_global_delivery(tmp_path):
         assert current["delivery"]["merge"] == "auto"
         assert current["delivery"]["base"] == "main"
         assert current["delivery"]["provider"] == "github"
+
+
+def test_automation_settings_roundtrip_and_circuit_api(tmp_path):
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        current = client.get("/api/settings").json()
+        assert current["automation"]["allowed_kinds"] == []
+        assert current["automation"]["failure_threshold"] == 3
+
+        saved = client.put("/api/settings", json={
+            "automation": {
+                "allowed_kinds": ["bug", "nope"],
+                "repo_allowlist": ["CheerlyTaskAgent"],
+                "failure_threshold": 2,
+                "cooldown_minutes": 15,
+                "max_recoveries": 2,
+            }
+        })
+        assert saved.status_code == 200, saved.text
+        automation = client.get("/api/settings").json()["automation"]
+        assert automation["allowed_kinds"] == ["bug"]
+        assert automation["repo_allowlist"] == ["CheerlyTaskAgent"]
+        assert automation["failure_threshold"] == 2
+        assert automation["max_recoveries"] == 2
+
+        state = client.get("/api/automation").json()
+        assert state["policy"]["failure_threshold"] == 2
+        assert state["repos"] == {}
+        reset = client.post("/api/automation/circuit/reset", json={}).json()
+        assert reset["reset"] == 0
+        assert reset["state"]["repos"] == {}
+
+
+def test_decompose_settings_and_memory_endpoints(tmp_path):
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        saved = client.put("/api/settings", json={
+            "automation": {"decompose": True, "max_subtasks": 3},
+        })
+        assert saved.status_code == 200, saved.text
+        automation = client.get("/api/settings").json()["automation"]
+        assert automation["decompose"] is True
+        assert automation["max_subtasks"] == 3
+
+        memory = client.get("/api/memory").json()
+        assert memory["stats"]["total"] == 0
+        assert memory["clusters"] == []
+        assert client.post("/api/memory/clear", json={}).json()["removed"] == 0
+
+        # 不存在的任务：拆解接口如实 404。
+        assert client.post("/api/items/missing/decompose", json={}).status_code == 404
+
+
+def test_decompose_endpoint_requires_model(tmp_path):
+    from taskagent.models import ItemStatus, LocalRepo, WorkItem
+    from taskagent.store import TaskStore
+
+    store = TaskStore(tmp_path / "tasks")
+    item = WorkItem.create(title="跨仓需求", description="x", kind="feature")
+    item.repo = LocalRepo(path=str(tmp_path), origin="", name="repo")
+    item.status = ItemStatus.READY
+    store.save(item)
+
+    app = create_app(Settings(data_dir=tmp_path, project_roots=()))
+    with TestClient(app) as client:
+        response = client.post(f"/api/items/{item.id}/decompose", json={})
+        assert response.status_code == 400
+        # 没有候选仓库 / 没有模型都会被如实拒绝，不会瞎拆。
+        assert response.json()["detail"]

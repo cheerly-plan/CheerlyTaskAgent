@@ -1,5 +1,5 @@
 import * as React from 'react';
-import {GitPullRequest, Lock, Plus, RefreshCw, Save, Server, SlidersHorizontal, Sparkles, Trash2} from 'lucide-react';
+import {Brain, GitPullRequest, Lock, Plus, RefreshCw, Save, Server, ShieldCheck, SlidersHorizontal, Sparkles, Trash2} from 'lucide-react';
 
 import {useApp} from '@/app-context';
 import {Field, SelectField} from '@/components/select-field';
@@ -7,8 +7,18 @@ import {Button} from '@/components/ui/button';
 import {Card} from '@/components/ui/card';
 import {Input} from '@/components/ui/input';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
+import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs';
 import {Switch} from '@/components/ui/switch';
-import type {BackendConfig, DeliverySettings, ModelChoice, UISettings} from '@/lib/api';
+import {endpoints} from '@/lib/api';
+import type {
+  AutomationSettings,
+  BackendConfig,
+  CircuitRepoState,
+  DeliverySettings,
+  MemoryState,
+  ModelChoice,
+  UISettings,
+} from '@/lib/api';
 import {
   canonicalModelId,
   cliDefaultLabel,
@@ -27,6 +37,22 @@ const DEFAULT_DELIVERY: DeliverySettings = {
   api_base: '',
 };
 
+const DEFAULT_AUTOMATION: AutomationSettings = {
+  allowed_kinds: [],
+  repo_allowlist: [],
+  failure_threshold: 3,
+  cooldown_minutes: 30,
+  max_recoveries: 1,
+  decompose: false,
+  max_subtasks: 4,
+};
+
+const AUTOMATION_KINDS = [
+  {value: 'bug', label: '缺陷'},
+  {value: 'feature', label: '需求'},
+  {value: 'task', label: '任务'},
+];
+
 const DEFAULT_BACKEND: BackendConfig = {
   label: '',
   enabled: false,
@@ -39,9 +65,42 @@ const DEFAULT_BACKEND: BackendConfig = {
 export function SettingsPage() {
   const {settings, saveSettings, reloadSettings, backends: backendInfos, ensureBackendProbe} = useApp();
   const [draft, setDraft] = React.useState<UISettings | null>(settings);
+  const [circuit, setCircuit] = React.useState<Record<string, CircuitRepoState>>({});
+  const [repoListText, setRepoListText] = React.useState('');
+  const [memoryState, setMemoryState] = React.useState<MemoryState | null>(null);
 
   React.useEffect(() => {
     setDraft(settings);
+  }, [settings]);
+
+  React.useEffect(() => {
+    let alive = true;
+    endpoints
+      .automationState()
+      .then((state) => {
+        if (alive) setCircuit(state.repos ?? {});
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [settings]);
+
+  React.useEffect(() => {
+    setRepoListText((settings?.automation?.repo_allowlist ?? []).join(', '));
+  }, [settings?.automation?.repo_allowlist]);
+
+  React.useEffect(() => {
+    let alive = true;
+    endpoints
+      .memory()
+      .then((state) => {
+        if (alive) setMemoryState(state);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
   }, [settings]);
 
   const modelsByBackend = React.useMemo(() => {
@@ -70,6 +129,54 @@ export function SettingsPage() {
         ? {...prev, delivery: {...DEFAULT_DELIVERY, ...(prev.delivery ?? {}), [key]: value}}
         : prev,
     );
+
+  const automation = {...DEFAULT_AUTOMATION, ...(draft.automation ?? {})};
+  const patchAutomation = <K extends keyof AutomationSettings>(
+    key: K,
+    value: AutomationSettings[K],
+  ) =>
+    setDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            automation: {...DEFAULT_AUTOMATION, ...(prev.automation ?? {}), [key]: value},
+          }
+        : prev,
+    );
+  const toggleAutomationKind = (kind: string) => {
+    const current = automation.allowed_kinds ?? [];
+    patchAutomation(
+      'allowed_kinds',
+      current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
+    );
+  };
+  const refreshMemory = async () => {
+    try {
+      setMemoryState(await endpoints.memory());
+    } catch {
+      // 读取失败保留旧视图，下次保存/刷新会重试。
+    }
+  };
+  const clearMemory = async () => {
+    if (!window.confirm('清空全部跨任务记忆？删除后不会影响已有任务，只是不再参考历史经验。')) return;
+    try {
+      await endpoints.clearMemory();
+      setMemoryState(await endpoints.memory());
+    } catch {
+      // 失败不打断页面；下次刷新会重新读取。
+    }
+  };
+  const resetCircuits = async () => {
+    try {
+      const result = await endpoints.resetCircuit();
+      setCircuit(result.state.repos ?? {});
+    } catch {
+      // 重置失败不打断页面；下次保存/刷新会重新读取状态。
+    }
+  };
+  const openCircuits = Object.entries(circuit).filter(
+    ([, state]) => Boolean(state.open_until) && new Date(state.open_until as string) > new Date(),
+  );
 
   const backends = draft.backends ?? {};
   const backendEntries = Object.entries(backends);
@@ -123,6 +230,44 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
+      <Tabs defaultValue="backends" className="flex min-h-0 flex-1 flex-col gap-4">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+          <TabsList className="h-9 rounded-lg bg-secondary/70 p-1">
+            <TabsTrigger
+              value="backends"
+              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+            >
+              <Server className="size-3.5" />
+              后端与调度
+            </TabsTrigger>
+            <TabsTrigger
+              value="automation"
+              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+            >
+              <ShieldCheck className="size-3.5" />
+              自动执行
+            </TabsTrigger>
+            <TabsTrigger
+              value="memory"
+              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+            >
+              <Brain className="size-3.5" />
+              任务记忆
+            </TabsTrigger>
+            <TabsTrigger
+              value="delivery"
+              className="gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+            >
+              <GitPullRequest className="size-3.5" />
+              交付与合并
+            </TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent
+          value="backends"
+          className="mt-0 flex min-h-0 flex-1 flex-col gap-4 focus-visible:outline-none"
+        >
       <Card className="flex min-h-[200px] min-h-0 flex-col overflow-hidden">
         <div className="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
@@ -295,14 +440,199 @@ export function SettingsPage() {
           </div>
         </Card>
       )}
+        </TabsContent>
 
-      <Card className="shrink-0 p-5">
-        <h3 className="mb-4 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-          <GitPullRequest className="size-4 text-primary" />
-          交付与 PR 合并
-        </h3>
+        <TabsContent
+          value="automation"
+          className="mt-0 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 focus-visible:outline-none"
+        >
+      <Card className="shrink-0 p-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="任务类型" className="mb-0">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={automation.allowed_kinds.length === 0 ? 'subtle' : 'outline'}
+                onClick={() => patchAutomation('allowed_kinds', [])}
+              >
+                全部
+              </Button>
+              {AUTOMATION_KINDS.map((kind) => (
+                <Button
+                  key={kind.value}
+                  type="button"
+                  size="sm"
+                  variant={automation.allowed_kinds.includes(kind.value) ? 'subtle' : 'outline'}
+                  onClick={() => toggleAutomationKind(kind.value)}
+                >
+                  {kind.label}
+                </Button>
+              ))}
+            </div>
+          </Field>
+          <Field label="仓库白名单" className="mb-0">
+            <Input
+              value={repoListText}
+              placeholder="留空 = 全部仓库"
+              onChange={(event) => {
+                const text = event.target.value;
+                setRepoListText(text);
+                patchAutomation(
+                  'repo_allowlist',
+                  text
+                    .split(/[,，\n]/)
+                    .map((item) => item.trim())
+                    .filter(Boolean),
+                );
+              }}
+            />
+          </Field>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-5 text-[12px] text-muted">
+          <label className="flex items-center gap-2">
+            <Switch
+              checked={automation.decompose}
+              onCheckedChange={(checked) => patchAutomation('decompose', checked)}
+              aria-label="自动拆解多仓需求"
+            />
+            <span>自动拆解多仓需求</span>
+          </label>
+        </div>
+        <details className="mt-3">
+          <summary className="cursor-pointer text-[11.5px] text-faint">高级</summary>
+          <div className="mt-3 grid gap-4 md:grid-cols-4">
+            <Field label="失败阈值" className="mb-0">
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                value={automation.failure_threshold}
+                onChange={(event) =>
+                  patchAutomation('failure_threshold', Number(event.target.value))
+                }
+              />
+            </Field>
+            <Field label="冷却（分钟）" className="mb-0">
+              <Input
+                type="number"
+                min={1}
+                max={1440}
+                value={automation.cooldown_minutes}
+                onChange={(event) =>
+                  patchAutomation('cooldown_minutes', Number(event.target.value))
+                }
+              />
+            </Field>
+            <Field label="重排次数" className="mb-0">
+              <Input
+                type="number"
+                min={0}
+                max={10}
+                value={automation.max_recoveries}
+                onChange={(event) =>
+                  patchAutomation('max_recoveries', Number(event.target.value))
+                }
+              />
+            </Field>
+            <Field label="最多子任务" className="mb-0">
+              <Input
+                type="number"
+                min={2}
+                max={5}
+                value={automation.max_subtasks}
+                onChange={(event) =>
+                  patchAutomation('max_subtasks', Number(event.target.value))
+                }
+              />
+            </Field>
+          </div>
+        </details>
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-[12px] text-muted">
+          {openCircuits.length > 0 ? (
+            <>
+              <span>
+                熔断中：
+                {openCircuits
+                  .map(([name, state]) => `${name}（${state.failures ?? 0} 次）`)
+                  .join('、')}
+              </span>
+              <Button type="button" variant="ghost" size="sm" onClick={() => void resetCircuits()}>
+                清除全部
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </Card>
+        </TabsContent>
+
+        <TabsContent
+          value="memory"
+          className="mt-0 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 focus-visible:outline-none"
+        >
+      <Card className="shrink-0 p-4">
+        {memoryState ? (
+          <>
+            <div className="mb-4 grid gap-3 text-[12px] md:grid-cols-3">
+              <div className="rounded-md border border-border bg-card px-3 py-2">
+                <div className="text-faint">条目</div>
+                <div className="mt-0.5 text-sm font-semibold text-foreground">
+                  {memoryState.stats.total}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-card px-3 py-2">
+                <div className="text-faint">成功率</div>
+                <div className="mt-0.5 text-sm font-semibold text-foreground">
+                  {Math.round(memoryState.stats.success_rate * 100)}%
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-card px-3 py-2">
+                <div className="text-faint">平均轮次</div>
+                <div className="mt-0.5 text-sm font-semibold text-foreground">
+                  {memoryState.stats.avg_rounds}
+                </div>
+              </div>
+            </div>
+            {memoryState.clusters.length > 0 ? (
+              <ul className="mb-4 space-y-1.5 text-[12px] text-muted">
+                {memoryState.clusters.slice(0, 5).map((cluster) => (
+                  <li key={`${cluster.repo}-${cluster.signature}`} className="flex gap-2">
+                    <span className="shrink-0 rounded bg-primary-muted px-1.5 py-0.5 text-[11px] text-accent-foreground">
+                      {cluster.repo}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" title={cluster.summary}>
+                      {cluster.summary} × {cluster.count}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="flex gap-2">
+              <Button type="button" variant="ghost" size="sm" onClick={() => void refreshMemory()}>
+                刷新
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void clearMemory()}
+                disabled={memoryState.stats.total === 0}
+              >
+                清空记忆
+              </Button>
+            </div>
+          </>
+        ) : null}
+      </Card>
+        </TabsContent>
+
+        <TabsContent
+          value="delivery"
+          className="mt-0 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 focus-visible:outline-none"
+        >
+      <Card className="shrink-0 p-4">
         <div className="grid gap-4 md:grid-cols-3">
-          <Field label="默认交付模式" className="mb-0">
+          <Field label="交付模式" className="mb-0">
             <SelectField
               value={delivery.mode}
               onChange={(value) => patchDelivery('mode', value as DeliverySettings['mode'])}
@@ -314,7 +644,7 @@ export function SettingsPage() {
               ]}
             />
           </Field>
-          <Field label="PR 合并策略" className="mb-0">
+          <Field label="合并策略" className="mb-0">
             <SelectField
               value={delivery.merge}
               onChange={(value) => patchDelivery('merge', value as DeliverySettings['merge'])}
@@ -324,7 +654,7 @@ export function SettingsPage() {
               ]}
             />
           </Field>
-          <Field label="托管类型" className="mb-0">
+          <Field label="托管" className="mb-0">
             <SelectField
               value={delivery.provider}
               onChange={(value) => patchDelivery('provider', value as DeliverySettings['provider'])}
@@ -335,29 +665,36 @@ export function SettingsPage() {
               ]}
             />
           </Field>
-          <Field label="远端名" className="mb-0">
+          <Field label="远端" className="mb-0">
             <Input
               value={delivery.remote}
               placeholder="origin"
               onChange={(event) => patchDelivery('remote', event.target.value)}
             />
           </Field>
-          <Field label="PR 目标分支" className="mb-0">
-            <Input
-              value={delivery.base}
-              placeholder="留空自动探测 main / master"
-              onChange={(event) => patchDelivery('base', event.target.value)}
-            />
-          </Field>
-          <Field label="企业版 API 地址" className="mb-0">
-            <Input
-              value={delivery.api_base}
-              placeholder="留空使用官方 API"
-              onChange={(event) => patchDelivery('api_base', event.target.value)}
-            />
-          </Field>
         </div>
+        <details className="mt-4">
+          <summary className="cursor-pointer text-[11.5px] text-faint">高级</summary>
+          <div className="mt-3 grid gap-4 md:grid-cols-2">
+            <Field label="目标分支" className="mb-0">
+              <Input
+                value={delivery.base}
+                placeholder="自动"
+                onChange={(event) => patchDelivery('base', event.target.value)}
+              />
+            </Field>
+            <Field label="API 地址" className="mb-0">
+              <Input
+                value={delivery.api_base}
+                placeholder="官方"
+                onChange={(event) => patchDelivery('api_base', event.target.value)}
+              />
+            </Field>
+          </div>
+        </details>
       </Card>
+        </TabsContent>
+      </Tabs>
 
       <Card className="flex shrink-0 flex-wrap items-center gap-2 p-4">
         <Button size="sm" onClick={() => void saveSettings(draft)}>

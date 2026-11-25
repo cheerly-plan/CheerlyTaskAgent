@@ -67,7 +67,7 @@ def build_short_plan(item: WorkItem) -> Plan:
     return Plan(repo="", reason="规则生成的短计划", steps=steps, source="rule")
 
 
-def _extract_json_object(text: str) -> dict | None:
+def extract_json_object(text: str) -> dict | None:
     """Pull one JSON object out of an LLM reply (fenced, raw, or embedded)."""
     for block in reversed(re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL)):
         try:
@@ -95,7 +95,7 @@ def _extract_json_object(text: str) -> dict | None:
     return None
 
 
-def _repo_brief(mapping: ProjectMapping, *, dirs: int = 12) -> str:
+def repo_brief(mapping: ProjectMapping, *, dirs: int = 12) -> str:
     """Cheap, local context about a candidate repo (no git, no network)."""
     bits = [f"- 名称：{mapping.name}", f"  路径：{mapping.path}"]
     if mapping.note:
@@ -126,7 +126,7 @@ def _repo_brief(mapping: ProjectMapping, *, dirs: int = 12) -> str:
 
 
 def build_plan_prompt(item: WorkItem, candidates: list[ProjectMapping]) -> str:
-    repo_block = "\n".join(_repo_brief(c) for c in candidates)
+    repo_block = "\n".join(repo_brief(c) for c in candidates)
     return (
         "你是需求分派助手。下面是一条开发任务，以及若干候选本地仓库。\n"
         "请判断这条任务应该在哪个仓库改代码，并给出 2-4 步执行方案。\n"
@@ -150,7 +150,7 @@ def parse_plan(raw: str, candidates: list[ProjectMapping]) -> Plan | None:
     if not raw:
         return None
     text = extract_conclusion(raw, limit=200_000).text or ""
-    data = _extract_json_object(text)
+    data = extract_json_object(text)
     if not data:
         return None
     repo = str(data.get("repo") or "").strip()

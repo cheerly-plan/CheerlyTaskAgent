@@ -89,8 +89,8 @@ flowchart TD
 
 要点：
 
-- **只有两个自动执行触发点**：TAPD 定时拉取拉到的新单；任务中心「自动执行」里被勾选的任务（`automation.dispatch`）。手动「立即同步」不会自动跑。
-- 自动执行一律走 **apply**（`run_auto` 强制 `exec_mode="apply"` + `approved_by="auto"`），并带上 `hold_merge=True`——由 scheduler 负责验证和原子合并。
+- **自动执行触发点**：TAPD 定时拉取拉到的新单；任务中心「自动执行」里被勾选的任务；重启/租约过期后回收的自动任务（`trigger="recovery"`）。手动「立即同步」不会自动跑。
+- 自动执行遵守**数据源的 `exec_mode`**：`dry-run` 时 `run_auto` 只生成提示词/命令（`hold_merge=False`，不碰仓库）；`apply` 时才带 `hold_merge=True`，由 scheduler 负责验证和原子合并。人工「自动执行」按钮是显式授权，固定 apply。
 - **人工 apply 同样走验证门禁 + 原子合并**：`run()` 对所有 `apply` 置 `hold_merge=True`，执行器只写隔离 worktree，门禁通过后由 scheduler 原子合并回主仓（与自动链路同一套机制）。
 - TAPD 凭据/项目/回填状态、定时开关都在「数据源」页，配置存 `data/settings.json`，即时生效。
 
@@ -175,10 +175,18 @@ TAPD 建单的三个细节：
 | `discovered` 且有候选仓库 | 先规划（规则或 LLM）→ 选中则映射并执行；选不中则跳过待人工 |
 | `discovered` 且无候选 | 跳过：未映射仓库，且没有可用的候选仓库 |
 | `queued` / `running` / 终态 | 跳过 |
+| `succeeded` 且只是 dry-run 完成 | 允许补跑（dry-run 不写 `auto_dispatched_at`，切到 apply 后可再派发一次） |
+| 类型不在 `automation.allowed_kinds`（空 = 不限） | 跳过：`kind_not_allowed` |
+| 仓库不在 `automation.repo_allowlist`（空 = 不限） | 跳过：`repo_not_allowed` |
+| 同仓连续失败达到 `automation.failure_threshold` 且仍在冷却期 | 跳过：`circuit_open`（人工勾选可绕过） |
 
-`run_auto` 写入的字段：`auto=True`、`approved_by="auto"`、`hold_merge=True`、`exec_mode="apply"`、`plan=<计划文本>`、`auto_dispatched_at=<now>`，然后复用 `run()`。
+`run_auto` 写入的字段：`auto=True`、`approved_by="auto"`、`exec_mode=<数据源模式>`、`hold_merge=(exec_mode=="apply")`、`plan=<计划文本>`、`auto_dispatched_at=<now>`，然后复用 `run()`。执行结束后若带熔断器，按「成功/合并阻塞/失败」记账：成功清零，失败累加，达到阈值开熔断。
 
 自动任务执行时还会带上**任务规格**（规则版或 LLM 版）和**执行-反馈循环**：门禁/评审未通过时最多再修 `TASKAGENT_MAX_ROUNDS` 轮（默认 2）；人工 apply 固定 1 轮，保持「点一次跑一次」。
+
+**需求拆解（P2）**：任务操作「拆解为子任务」或数据源的「多仓需求自动拆解」会把一个需求拆成 2-5 个子任务。父需求转为 `is_container` + `skipped`（只分组、不执行），子任务带 `parent_ref` 按依赖顺序建单；同父锁让它们串行；依赖（前置子任务的 source_ref）持久化在子任务上，执行前校验前置必须已成功合并，否则该子任务置 `failed`（可重跑）并写明原因。模型返回要过确定性校验（仓库必须在候选、依赖只能指向更早步骤），不合法整份丢弃并回退单仓规划。
+
+**跨任务记忆（P2）**：每次 apply 结束把结果写进 `data/memory.json`；下一单执行前按仓库 + 词重合召回同类成功任务、聚合同仓高频失败（门禁状态/失败检查类别/评审风险），注入执行提示词。记忆只作提示，不改变任何门禁判定；`GET /api/memory` 可查看，系统设置里可清空。
 
 ### 5.3 并发、重试、取消
 
@@ -186,7 +194,7 @@ TAPD 建单的三个细节：
 - **并发上限**：`max_concurrent`（默认 1，系统设置里改），是全局槽位。
 - **失败重试**：只有可重试错误（timeout / rate / 429 / 5xx）才自动重试。默认 `max_attempts=2`，即失败后等 2s 再试一次；`retry_delays=(2s, 8s)` 里的 8s 只有在调高上限后才会用到。其余失败直接 `failed`。
 - **取消**：置取消位并向 CLI 进程组发 SIGTERM（2s 后升级 SIGKILL）；状态 `cancelled`，结果作废、不合并，worktree 在进程退出后回收。
-- **重启恢复**：服务启动时把遗留的 `queued/running` 标记为 `failed`（"服务重启导致执行中断"），可一键重跑。
+- **重启恢复**：自动任务（`auto=True`）按 `automation.max_recoveries`（默认 1）自动重新排队并续跑（worktree 保留，接着改）；人工任务标记 `failed`（"服务重启导致执行中断"）等人工重跑。CI 等待不丢弃，启动后自动接回。执行期间持租约心跳，心跳停止后到期也会被巡检回收。
 
 ---
 

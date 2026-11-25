@@ -36,9 +36,17 @@ _KIND_LABEL = {
 
 
 def parse_tapd_ref(source_ref: str) -> tuple[str, str] | None:
-    """'tapd:story:123' -> ('story', '123'); anything else -> None."""
+    """'tapd:story:123' -> ('story', '123'); anything else -> None.
+
+    拆解出的子任务 source_ref 形如 ``tapd:story:123#sub-1``：它们共享父工单
+    的上下文，但不是 TAPD 上真实存在的工单，绝不能拿去回填（会打到不存在的
+    ID）。父工单的结果由 :func:`backfill_parent_result` 在子任务全部结束后
+    汇总回填。
+    """
     parts = (source_ref or "").split(":")
     if len(parts) == 3 and parts[0] == "tapd" and parts[1] in {"story", "bug", "task"}:
+        if "#" in parts[2] or not parts[2].strip():
+            return None
         return parts[1], parts[2]
     return None
 
@@ -170,6 +178,62 @@ def build_comment(item: WorkItem, *, ok: bool, budget: int = COMMENT_LIMIT) -> s
     if len(text) > budget:
         text = text[: budget - 20].rstrip() + "\n…（评论已截断）"
     return text
+
+
+def build_children_comment(
+    parent: WorkItem, children: list[WorkItem], *, ok: bool
+) -> str:
+    """Aggregated comment for a decomposed parent (one comment, not N)."""
+    done = sum(
+        1 for child in children
+        if child.status.value == "succeeded" and child.merge_state != "blocked"
+    )
+    lines = [
+        f"【TaskAgent】拆解执行{'完成' if ok else '有失败'}：{done}/{len(children)} 个子任务成功",
+        f"父需求：{_one_line(parent.title, MAX_TITLE)}",
+    ]
+    for child in children:
+        mark = "✅" if child.status.value == "succeeded" and child.merge_state != "blocked" else "❌"
+        line = f"{mark} {_one_line(child.title, 80)}（{child.status.value}）"
+        if child.status.value != "succeeded" and child.error:
+            line += f"：{_one_line(child.error, 120)}"
+        lines.append(line)
+        if len("\n".join(lines)) > COMMENT_LIMIT - 100:
+            lines.append("…（其余子任务略）")
+            break
+    return "\n".join(lines)[:COMMENT_LIMIT]
+
+
+def backfill_parent_result(
+    parent: WorkItem, children: list[WorkItem], *, ok: bool, client
+) -> None:
+    """Write the aggregated outcome of a decomposed parent back to TAPD."""
+    parsed = parse_tapd_ref(parent.source_ref)
+    if not parsed:
+        return
+    entity_type, object_id = parsed
+    workspace_id = (
+        str(getattr(parent, "tapd_workspace_id", "") or "").strip()
+        or client.config.primary_workspace_id
+    )
+    target = TapdItem(
+        entity_type=entity_type,
+        id=object_id,
+        workspace_id=workspace_id,
+        title="", description="", status="", owner="", priority="",
+        iteration_id="", created="", modified="",
+    )
+    try:
+        client.add_comment(target, build_children_comment(parent, children, ok=ok))
+    except Exception as error:  # noqa: BLE001 - best effort, same as single-task path
+        logger.warning("父需求 %s 的 TAPD 评论回填失败：%s", parent.id, error)
+    status = client.config.status_on_success if ok else client.config.status_on_failure
+    if not status:
+        return
+    try:
+        client.update_status(target, status)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("父需求 %s 的 TAPD 状态回填失败：%s", parent.id, error)
 
 
 def backfill_result(item: WorkItem, ok: bool, *, client) -> None:

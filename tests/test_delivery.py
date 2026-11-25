@@ -493,7 +493,7 @@ def test_create_pr_reuses_existing_gitlab_mr_on_retry() -> None:
     assert outcome["number"] == 3
 
 
-def test_startup_recovery_clears_pending_ci(tmp_path: Path) -> None:
+def test_startup_recovery_keeps_pending_ci_for_resume(tmp_path: Path) -> None:
     from taskagent.events import EventBus
     from taskagent.executor import ExecutorRegistry
     from taskagent.gitmap import GitProjectRegistry
@@ -512,11 +512,13 @@ def test_startup_recovery_clears_pending_ci(tmp_path: Path) -> None:
     item.delivery = {"ci_pending": True, "branch": "taskagent/x"}
     store.save(item)
 
-    assert scheduler.recover_interrupted() == 1
+    recovered = scheduler.recover_interrupted()
+    assert recovered["ci_pending"] == [item.id]
+    assert recovered["failed"] == 0
     saved = store.get(item.id)
     assert saved is not None
-    assert saved.delivery["ci_pending"] is False
-    assert "重启" in saved.delivery["error"]
+    # P1: CI 等待不再被清掉，启动后由 resume_ci_watches() 接上。
+    assert saved.delivery["ci_pending"] is True
 
 
 def test_policy_prefers_system_settings_then_repo_override() -> None:

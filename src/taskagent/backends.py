@@ -46,6 +46,10 @@ def build_registry(
         "worktrees_dir": settings.worktrees_dir,
         "backups_dir": settings.data_dir / "sync-backups",
         "sync_ignore_patterns": patterns,
+        # P1: every backend shares the same pre-run baseline policy.
+        "baseline_sync": settings.baseline_sync,
+        "baseline_remote": settings.baseline_remote,
+        "fetch_timeout_s": settings.fetch_timeout_s,
     }
     executors: dict[str, CodeBuddyExecutor] = {}
     for backend_id, profile in profiles.items():

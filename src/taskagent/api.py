@@ -15,13 +15,17 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .admission import CircuitBreaker
 from .automation import AutomationEngine
 from .backends import build_registry, describe_backends
-from .backfill import backfill_result
+from .backfill import backfill_parent_result, backfill_result
 from .config import Settings
-from .events import EventBus, sse_frame
+from .decompose import create_children
+from .decompose import plan as plan_decomposition
+from .events import Event, EventBus, sse_frame
 from .fsmap import FolderBrowser, PathBoundaryError
 from .gitmap import GitProjectRegistry
+from .memory import TaskMemory
 from .projectmap import ProjectMappingStore, ProjectRegistry
 from .repoprofile import RepoProfileStore, ensure_profiles
 from .report import parent_title_of, render_report
@@ -165,12 +169,33 @@ class UISettingsBody(BaseModel):
     data_source: dict[str, Any] = Field(default_factory=dict)
     # 交付 / PR 合并的全局默认（系统设置页维护）。
     delivery: dict[str, Any] = Field(default_factory=dict)
+    # 自动执行准入/熔断（系统设置 → 自动执行）。
+    automation: dict[str, Any] = Field(default_factory=dict)
 
 
 class AutoRunBody(BaseModel):
     """任务中心「自动执行」选中的任务 id（只跑勾选的这些）。"""
 
     ids: list[str] = Field(default_factory=list)
+
+
+class CircuitResetBody(BaseModel):
+    """Clear the auto-run circuit for one repo, or all repos when omitted."""
+
+    repo: str | None = None
+
+
+class MemoryClearBody(BaseModel):
+    """Clear remembered outcomes for one repo, or everything when omitted."""
+
+    repo: str | None = None
+
+
+class DecomposeBody(BaseModel):
+    """拆解选项：auto_run=true 时创建后立刻按 apply 派发子任务。"""
+
+    auto_run: bool = False
+    max_subtasks: int = Field(default=4, ge=2, le=5)
 
 
 class TapdSyncBody(BaseModel):
@@ -261,6 +286,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning("初始化验证配置失败", exc_info=True)
     browser = FolderBrowser(settings.browse_root)
     events = EventBus()
+    # 自动执行熔断状态（跨重启保留）：连续失败的仓库在冷却期内不再自动派发。
+    circuit = CircuitBreaker(settings.data_dir / "automation-circuit.json")
+    # 跨任务记忆：成功经验 + 失败聚类，执行前注入提示词。
+    memory = TaskMemory(settings.data_dir / "memory.json")
 
     # 启动时就用「已保存的 UI 设置」而不是环境变量：保存过的并发数/后端配置
     # 重启后应当继续生效，而不是被 env 默认值覆盖。
@@ -299,6 +328,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client, _ = make_tapd_client()
         backfill_result(item, ok, client=client)
 
+    def backfill_children(parent, children, ok: bool) -> None:
+        """子任务全部结束后，把汇总结果回填到父需求对应的 TAPD 工单。"""
+        cfg = settings.load_ui_settings().get("tapd", {})
+        if not cfg.get("enabled"):
+            return
+        client, _ = make_tapd_client()
+        backfill_parent_result(parent, children, ok=ok, client=client)
+
     scheduler = Scheduler(
         store=store,
         gitmap=gitmap,
@@ -326,16 +363,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ci_poll_interval_s=settings.ci_poll_interval_s,
             # 「系统设置 → 交付」改完即时生效，无需重启。
             delivery_globals=lambda: settings.load_ui_settings().get("delivery", {}),
+            # 「系统设置 → 自动执行」：准入/熔断/重启重排，同样即时生效。
+            automation_policy=lambda: settings.load_ui_settings().get("automation", {}),
+            lease_ttl_s=settings.lease_ttl_s,
+            memory_provider=memory.recall,
         ),
         projects=projects,
         commit_rules_file=settings.commit_rules_path,
         on_finished=backfill_tapd,
+        on_item_done=memory.record,
+        on_children_done=backfill_children,
     )
-    # A server restart kills in-flight asyncio tasks; reap any work item that
-    # was persisted as queued/running so it no longer shows "执行中" forever.
+    # A server restart kills in-flight asyncio tasks. Auto tasks are re-queued
+    # (bounded by automation.max_recoveries) and dispatched once the engine is
+    # ready; manual tasks stay failed so a human can decide. CI waiters are
+    # resumed in the lifespan below.
     recovered = scheduler.recover_interrupted()
-    if recovered:
-        logger.warning("启动恢复：已将 %d 条残留的 queued/running 工作项标记为中断", recovered)
+    if recovered["requeued"] or recovered["failed"]:
+        logger.warning(
+            "启动恢复：自动重排 %d 条、人工任务标记中断 %d 条、待续 CI %d 条",
+            len(recovered["requeued"]), recovered["failed"], len(recovered["ci_pending"]),
+        )
     # P0-3: sweep worktrees/backups left by earlier runs so disk use is bounded.
     swept = scheduler.gc_artifacts()
     if swept["worktrees"] or swept["backups"]:
@@ -349,9 +397,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     except Exception:
         logger.warning("启动父子关系整理失败", exc_info=True)
 
-    # 自动执行引擎：只在两个触发点工作——TAPD 定时拉取、任务中心手动勾选。
+    # 自动执行引擎：TAPD 定时拉取、任务中心手动勾选、重启/租约回收后重排。
     automation = AutomationEngine(
-        scheduler=scheduler, store=store, events=events, settings=settings
+        scheduler=scheduler, store=store, events=events, settings=settings,
+        circuit=circuit,
     )
 
     # ── TAPD (authoritative source) ────────────────────────────────────────────
@@ -711,18 +760,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     # 定时拉取的数据直接自动执行；手动「立即同步」不自动跑。
                     created_ids = result.get("created_ids") or []
                     if created_ids:
-                        await automation.dispatch(created_ids, trigger="tapd-poll")
+                        # 数据源显式配置成 dry-run 时，自动链路也只做 dry-run：
+                        # 「dry-run」必须真的不改仓库，不能只是手动导入的偏好。
+                        auto_mode = "apply" if cfg.get("exec_mode") == "apply" else "dry-run"
+                        await automation.dispatch(
+                            created_ids, trigger="tapd-poll", exec_mode=auto_mode
+                        )
             await asyncio.sleep(interval_s)
+
+    async def lease_sweep_loop() -> None:
+        """Re-queue auto tasks whose process died mid-run (lease expired)."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                ids = scheduler.sweep_expired_leases()
+                if ids:
+                    await automation.dispatch(ids, trigger="recovery")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("租约巡检失败", exc_info=True)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         tapd_task = asyncio.create_task(tapd_poll_loop(), name="tapd-poll")
+        sweep_task = asyncio.create_task(lease_sweep_loop(), name="lease-sweep")
+        # 重启后先接回自动任务与 CI 等待，而不是让它们停在半路。
+        if recovered["requeued"]:
+            try:
+                await automation.dispatch(recovered["requeued"], trigger="recovery")
+            except Exception:
+                logger.warning("启动重排自动任务失败", exc_info=True)
+        try:
+            scheduler.resume_ci_watches()
+        except Exception:
+            logger.warning("启动恢复 CI 等待失败", exc_info=True)
         try:
             yield
         finally:
             logger.info("关闭中：断开 SSE、取消后台任务…")
             tapd_task.cancel()
-            await asyncio.gather(tapd_task, return_exceptions=True)
+            sweep_task.cancel()
+            await asyncio.gather(tapd_task, sweep_task, return_exceptions=True)
             events.close()
             await scheduler.shutdown()
 
@@ -793,6 +872,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/settings")
     def api_get_settings() -> dict[str, Any]:
         return settings.load_ui_settings()
+
+    @app.get("/api/automation")
+    def api_automation_state() -> dict[str, Any]:
+        """自动执行准入策略 + 各仓库熔断状态（供系统设置页展示/重置）。"""
+        return automation.circuit_snapshot()
+
+    @app.post("/api/automation/circuit/reset")
+    def api_automation_circuit_reset(body: CircuitResetBody | None = None) -> dict[str, Any]:
+        """人工处理后清熔断：不传 repo = 全部清空。"""
+        repo = (body.repo or "").strip() if body is not None else ""
+        cleared = automation.reset_circuit(repo or None)
+        return {"reset": cleared, "state": automation.circuit_snapshot()}
+
+    @app.get("/api/memory")
+    def api_memory(repo: str = "", limit: int = 20) -> dict[str, Any]:
+        """跨任务记忆：成功率、失败聚类、最近条目（只读）。"""
+        name = (repo or "").strip() or None
+        entries = [entry for entry in memory.entries() if not name or entry.repo == name]
+        entries.sort(key=lambda entry: entry.created_at, reverse=True)
+        return {
+            "stats": memory.stats(name),
+            "clusters": memory.clusters(name, limit=max(1, min(limit, 50))),
+            "recent": [entry.to_dict() for entry in entries[: max(1, min(limit, 100))]],
+        }
+
+    @app.post("/api/memory/clear")
+    def api_memory_clear(body: MemoryClearBody | None = None) -> dict[str, Any]:
+        repo = (body.repo or "").strip() if body is not None else ""
+        return {"removed": memory.clear(repo or None)}
 
     def apply_runtime_settings() -> None:
         """Rebuild executors and concurrency from the saved UI settings.
@@ -1013,11 +1121,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/tasks/auto-run")
     async def api_auto_run(body: AutoRunBody) -> dict[str, Any]:
-        """任务中心手动触发：只自动执行用户勾选的任务。"""
+        """任务中心手动触发：只自动执行用户勾选的任务。
+
+        人工勾选是显式授权：默认执行 apply，并绕过自动准入/熔断（验证门禁、
+        评审、原子合并仍然照常生效）。
+        """
         ids = [str(i).strip() for i in body.ids if str(i).strip()]
         if not ids:
             raise HTTPException(400, "至少选择一个任务")
-        return await automation.dispatch(ids, trigger="manual")
+        return await automation.dispatch(
+            ids, trigger="manual", exec_mode="apply", force=True
+        )
 
     @app.post("/api/import", status_code=201)
     def api_import(body: ImportBody) -> dict[str, Any]:
@@ -1286,6 +1400,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception:
                 logger.warning("记录路由历史失败", exc_info=True)
         return mapped.to_dict()
+
+    @app.post("/api/items/{item_id}/decompose")
+    async def api_decompose_item(
+        item_id: str, body: DecomposeBody | None = None
+    ) -> dict[str, Any]:
+        """把一条跨仓/多步骤需求拆成子任务；父需求变成容器。
+
+        需要「模型配置」里有一个可用的后端 Agent 模型；拆解结果先过确定性
+        校验（仓库必须在候选里、依赖只能指向更早步骤），不合法整份丢弃。
+        """
+        from .decompose import MAX_SUBTASKS, candidates_for
+        from .models import ItemStatus
+
+        item = store.get(item_id)
+        if item is None:
+            raise HTTPException(404, "任务不存在")
+        if item.is_container or item.children_ids:
+            raise HTTPException(400, "该任务已经是父容器或拆解过了")
+        if item.status in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+            raise HTTPException(400, "任务执行中，不能拆解")
+        if item.result is not None and not item.result.dry_run:
+            raise HTTPException(400, "该任务已有 apply 结果（可能已合并），不能再用拆解覆盖")
+        if item.merge_state == "merged":
+            raise HTTPException(400, "该任务已合并到主仓库，不能拆解")
+        candidates = candidates_for(scheduler, item)
+        if not candidates:
+            raise HTTPException(400, "没有候选仓库：请先配置项目映射 / TAPD 项目绑定")
+        llm = review_llm(settings)
+        if llm is None:
+            raise HTTPException(400, "未配置可用的后端 Agent 模型（需 Base URL 与 API Key）")
+        options = body or DecomposeBody(max_subtasks=min(4, MAX_SUBTASKS))
+        errors: list[str] = []
+        subtasks = await plan_decomposition(
+            item, candidates, llm=llm, max_subtasks=options.max_subtasks, errors=errors
+        )
+        if subtasks is None:
+            detail = errors[0] if errors else "模型输出不合法或子任务不足 2 个"
+            raise HTTPException(400, f"拆解未产生可用结果：{detail}")
+        # 模型调用可能耗时几十秒：期间可能有另一次拆解/执行完成，重新读一次再落库。
+        fresh = store.get(item_id)
+        if fresh is None:
+            raise HTTPException(404, "任务不存在")
+        if fresh.children_ids or fresh.is_container:
+            raise HTTPException(409, "任务已被其他操作拆解，请刷新后重试")
+        item = fresh
+        usage = getattr(llm, "last_usage", None)
+        if usage:
+            scheduler.record_usage(item, "llm", usage)
+        children = create_children(scheduler, item, subtasks)
+        scheduler.events.publish(Event("item_decomposed", item.id, {
+            "children": [child.id for child in children],
+        }))
+        started: list[str] = []
+        skipped: list[dict[str, Any]] = []
+        if options.auto_run:
+            result = await automation.dispatch(
+                [child.id for child in children],
+                trigger="manual",
+                exec_mode="apply",
+                force=True,
+            )
+            started = list(result.get("started") or [])
+            skipped = list(result.get("skipped") or [])
+        parent = store.get(item_id) or item
+        return {
+            "parent": parent.to_dict(),
+            "children": [child.to_dict() for child in children],
+            "started": started,
+            "skipped": skipped,
+        }
 
     @app.post("/api/items/{item_id}/run")
     async def api_run_item(item_id: str, body: RunBody) -> dict[str, Any]:

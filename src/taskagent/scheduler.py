@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,12 @@ class SchedulerSettings:
     gc_enabled: bool = True
     backup_retention_days: int = 7
     backup_max_per_task: int = 5
+    # 自动执行准入/熔断/重排配置（系统设置 → 自动执行）。None = 用默认值。
+    automation_policy: Callable[[], dict[str, Any]] | None = None
+    # 执行租约 TTL（秒）：心跳每 ttl/3 续期；进程崩溃后到期即可被重排。
+    lease_ttl_s: float = 180.0
+    # 跨任务记忆召回：执行前调用，返回 {similar, failures, stats} 注入提示词。
+    memory_provider: Callable[[WorkItem], dict[str, Any]] | None = None
 
 
 class Scheduler:
@@ -95,6 +102,8 @@ class Scheduler:
         projects: ProjectRegistry | None = None,
         commit_rules_file: Path | None = None,
         on_finished: Callable[[WorkItem, bool], None] | None = None,
+        on_item_done: Callable[[WorkItem], None] | None = None,
+        on_children_done: Callable[[WorkItem, list[WorkItem], bool], None] | None = None,
         executors: ExecutorRegistry | None = None,
     ) -> None:
         self.store = store
@@ -115,6 +124,19 @@ class Scheduler:
         self.settings = settings or SchedulerSettings()
         self.commit_rules_file = commit_rules_file
         self.on_finished = on_finished
+        # 任何终态任务都会回调一次（跨任务记忆记账）；由 api 接到 TaskMemory。
+        self.on_item_done = on_item_done
+        # 拆解出的子任务全部结束后回调一次（父需求汇总回填）。
+        self.on_children_done = on_children_done
+        # 自动执行收尾钩子（熔断记账）。由 api 接到 admission.CircuitBreaker。
+        self.auto_outcome_hook: Callable[[WorkItem], None] | None = None
+        # 本调度进程实例 id：区分「自己还在跑」与「上一个进程留下的租约」。
+        self.lease_owner = f"pid{os.getpid()}-{secrets.token_hex(4)}"
+        # 启动恢复时被自动重排的任务 id；由 api 在自动化引擎就绪后派发。
+        self.recovered_items: list[str] = []
+        # 本进程内仍持有 wrapper 的任务：租约巡检不得回收它们，避免执行中途
+        # 的旧 item 快照把 lease 写成过期值后误判。
+        self._live_runs: set[str] = set()
         self._sem = asyncio.Semaphore(self.settings.max_concurrent)
         # One lock per repository path: same-repo auto tasks run one at a time
         # so they never branch from the same stale base and race to merge.
@@ -331,7 +353,7 @@ class Scheduler:
                 if parent.repo is not None:
                     parent.repo = None
                     changed = True
-                if parent.stage != CONTAINER_STAGE:
+                if parent.stage != CONTAINER_STAGE and not parent.aggregated:
                     parent.stage = CONTAINER_STAGE
                     changed = True
             if parent.children_ids != child_refs:
@@ -440,41 +462,231 @@ class Scheduler:
         return item
 
     # ── startup recovery ──────────────────────────────────────────────────────
-    def recover_interrupted(self) -> int:
-        """Reap items left in queued/running by a previous process.
+    def _automation_policy(self) -> dict[str, Any]:
+        from .admission import normalise_automation
 
-        In-flight asyncio tasks die together with the old server process, so an
-        item persisted as queued/running would otherwise show "执行中" forever
-        with no worker behind it. Mark it failed with a clear reason so the user
-        can simply re-run it. Returns the number of items recovered.
+        try:
+            raw = self.settings.automation_policy() if self.settings.automation_policy else {}
+        except Exception:
+            logger.warning("读取自动执行配置失败，使用默认值", exc_info=True)
+            raw = {}
+        return normalise_automation(raw)
+
+    def _requeue(self, item: WorkItem, *, reason: str) -> None:
+        """Put an interrupted auto task back in the queue for one more try.
+
+        The worktree is intentionally kept: the next run continues from whatever
+        partial edits exist instead of paying for the same work twice.
         """
-        recovered = 0
-        for item in self.store.list(limit=2000):
-            if item.status not in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+        item.recovered += 1
+        item.status = ItemStatus.READY
+        item.stage = f"{reason}（第 {item.recovered} 次）"
+        item.error = reason
+        item.result = None
+        item.report_path = ""
+        item.finished_at = None
+        item.started_at = None
+        item.hold_merge = False
+        item.auto_dispatched_at = ""
+        item.lease_owner = ""
+        item.lease_until = ""
+        item.lease_heartbeat_at = ""
+        self.store.save(item)
+        self.events.publish(
+            Event("item_requeued", item.id, {"reason": reason, "recovered": item.recovered})
+        )
+
+    def recover_interrupted(self) -> dict[str, Any]:
+        """Reap queued/running items left behind by a previous process.
+
+        P1 semantics:
+
+        - **auto tasks** are re-queued automatically (bounded by
+          ``automation.max_recoveries``) instead of being failed; the caller
+          dispatches them once the automation engine is ready.
+        - **manual tasks** stay failed with a clear reason, because a human
+          click was the approval and silently re-running it is surprising.
+        - **CI waiters** keep ``ci_pending``; the caller resumes watching them.
+
+        Returns ``{requeued, failed, ci_pending, total}`` so the app can act on
+        each group instead of only logging a number.
+        """
+        policy = self._automation_policy()
+        max_recoveries = int(policy.get("max_recoveries", 1))
+        requeued: list[str] = []
+        ci_pending: list[str] = []
+        failed = 0
+        for item in self.store.list(limit=self.store.count()):
+            if item.status in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+                self._cancel_flags[item.id] = True
+                if item.auto and item.recovered < max_recoveries:
+                    self._requeue(item, reason="服务重启导致执行中断，已自动重新排队")
+                    requeued.append(item.id)
+                    continue
+                item.status = ItemStatus.FAILED
+                item.stage = "已中断：服务重启，执行进程已退出"
+                item.error = "服务重启导致执行中断，请重新执行（非代码失败）"
+                item.lease_owner = ""
+                item.lease_until = ""
+                if not item.finished_at:
+                    item.finished_at = _utcnow()
+                self.store.save(item)
+                self.events.publish(
+                    Event("item_failed", item.id, {"error": item.error, "recovered": True})
+                )
+                failed += 1
+            delivery = item.delivery if isinstance(item.delivery, dict) else {}
+            if delivery.get("ci_pending"):
+                # 不丢等待：启动后由 resume_ci_watches() 重新接上。
+                ci_pending.append(item.id)
+        self.recovered_items = list(requeued)
+        return {
+            "requeued": requeued,
+            "failed": failed,
+            "ci_pending": ci_pending,
+            "total": len(requeued) + failed + len(ci_pending),
+        }
+
+    # ── long-run reliability: leases ──────────────────────────────────────────
+    def _dependency_block(self, item: WorkItem) -> str:
+        """Why this child cannot start yet ("" = dependencies satisfied)."""
+        refs = [ref for ref in getattr(item, "depends_on", []) if str(ref).strip()]
+        if not refs:
+            return ""
+        by_ref = {
+            row.source_ref: row
+            for row in self.store.list(limit=self.store.count())
+            if row.source_ref
+        }
+        for ref in refs:
+            dep = by_ref.get(ref)
+            if dep is None:
+                return f"依赖的子任务不存在：{ref}"
+            if not dep.is_terminal():
+                return f"依赖尚未完成：{dep.title}"
+            if dep.status != ItemStatus.SUCCEEDED or dep.merge_state == "blocked":
+                return f"依赖未成功：{dep.title}"
+            if (
+                item.exec_mode == "apply"
+                and dep.result is not None
+                and dep.result.dry_run
+            ):
+                return f"前置子任务只是 dry-run，未真正交付：{dep.title}"
+        return ""
+
+    def _touch_lease(self, item: WorkItem) -> None:
+        now = datetime.now(UTC)
+        item.lease_owner = self.lease_owner
+        item.lease_heartbeat_at = now.isoformat(timespec="seconds")
+        item.lease_until = (
+            now + timedelta(seconds=max(30.0, float(self.settings.lease_ttl_s)))
+        ).isoformat(timespec="seconds")
+
+    async def _lease_heartbeat(self, item_id: str) -> None:
+        """Renew a running item's lease until it finishes or disappears.
+
+        Queued items are *not* leased yet (they may wait behind the semaphore
+        for a long time). Keep polling rather than exiting: the task may start
+        minutes after this coroutine was created, and it must be renewed then.
+        """
+        interval = max(1.0, float(self.settings.lease_ttl_s) / 3)
+        while True:
+            await asyncio.sleep(interval)
+            item = self.store.get(item_id)
+            if item is None:
+                return
+            if item.status == ItemStatus.RUNNING:
+                try:
+                    self._touch_lease(item)
+                    self.store.save(item)
+                except OSError:
+                    # 磁盘抖动不应让心跳协程永久退出、把活任务误判成过期。
+                    logger.warning("续租失败：%s", item_id, exc_info=True)
+            elif item.is_terminal():
+                return
+            # QUEUED / READY 继续等待：重试路径会先把任务置 READY 再
+            # spawn 新 wrapper，若在这里退出，真正 RUNNING 后就没人续租了。
+
+    def sweep_expired_leases(self) -> list[str]:
+        """Re-queue auto tasks whose heartbeat stopped (process died mid-run).
+
+        Safe against live runs: the heartbeat renews the lease every TTL/3, so
+        only a genuinely stalled task exceeds its deadline.
+        """
+        policy = self._automation_policy()
+        max_recoveries = int(policy.get("max_recoveries", 1))
+        now = datetime.now(UTC)
+        requeued: list[str] = []
+        for item in self.store.list(limit=self.store.count()):
+            if item.status != ItemStatus.RUNNING or not item.lease_until:
                 continue
-            item.status = ItemStatus.FAILED
-            item.stage = "已中断：服务重启，执行进程已退出"
-            item.error = "服务重启导致执行中断，请重新执行（非代码失败）"
-            if not item.finished_at:
+            if item.id in self._live_runs:
+                # 本进程还有 wrapper 在跑：即使磁盘上的 lease 被某次旧快照
+                # 覆盖成过期值，也不能把它从脚下抽走。
+                continue
+            try:
+                deadline = datetime.fromisoformat(item.lease_until)
+            except ValueError:
+                continue
+            if deadline > now:
+                continue
+            if item.auto and item.recovered < max_recoveries:
+                self._cancel_flags[item.id] = True
+                self._requeue(item, reason="执行租约过期（进程已退出），已自动重新排队")
+                requeued.append(item.id)
+            else:
+                item.status = ItemStatus.FAILED
+                item.stage = "已中断：执行租约过期"
+                item.error = "执行租约过期（进程可能已退出），请重新执行"
+                item.lease_owner = ""
+                item.lease_until = ""
                 item.finished_at = _utcnow()
-            self.store.save(item)
-            self._cancel_flags[item.id] = True
-            self.events.publish(
-                Event("item_failed", item.id, {"error": item.error, "recovered": True})
-            )
-            recovered += 1
-        # 后台 CI 等待任务随进程一起消失：清掉 pending 标记，提示可重试交付。
+                self.store.save(item)
+                self.events.publish(
+                    Event("item_failed", item.id, {"error": item.error, "recovered": True})
+                )
+                if item.auto and self.auto_outcome_hook is not None:
+                    try:
+                        self.auto_outcome_hook(item)
+                    except Exception:
+                        logger.warning("租约回收后记账失败：%s", item.id, exc_info=True)
+        if requeued:
+            logger.warning("租约回收：%d 个自动任务重新排队", len(requeued))
+        return requeued
+
+    def resume_ci_watches(self) -> list[str]:
+        """Re-attach background CI waits that a restart left pending."""
+        resumed: list[str] = []
         for item in self.store.list(limit=self.store.count()):
             delivery = item.delivery if isinstance(item.delivery, dict) else {}
             if not delivery.get("ci_pending"):
                 continue
-            delivery["ci_pending"] = False
-            delivery["error"] = "服务重启，CI 等待中断；可在任务上重试交付"
-            item.delivery = delivery
-            item.stage = "完成（CI 等待因服务重启中断）"
-            self.store.save(item)
-            recovered += 1
-        return recovered
+            if item.repo is None:
+                delivery["ci_pending"] = False
+                delivery["error"] = "CI 等待无法恢复：任务没有本地仓库"
+                item.delivery = delivery
+                item.stage = "完成（CI 等待无法恢复）"
+                self.store.save(item)
+                self.events.publish(Event("item_delivery_updated", item.id, {
+                    "delivery": dict(delivery), "stage": item.stage,
+                }))
+                continue
+            policy = self._delivery_policy(item)
+            if not policy.enabled:
+                delivery["ci_pending"] = False
+                delivery["error"] = "交付已关闭，CI 等待结束"
+                item.delivery = delivery
+                item.stage = "完成（交付已关闭，CI 等待结束）"
+                self.store.save(item)
+                self.events.publish(Event("item_delivery_updated", item.id, {
+                    "delivery": dict(delivery), "stage": item.stage,
+                }))
+                continue
+            self._spawn(self._watch_ci(item.id, policy), name=f"ci-{item.id}")
+            resumed.append(item.id)
+        if resumed:
+            logger.info("启动恢复：接上 %d 个待等待的 CI", len(resumed))
+        return resumed
 
     # ── run / cancel ───────────────────────────────────────────────────────────
     def run(
@@ -492,6 +704,13 @@ class Scheduler:
             raise ValueError(f"unknown item {item_id!r}")
         if item.is_container:
             raise ValueError("父需求容器只用于分组，不进入执行队列")
+        if item.parent_ref:
+            # 子任务重跑后，父需求需要重新汇总一次。
+            for parent in self.store.list(limit=self.store.count()):
+                if parent.source_ref == item.parent_ref and parent.aggregated:
+                    parent.aggregated = False
+                    self.store.save(parent)
+                    break
         rearmable = item.is_dry_run_done() or item.is_retryable()
         if item.is_terminal() and not rearmable:
             raise ValueError(f"item {item_id} is already {item.status.value}")
@@ -537,31 +756,51 @@ class Scheduler:
         return item
 
     # ── 自动执行 / 自动合并 ───────────────────────────────────────────────────
-    def run_auto(self, item_id: str, *, plan: str = "") -> WorkItem:
-        """Dispatch an item from the automation path (no human click).
+    def run_auto(
+        self,
+        item_id: str,
+        *,
+        plan: str = "",
+        exec_mode: str = "apply",
+        manual: bool = False,
+    ) -> WorkItem:
+        """Dispatch an item from the automation path (or a human-authorized bulk run).
 
-        结果先留在隔离 worktree；任务结束后由 scheduler 做**原子合并**：无冲突
-        才写回主仓库工作区，有冲突则一个文件都不写、留在任务中心待处理。
+        ``manual=True`` 表示人工在任务中心显式勾选：仍然走自动链路（规划、
+        门禁、原子合并），但 ``approved_by="user"``，不参与仓库熔断记账。
+
+        ``exec_mode`` 必须与触发源的安全语义一致：数据源配置成 ``dry-run``
+        时，定时拉取只自动生成提示词与命令，**不改任何仓库**；只有 ``apply``
+        才会进隔离 worktree，并在门禁通过后做原子合并。
         """
         item = self.store.get(item_id)
         if item is None:
             raise ValueError(f"unknown item {item_id!r}")
         if item.repo is None:
             raise ValueError("no local repo mapped; map the item first")
+        if exec_mode not in {"dry-run", "apply"}:
+            raise ValueError("exec_mode must be 'dry-run' or 'apply'")
         item.auto = True
-        item.approved_by = "auto"
-        item.hold_merge = True
+        # 人工勾选与无人值守派发都走 auto 链路，但只有后者参与熔断记账。
+        item.approved_by = "user" if manual else "auto"
         item.merge_state = ""
-        item.exec_mode = "apply"
+        item.exec_mode = exec_mode
+        # dry-run 永远不进入合并路径；apply 才需要原子合并。
+        item.hold_merge = exec_mode == "apply"
         if plan:
             item.plan = plan
-        item.auto_dispatched_at = _utcnow()
+        # dry-run 不算“已派发”：它没改代码，评估后切到 apply 还应能补跑一次。
+        item.auto_dispatched_at = _utcnow() if exec_mode == "apply" else ""
         self.store.save(item)
         self.events.publish(
             Event("auto_queued", item_id, {
-                "repo": item.repo.name, "planner": bool(plan),
+                "repo": item.repo.name,
+                "planner": bool(plan),
+                "exec_mode": exec_mode,
             })
         )
+        if exec_mode == "dry-run":
+            return self.run(item_id, exec_mode="dry-run", approved=False, _model_supplied=False)
         return self.run(item_id, exec_mode="apply", approved=True, _model_supplied=False)
 
     def _record_merge(self, item: WorkItem, result, merge: dict[str, object]) -> bool:
@@ -1354,6 +1593,140 @@ class Scheduler:
 
     # ── execution ──────────────────────────────────────────────────────────────
     async def _execute(self, item_id: str) -> None:
+        """Run one work item under a lease, then report the outcome.
+
+        The wrapper owns two cross-cutting concerns so the (long) execution
+        body stays untouched: lease heartbeat/release and the automatic-run
+        outcome hook used by the circuit breaker.
+        """
+        heartbeat = asyncio.create_task(
+            self._lease_heartbeat(item_id), name=f"lease-{item_id}"
+        )
+        self._live_runs.add(item_id)
+        try:
+            await self._execute_inner(item_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 未捕获异常不再让任务永远停在 RUNNING：立即落 failed（自动任务
+            # 会触发熔断计数），而不是等 3 分钟租约到期。
+            logger.exception("执行任务 %s 时发生未捕获异常", item_id)
+            self._mark_crashed(item_id, exc)
+        finally:
+            self._live_runs.discard(item_id)
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # 心跳自身的意外错误不能阻断收尾（释放租约 / 熔断记账）。
+                logger.warning("租约心跳异常：%s", item_id, exc_info=True)
+            self._release_lease(item_id)
+            self._notify_auto_outcome(item_id)
+            self._record_memory(item_id)
+            await self._finalize_parent(item_id)
+
+    def _mark_crashed(self, item_id: str, exc: BaseException) -> None:
+        item = self.store.get(item_id)
+        if item is None or item.status not in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+            return
+        item.status = ItemStatus.FAILED
+        item.stage = "执行异常中断"
+        item.error = f"执行器异常：{exc}"
+        item.finished_at = _utcnow()
+        item.lease_owner = ""
+        item.lease_until = ""
+        self.store.save(item)
+        self.events.publish(Event("item_failed", item_id, {"error": item.error}))
+
+    def _release_lease(self, item_id: str) -> None:
+        item = self.store.get(item_id)
+        if item is None or item.status in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+            return
+        if not (item.lease_owner or item.lease_until):
+            return
+        item.lease_owner = ""
+        item.lease_until = ""
+        item.lease_heartbeat_at = ""
+        self.store.save(item)
+
+    def _record_memory(self, item_id: str) -> None:
+        if self.on_item_done is None:
+            return
+        item = self.store.get(item_id)
+        if item is None or item.status not in (ItemStatus.SUCCEEDED, ItemStatus.FAILED):
+            return
+        try:
+            self.on_item_done(item)
+        except Exception:
+            logger.warning("跨任务记忆记账失败：%s", item_id, exc_info=True)
+
+    async def _finalize_parent(self, item_id: str) -> None:
+        """Aggregate a decomposed parent once all its children are terminal."""
+        item = self.store.get(item_id)
+        if item is None or not item.parent_ref or not item.is_terminal():
+            return
+        items = self.store.list(limit=self.store.count())
+        parent = next((row for row in items if row.source_ref == item.parent_ref), None)
+        if parent is None or parent.aggregated or not parent.children_ids:
+            return
+        children = [
+            row for row in items
+            if row.parent_ref == parent.source_ref and row.source_ref != parent.source_ref
+        ]
+        if not children or any(not child.is_terminal() for child in children):
+            return
+        if not any(
+            child.result is not None and not child.result.dry_run for child in children
+        ):
+            # 全部是 dry-run：没有真正交付，不冒充“拆解完成”，也不回填状态。
+            parent.aggregated = True
+            parent.stage = "拆解完成（全部 dry-run，未写入主仓）"
+            self.store.save(parent)
+            self.events.publish(Event("parent_aggregated", parent.id, {
+                "ok": None, "dry_run": True, "children": len(children),
+            }))
+            return
+        succeeded = sum(
+            1 for child in children
+            if child.status == ItemStatus.SUCCEEDED
+            and child.merge_state != "blocked"
+            and child.result is not None
+            and not child.result.dry_run
+        )
+        ok = succeeded == len(children)
+        parent.aggregated = True
+        parent.stage = (
+            f"拆解完成：{succeeded}/{len(children)} 子任务成功"
+            + ("" if ok else "（有失败）")
+        )
+        self.store.save(parent)
+        self.events.publish(Event("parent_aggregated", parent.id, {
+            "ok": ok, "children": len(children), "succeeded": succeeded,
+        }))
+        if self.on_children_done is None:
+            return
+        try:
+            # 回填是同步网络调用（TAPD），不能占住调度事件循环。
+            await asyncio.to_thread(self.on_children_done, parent, children, ok)
+        except Exception:  # aggregation is best effort
+            logger.warning("父需求 %s 汇总回填失败", parent.id, exc_info=True)
+
+    def _notify_auto_outcome(self, item_id: str) -> None:
+        if self.auto_outcome_hook is None:
+            return
+        item = self.store.get(item_id)
+        if item is None or not item.auto:
+            return
+        if item.status not in (ItemStatus.SUCCEEDED, ItemStatus.FAILED):
+            return
+        try:
+            self.auto_outcome_hook(item)
+        except Exception:
+            logger.warning("自动执行结果记账失败：%s", item_id, exc_info=True)
+
+    async def _execute_inner(self, item_id: str) -> None:
         probe = self.store.get(item_id)
         repo_lock = self._repo_lock(probe)
         parent_lock = self._parent_lock(probe)
@@ -1367,6 +1740,17 @@ class Scheduler:
             await stack.enter_async_context(self._sem)
             item = self.store.get(item_id)
             if item is None or item.is_terminal():
+                return
+            blocked = self._dependency_block(item)
+            if blocked:
+                # 用 failed（可重跑）而不是 skipped（终态不可重跑）：前置任务
+                # 修好后，人工可以重新执行这一条。
+                item.status = ItemStatus.FAILED
+                item.stage = blocked
+                item.error = blocked
+                item.finished_at = _utcnow()
+                self.store.save(item)
+                self.events.publish(Event("item_failed", item_id, {"error": blocked}))
                 return
             # 子任务执行前补齐父需求上下文，build_prompt 会把它注入提示词。
             item.parent_context = parent_context_of(item, self.store)
@@ -1395,6 +1779,9 @@ class Scheduler:
             item.attempt += 1
             item.started_at = item.started_at or _utcnow()
             item.feedback = ""
+            item.memory = {}
+            self._touch_lease(item)
+            self.store.save(item)
 
             # 日预算在进入任何模型调用之前检查，避免"先花钱再报超支"。
             budget_early = self._budget_reason(item)
@@ -1431,6 +1818,15 @@ class Scheduler:
                 self.store.save(item)
                 self.events.publish(Event("item_failed", item_id, {"error": item.error}))
                 return
+            if self.settings.memory_provider is not None:
+                try:
+                    recalled = self.settings.memory_provider(item) or {}
+                except Exception:
+                    logger.warning("跨任务记忆召回失败：%s", item_id, exc_info=True)
+                    recalled = {}
+                if recalled:
+                    item.memory = recalled
+                    self.store.save(item)
             item.stage = f"开始执行（{backend.label}）"
             self.store.save(item)
             self.events.publish(Event("item_started", item_id, {
@@ -1469,6 +1865,9 @@ class Scheduler:
                 )
                 result = outcome.result
                 budget_stop = outcome.budget_reason
+                if budget_stop:
+                    # 预算是全局配置问题，不该把仓库熔断打开。
+                    result.failure_scope = "budget"
             else:
                 result = await backend.run(item, progress=progress, should_cancel=should_cancel)
             result.rounds = result.rounds or 1

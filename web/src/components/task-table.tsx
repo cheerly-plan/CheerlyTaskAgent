@@ -371,6 +371,7 @@ export function TaskTable({
               backends={backends}
               onProbe={onProbe}
               showModelSelect={false}
+              // 操作列最多 3 个按钮（含「…」）：超过 3 个操作就收进「…」，不加宽列。
               maxVisibleActions={3}
             />
           );

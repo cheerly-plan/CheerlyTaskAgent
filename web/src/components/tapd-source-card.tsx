@@ -428,6 +428,9 @@ export function TapdSourceCard({
             ]}
             onChange={(value) => patchTapd('exec_mode', value as TapdSettings['exec_mode'])}
           />
+          <div className="mt-1.5 text-[11px] leading-relaxed text-faint">
+            定时拉取后的自动执行同样遵守这个模式：dry-run 只生成方案，不改任何仓库。
+          </div>
         </Field>
       </div>
 

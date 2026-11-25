@@ -27,7 +27,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
+from . import baseline as baseline_sync_mod
 from . import dialect, dsh_profile
+from .memory import memory_text
 from .models import ItemKind, LocalRepo, RunResult, WorkItem
 from .spec import spec_text
 from .usage import extract_cli_usage
@@ -288,6 +290,14 @@ def build_prompt(item: WorkItem) -> str:
             f"{item.plan}\n"
             "--- 方案结束 ---\n"
         )
+    # 跨任务记忆：历史同类任务怎么改的、这个仓库老在哪失败。只作提示。
+    memory_hint = memory_text(item.memory)
+    if memory_hint:
+        text += (
+            "\n--- 跨任务记忆（历史经验，仅供参考）---\n"
+            f"{memory_hint}\n"
+            "--- 记忆结束 ---\n"
+        )
     # 反馈循环：上一轮验证/评审没过时，把具体问题放在最后，避免被长任务描述淹没。
     feedback = (item.feedback or "").strip()
     if feedback:
@@ -318,6 +328,9 @@ class CodeBuddyExecutor(Executor):
         backend_id: str | None = None,
         label: str | None = None,
         supports_model_selection: bool | None = None,
+        baseline_sync: str = "ff",
+        baseline_remote: str = "origin",
+        fetch_timeout_s: float = 20.0,
     ) -> None:
         # Backends are configuration-driven: the registry may create an
         # executor for an arbitrary id added in the UI. Allow the instance to
@@ -346,6 +359,11 @@ class CodeBuddyExecutor(Executor):
         # so users don't have to manually cp every result. Can be disabled via
         # TASKAGENT_AUTO_SYNC=0.
         self.auto_sync = auto_sync
+        # P1 baseline sync: fetch (and optionally fast-forward) before the
+        # worktree is created. "off" | "fetch" | "ff".
+        self.baseline_sync = baseline_sync if baseline_sync in {"off", "fetch", "ff"} else "ff"
+        self.baseline_remote = baseline_remote or "origin"
+        self.fetch_timeout_s = max(1.0, float(fetch_timeout_s))
         self.sync_ignore_patterns = tuple(sync_ignore_patterns)
         self.backups_dir = (
             Path(backups_dir).expanduser().resolve()
@@ -892,6 +910,47 @@ class CodeBuddyExecutor(Executor):
 
         return await self._run_apply(item, progress=progress, should_cancel=should_cancel)
 
+    async def _sync_baseline(
+        self,
+        item: WorkItem,
+        repo: LocalRepo,
+        *,
+        progress: ProgressFn,
+    ) -> dict[str, Any]:
+        """Fetch/FF the repo before the worktree is created (best-effort).
+
+        The same WorkItem is reused across execution-loop rounds, so a transient
+        attribute keeps this to one fetch per task run (not one per round).
+        """
+        if getattr(item, "_baseline_synced", False):
+            cached = getattr(item, "_baseline_state", None)
+            return dict(cached) if isinstance(cached, dict) else {
+                "mode": self.baseline_sync, "state": "skipped_same_run",
+            }
+        mode = self.baseline_sync
+        # 人工 apply 只 fetch：不替用户移动当前分支。
+        if mode == "ff" and not item.auto:
+            mode = "fetch"
+        if mode == "off":
+            return {"mode": "off", "state": "off"}
+        try:
+            state = await asyncio.to_thread(
+                baseline_sync_mod.sync_baseline,
+                repo.path,
+                mode=mode,
+                remote=self.baseline_remote,
+                timeout_s=self.fetch_timeout_s,
+            )
+        except Exception as exc:  # noqa: BLE001 - sync must never block execution
+            logger.warning("基线同步异常（%s）：%s", repo.name, exc)
+            return {"mode": mode, "state": "error", "error": str(exc)}
+        item._baseline_synced = True  # type: ignore[attr-defined]  # 仅本次执行内有效
+        item._baseline_state = state  # type: ignore[attr-defined]
+        note = baseline_sync_mod.describe(state)
+        if note and state.get("state") not in {"up_to_date", "off"}:
+            progress(0.05, f"基线同步：{note}")
+        return state
+
     async def _run_apply(
         self,
         item: WorkItem,
@@ -902,6 +961,9 @@ class CodeBuddyExecutor(Executor):
         if should_cancel():
             return RunResult(ok=False, dry_run=False, command="", error="cancelled")
         repo: LocalRepo = item.repo  # type: ignore[assignment]
+        # P1：先把基线拉到最新，再建 worktree。自动任务允许快进（仅干净且
+        # 仅落后时），人工 apply 只 fetch 不改用户分支。网络失败不阻塞执行。
+        baseline = await self._sync_baseline(item, repo, progress=progress)
         worktree_path = self._worktree_path(item, repo)
         if not self._create_worktree(repo, worktree_path):
             return RunResult(
@@ -909,7 +971,13 @@ class CodeBuddyExecutor(Executor):
                 dry_run=False,
                 command="",
                 error=f"failed to create worktree under {worktree_path}",
+                baseline=baseline,
+                failure_scope="environment",
             )
+        if item.auto:
+            # 复用旧 worktree 时把主仓新提交带进来，避免恢复/重试仍基于过期
+            # HEAD；新建的 worktree 已是最新，这里是无操作。
+            await asyncio.to_thread(self._refresh_worktree, repo, worktree_path)
 
         argv = self.build_command(item)
         command = shlex.join(argv)
@@ -938,6 +1006,8 @@ class CodeBuddyExecutor(Executor):
                 command=command,
                 error=f"CLI not found: {self.command!r}. {self.install_hint}",
                 worktree=str(worktree_path),
+                baseline=baseline,
+                failure_scope="environment",
             )
 
         self._bind_process(item.id, proc)
@@ -996,6 +1066,8 @@ class CodeBuddyExecutor(Executor):
                 duration_s=duration,
                 worktree=str(worktree_path),
                 usage=usage,
+                baseline=baseline,
+                failure_scope="environment",
             )
         changed = self._changed_files(worktree_path)
         progress(1.0, f"{self.label} 完成")
@@ -1050,6 +1122,7 @@ class CodeBuddyExecutor(Executor):
             sync_error=sync.get("sync_error") if isinstance(sync.get("sync_error"), str) else None,
             diff=diff_text,
             usage=usage,
+            baseline=baseline,
         )
 
     def _worktree_path(self, item: WorkItem, repo: LocalRepo) -> Path:
@@ -1178,6 +1251,81 @@ class CodeBuddyExecutor(Executor):
         return layered
 
     @classmethod
+    def _worktree_reusable(cls, target: Path) -> bool:
+        """A real, previously populated worktree we can continue working in."""
+        import subprocess
+
+        if not cls._dir_has_content(target):
+            return False
+
+        def git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(target), *args],
+                capture_output=True, text=True, check=False,
+            )
+
+        # git -C walks up to a parent repo's HEAD, so also require that the
+        # target *itself* is a repo root — otherwise a stale directory inside
+        # the user's git tree would look like a valid worktree.
+        top = git("rev-parse", "--show-toplevel")
+        head = git("rev-parse", "--verify", "HEAD")
+        return (
+            top.returncode == 0
+            and Path(top.stdout.strip()).resolve() == Path(target).resolve()
+            and head.returncode == 0
+        )
+
+    @classmethod
+    def _refresh_worktree(cls, repo: LocalRepo, target: Path) -> None:
+        """Bring a reused worktree's base up to the repo's current HEAD.
+
+        Only touches a **clean** worktree: partial agent edits are preserved
+        as-is (rebasing those is riskier than running on a slightly old base).
+        Fast-forward when possible, otherwise merge the new base in; any
+        failure aborts the merge and leaves the worktree untouched.
+        """
+        import subprocess
+
+        def git(cwd: str | Path, *args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False
+            )
+
+        # 只刷新真正从该仓库派生的 worktree；snapshot / archive 沙箱是独立
+        # 仓库，不能把主仓历史并进去。
+        common = git(target, "rev-parse", "--git-common-dir")
+        repo_common = git(repo.path, "rev-parse", "--git-common-dir")
+        if common.returncode != 0 or repo_common.returncode != 0:
+            return
+        if Path(target, common.stdout.strip()).resolve() != Path(repo.path, repo_common.stdout.strip()).resolve():
+            return
+        repo_head = git(repo.path, "rev-parse", "HEAD")
+        wt_head = git(target, "rev-parse", "HEAD")
+        if repo_head.returncode != 0 or wt_head.returncode != 0:
+            return
+        repo_sha = repo_head.stdout.strip()
+        wt_sha = wt_head.stdout.strip()
+        if not repo_sha or repo_sha == wt_sha:
+            return
+        dirty = git(target, "status", "--porcelain")
+        if dirty.returncode != 0 or dirty.stdout.strip():
+            logger.info("复用 worktree 有未提交改动，保留旧基线：%s", target.name)
+            return
+        if git(target, "merge-base", "--is-ancestor", wt_sha, repo_sha).returncode == 0:
+            merged = git(target, "merge", "--ff-only", repo_sha)
+        else:
+            merged = git(target, "merge", "--no-edit", repo_sha)
+            if merged.returncode != 0:
+                git(target, "merge", "--abort")
+        if merged.returncode != 0:
+            logger.warning(
+                "复用 worktree 无法更新基线（%s）：%s",
+                target.name, (merged.stderr or merged.stdout).strip()[:300],
+            )
+        else:
+            logger.info("复用 worktree 已更新基线：%s -> %s", wt_sha[:8], repo_sha[:8])
+
+    @classmethod
     def _create_worktree(cls, repo: LocalRepo, target: Path) -> bool:
         import subprocess
 
@@ -1191,18 +1339,8 @@ class CodeBuddyExecutor(Executor):
         # HEAD is a half-built sandbox from a failed run — reusing it would
         # treat stale files as the baseline and silently skip changed-file
         # detection. Rebuild that case instead of trusting it.
-        if cls._dir_has_content(target):
-            # git -C walks up to a parent repo's HEAD, so also require that the
-            # target *itself* is a repo root — otherwise a stale directory
-            # inside the user's git tree would look like a valid worktree.
-            top = git("rev-parse", "--show-toplevel", cwd=str(target))
-            head = git("rev-parse", "--verify", "HEAD", cwd=str(target))
-            if (
-                top.returncode == 0
-                and Path(top.stdout.strip()).resolve() == Path(target).resolve()
-                and head.returncode == 0
-            ):
-                return True
+        if cls._worktree_reusable(target):
+            return True
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1842,6 +1980,9 @@ class DshExecutor(CodeBuddyExecutor):
         supports_model_selection: bool | None = None,
         patch_dir: Path | None = None,
         profile_home: Path | None = None,
+        baseline_sync: str = "ff",
+        baseline_remote: str = "origin",
+        fetch_timeout_s: float = 20.0,
     ) -> None:
         super().__init__(
             command=command,
@@ -1855,6 +1996,9 @@ class DshExecutor(CodeBuddyExecutor):
             backend_id=backend_id,
             label=label,
             supports_model_selection=supports_model_selection,
+            baseline_sync=baseline_sync,
+            baseline_remote=baseline_remote,
+            fetch_timeout_s=fetch_timeout_s,
         )
         # The CLI runs with cwd=worktree, so a relative overlay path would be
         # resolved *inside* the worktree and fail with ENOENT. Resolve once,

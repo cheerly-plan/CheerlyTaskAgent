@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .baseline import describe as describe_baseline
 from .executor import build_prompt
+from .memory import memory_text
 from .models import WorkItem
 from .spec import TaskSpec
 
@@ -492,8 +494,13 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             f"| 改动文件 | {len(result.changed_files)} 个 |",
             f"| 执行轮次 | {max(1, int(result.rounds or 1))} 轮 |",
             f"| worktree | {result.worktree or '—'} |",
-            "",
         ]
+        baseline_note = describe_baseline(
+            result.baseline if isinstance(result.baseline, dict) else {}
+        )
+        if baseline_note:
+            lines.append(f"| 基线同步 | {baseline_note} |")
+        lines.append("")
         if result.error:
             lines += [f"> ⚠️ 执行错误：{result.error}", ""]
         if result.changed_files:
@@ -502,6 +509,9 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
 
         if verification:
             lines += _verification_section(verification)
+        memory_hint = memory_text(item.memory)
+        if memory_hint:
+            lines += _collapsed("本次注入的跨任务记忆", memory_hint)
         if item.feedback and int(result.rounds or 1) > 1:
             lines += _collapsed("最后一轮反馈（未通过的原因）", item.feedback)
 

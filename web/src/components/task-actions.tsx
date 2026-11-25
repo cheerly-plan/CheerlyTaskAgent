@@ -1,6 +1,6 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
-import {MoreHorizontal, Plus, RefreshCw, Square, Trash2, FileText, GitMerge, Play} from 'lucide-react';
+import {MoreHorizontal, Plus, RefreshCw, Square, Trash2, FileText, GitBranch, GitMerge, Play} from 'lucide-react';
 
 import {Button, type ButtonProps} from '@/components/ui/button';
 import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
@@ -270,6 +270,24 @@ export function TaskActions({
       });
     }
   }
+  const canDecompose =
+    !container &&
+    !running &&
+    !item.is_container &&
+    !(item.children_ids?.length ?? 0) &&
+    item.merge_state !== 'merged' &&
+    !(item.result && item.result.dry_run === false) &&
+    (item.kind === 'feature' || item.kind === 'task');
+  if (canDecompose) {
+    leading.push({
+      key: 'decompose',
+      label: '拆解为子任务',
+      ariaLabel: '把跨仓/多步骤需求拆成子任务（父需求变成容器，不单独执行）',
+      icon: <GitBranch />,
+      onClick: () => onAction('decompose', item.id),
+      variant: 'outline',
+    });
+  }
   if (running) {
     leading.push({
       key: 'cancel',
@@ -304,23 +322,34 @@ export function TaskActions({
   });
 
   const allActions = [...leading, ...trailing];
+  const limit = maxVisibleActions ?? 0;
+  // 「…」本身也占一个按钮位：总操作数 > 3 时只留 2 个主操作 + 「…」，
+  // 保证操作列里始终最多 3 个按钮。
+  const overflow = limit > 0 && allActions.length > limit;
+  const visibleLimit = Math.max(1, limit - (overflow ? 1 : 0));
+  const rowClass = cn(
+    'flex flex-nowrap items-center justify-end whitespace-nowrap',
+    maxVisibleActions
+      ? 'gap-1 [&_button]:!size-6 [&_button_svg]:!size-3'
+      : 'gap-1.5',
+  );
 
-  if (maxVisibleActions && allActions.length > maxVisibleActions) {
-    // 优先保留「执行/取消」和「删除」，其余收进更多菜单。
+  if (overflow) {
+    // 优先保留「执行/取消/报告/合并」，删除等低频或危险操作收进更多菜单。
     const picked = new Set<string>();
-    for (const key of ['exec', 'apply', 'cancel', 'delete']) {
-      if (picked.size >= maxVisibleActions) break;
+    for (const key of ['exec', 'apply', 'cancel', 'report', 'merge', 'verify', 'force-merge', 'decompose', 'delete']) {
+      if (picked.size >= visibleLimit) break;
       if (allActions.some((action) => action.key === key)) picked.add(key);
     }
     for (const action of allActions) {
-      if (picked.size >= maxVisibleActions) break;
+      if (picked.size >= visibleLimit) break;
       picked.add(action.key);
     }
     const visible = allActions.filter((action) => picked.has(action.key));
     const hidden = allActions.filter((action) => !picked.has(action.key));
     return (
       <div
-        className="flex flex-nowrap items-center justify-end gap-1.5 whitespace-nowrap"
+        className={rowClass}
         onClick={(event) => event.stopPropagation()}
       >
         {visible.map((action) => (
@@ -334,7 +363,7 @@ export function TaskActions({
 
   return (
     <div
-      className="flex flex-nowrap items-center justify-end gap-1.5 whitespace-nowrap"
+      className={rowClass}
       onClick={(event) => event.stopPropagation()}
     >
       {leading.map((action) => (

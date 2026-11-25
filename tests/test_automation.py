@@ -168,7 +168,7 @@ async def test_dispatch_starts_selected_ready_items(tmp_path: Path, real_repo: P
     item = _ready_item(store, real_repo, "自动跑我")
     calls: list[str] = []
 
-    def fake_run_auto(item_id: str, *, plan: str = ""):
+    def fake_run_auto(item_id: str, *, plan: str = "", exec_mode: str = "apply", manual: bool = False):
         fresh = store.get(item_id)
         fresh.auto = True
         fresh.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
@@ -189,7 +189,7 @@ async def test_dispatch_ready_item_passes_short_plan(tmp_path: Path, real_repo: 
     item = _ready_item(store, real_repo, "自动跑我")
     plans: list[str] = []
 
-    def fake_run_auto(item_id: str, *, plan: str = ""):
+    def fake_run_auto(item_id: str, *, plan: str = "", exec_mode: str = "apply", manual: bool = False):
         plans.append(plan)
         fresh = store.get(item_id)
         fresh.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
@@ -222,7 +222,7 @@ async def test_dispatch_single_repo_needs_no_llm(tmp_path: Path, real_repo: Path
     store.save(item)
     plans: list[str] = []
 
-    def fake_run_auto(item_id: str, *, plan: str = ""):
+    def fake_run_auto(item_id: str, *, plan: str = "", exec_mode: str = "apply", manual: bool = False):
         plans.append(plan)
         fresh = store.get(item_id)
         fresh.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
@@ -418,3 +418,51 @@ def test_link_parent_relations_normalises_existing_container(tmp_path: Path, rea
     assert fixed.status == ItemStatus.DISCOVERED
     assert fixed.stage == CONTAINER_STAGE
     assert fixed.children_ids == [child.source_ref]
+
+
+async def test_run_auto_dry_run_does_not_touch_repo(tmp_path: Path, real_repo: Path):
+    """数据源 dry-run 时，自动链路只生成命令，绝不改仓库。"""
+    import asyncio
+
+    scheduler, store, _, _ = _scheduler(tmp_path)
+    item = _ready_item(store, real_repo, "只出方案")
+    before = (real_repo / "app.py").read_text(encoding="utf-8")
+
+    scheduler.run_auto(item.id, exec_mode="dry-run")
+    for _ in range(200):
+        saved = store.get(item.id)
+        if saved is not None and saved.status in (ItemStatus.SUCCEEDED, ItemStatus.FAILED):
+            break
+        await asyncio.sleep(0.02)
+
+    saved = store.get(item.id)
+    assert saved is not None
+    assert saved.status == ItemStatus.SUCCEEDED
+    assert saved.result is not None and saved.result.dry_run is True
+    assert saved.auto is True
+    # dry-run 不消耗“已自动派发”，评估后还能切 apply 补跑。
+    assert saved.auto_dispatched_at == ""
+    assert (real_repo / "app.py").read_text(encoding="utf-8") == before
+
+
+async def test_dispatch_can_upgrade_dry_run_item_to_apply(tmp_path: Path, real_repo: Path):
+    scheduler, store, _, _ = _scheduler(tmp_path)
+    engine = AutomationEngine(scheduler=scheduler, store=store, events=scheduler.events)
+    item = _ready_item(store, real_repo, "先评后跑")
+    item.status = ItemStatus.SUCCEEDED
+    item.exec_mode = "dry-run"
+    item.auto = True
+    item.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
+    item.result = RunResult(ok=True, dry_run=True, command="codebuddy -p ...")
+    store.save(item)
+    calls: list[str] = []
+
+    def fake_run_auto(item_id: str, *, plan: str = "", exec_mode: str = "apply", manual: bool = False):
+        calls.append(exec_mode)
+
+    scheduler.run_auto = fake_run_auto  # type: ignore[method-assign]
+    result = await engine.dispatch(
+        [item.id], trigger="manual", exec_mode="apply", force=True
+    )
+    assert result["started"] == [item.id]
+    assert calls == ["apply"]

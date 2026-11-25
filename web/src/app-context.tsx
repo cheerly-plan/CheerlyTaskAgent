@@ -524,6 +524,13 @@ export function AppProvider({
           } else {
             toast.warning('强制合并未成功，请查看报告');
           }
+        } else if (action === 'decompose') {
+          const ok = await confirm(
+            '把这条需求拆成子任务？父需求会变成容器（不再单独执行），拆解需要「模型配置」里有可用的后端 Agent 模型。',
+          );
+          if (!ok) return;
+          const result = await endpoints.decomposeItem(id, {auto_run: false});
+          toast.success(`已拆成 ${result.children.length} 个子任务，可分别执行或在「自动执行」里批量跑`);
         } else if (action === 'cancel') {
           await endpoints.cancelItem(id);
         } else if (action === 'delete') {
@@ -781,6 +788,19 @@ export function AppProvider({
           base: (next.delivery?.base || '').trim(),
           provider: next.delivery?.provider ?? '',
           api_base: (next.delivery?.api_base || '').trim(),
+        },
+        automation: {
+          allowed_kinds: (next.automation?.allowed_kinds ?? [])
+            .map((kind) => kind.trim())
+            .filter(Boolean),
+          repo_allowlist: (next.automation?.repo_allowlist ?? [])
+            .map((repo) => repo.trim())
+            .filter(Boolean),
+          failure_threshold: Math.max(1, Number(next.automation?.failure_threshold) || 3),
+          cooldown_minutes: Math.max(1, Number(next.automation?.cooldown_minutes) || 30),
+          max_recoveries: Math.max(0, Number(next.automation?.max_recoveries ?? 1) || 0),
+          decompose: next.automation?.decompose === true,
+          max_subtasks: Math.max(2, Math.min(5, Number(next.automation?.max_subtasks ?? 4) || 4)),
         },
       };
       try {

@@ -250,6 +250,70 @@ export interface DeliverySettings {
   api_base: string;
 }
 
+export interface AutomationSettings {
+  /** 空 = 不限制类型。 */
+  allowed_kinds: string[];
+  /** 空 = 所有已映射仓库都允许自动执行。 */
+  repo_allowlist: string[];
+  failure_threshold: number;
+  cooldown_minutes: number;
+  max_recoveries: number;
+  /** 多仓需求自动拆解（默认关闭）。 */
+  decompose: boolean;
+  max_subtasks: number;
+}
+
+export interface MemoryCluster {
+  repo: string;
+  signature: string;
+  summary: string;
+  count: number;
+  last_seen: string;
+  sample_error: string;
+  sample_title: string;
+}
+
+export interface MemoryState {
+  stats: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    success_rate: number;
+    avg_rounds: number;
+  };
+  clusters: MemoryCluster[];
+  recent: {
+    id: string;
+    repo: string;
+    title: string;
+    ok: boolean;
+    status: string;
+    rounds: number;
+    summary: string;
+    created_at: string;
+  }[];
+}
+
+export interface DecomposeResult {
+  parent: WorkItem;
+  children: WorkItem[];
+  started: string[];
+  skipped: {id: string; reason: string}[];
+}
+
+export interface CircuitRepoState {
+  open?: boolean;
+  failures?: number;
+  open_until?: string;
+  until?: string;
+  last_error?: string;
+}
+
+export interface AutomationState {
+  policy: AutomationSettings;
+  repos: Record<string, CircuitRepoState>;
+}
+
 export interface UISettings {
   executor: string;
   codebuddy_command: string;
@@ -264,6 +328,7 @@ export interface UISettings {
   tapd: TapdSettings;
   data_source: DataSource;
   delivery: DeliverySettings;
+  automation: AutomationSettings;
 }
 
 export interface AutoRunResult {
@@ -310,7 +375,7 @@ export interface MappingDraft {
 
 export type ItemAction =
   | 'map' | 'dry' | 'apply' | 'exec' | 'cancel' | 'delete' | 'report'
-  | 'merge' | 'verify' | 'force-merge';
+  | 'merge' | 'verify' | 'force-merge' | 'decompose';
 
 export class ApiError extends Error {}
 
@@ -365,6 +430,20 @@ export const endpoints = {
 
   settings: () => api<UISettings>('/api/settings'),
   saveSettings: (body: UISettings) => api<UISettings>('/api/settings', jsonInit('PUT', body)),
+
+  // 自动执行准入策略 + 各仓库熔断状态。
+  automationState: () => api<AutomationState>('/api/automation'),
+  memory: (repo?: string) =>
+    api<MemoryState>(repo ? `/api/memory?repo=${encodeURIComponent(repo)}` : '/api/memory'),
+  clearMemory: (repo?: string) =>
+    api<{removed: number}>('/api/memory/clear', jsonInit('POST', repo ? {repo} : {})),
+  decomposeItem: (id: string, body: {auto_run?: boolean; max_subtasks?: number} = {}) =>
+    api<DecomposeResult>(`/api/items/${id}/decompose`, jsonInit('POST', body)),
+  resetCircuit: (repo?: string) =>
+    api<{reset: number; state: AutomationState}>(
+      '/api/automation/circuit/reset',
+      jsonInit('POST', repo ? {repo} : {}),
+    ),
 
   // 任务中心手动触发：只自动执行勾选的任务。
   autoRun: (ids: string[]) => api<AutoRunResult>('/api/tasks/auto-run', jsonInit('POST', {ids})),
