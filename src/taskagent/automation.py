@@ -29,7 +29,7 @@ from .admission import (
     normalise_automation,
     outcome_of,
 )
-from .decompose import create_children
+from .decompose import create_children, multi_repo_evidence
 from .decompose import plan as plan_decomposition
 from .events import Event
 from .llm import AgentLLM, AgentModel, resolve_agent_model
@@ -112,13 +112,18 @@ class AutomationEngine:
                 candidates = self._candidates(item)
                 # 多仓需求：开启自动拆解时先拆成子任务（只对顶层需求；
                 # 子任务不再递归拆解，避免无限套娃）。
+                # TAPD 绑定多个仓库只说明「可能跨仓」，还要求需求文本本身
+                # 有跨仓或前后端信号，否则退回正常单仓规划，避免误拆。
+                evidence = multi_repo_evidence(item, candidates)
                 if (
                     policy.decompose
                     and not item.parent_ref
                     and item.kind == ItemKind.FEATURE
-                    and len(candidates) > 1
+                    and evidence
                 ):
-                    children = await self._decompose(item, candidates, policy, exec_mode)
+                    children = await self._decompose(
+                        item, candidates, policy, exec_mode, evidence=evidence
+                    )
                     if children:
                         child_result = await self.dispatch(
                             [child.id for child in children],
@@ -233,6 +238,8 @@ class AutomationEngine:
         candidates,
         policy: AutomationPolicy,
         exec_mode: str | None,
+        *,
+        evidence: str = "",
     ) -> list[WorkItem]:
         agent = self._agent_model()
         if agent is None or not agent.base_url or not agent.api_key:
@@ -253,8 +260,12 @@ class AutomationEngine:
         self.events.publish(Event("item_decomposed", item.id, {
             "children": [child.id for child in children],
             "trigger": "auto",
+            "evidence": evidence,
         }))
-        logger.info("自动拆解 %s：%d 个子任务（模式 %s）", item.id, len(children), exec_mode or "inherit")
+        logger.info(
+            "自动拆解 %s：%d 个子任务（模式 %s；依据 %s）",
+            item.id, len(children), exec_mode or "inherit", evidence or "未记录",
+        )
         return children
 
     def _agent_model(self) -> AgentModel | None:

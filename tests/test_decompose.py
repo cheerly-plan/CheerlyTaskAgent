@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from taskagent.automation import AutomationEngine
 from taskagent.backfill import build_children_comment, parse_tapd_ref
-from taskagent.decompose import SubTask, build_prompt, create_children, parse
+from taskagent.decompose import SubTask, build_prompt, create_children, multi_repo_evidence, parse
 from taskagent.events import EventBus
 from taskagent.executor import ExecutorRegistry
 from taskagent.gitmap import GitProjectRegistry
@@ -232,6 +232,100 @@ async def test_auto_decompose_failure_falls_back_to_single_repo(tmp_path: Path, 
     result = await engine.dispatch([parent.id], trigger="tapd-poll", exec_mode="apply")
     assert result["started"] == []
     assert store.get(parent.id).is_container is False
+
+
+# ── 是否需要拆解：绑定多仓只是「可能跨仓」 ───────────────────────────────────
+def _multi_candidates(projects: ProjectRegistry):
+    return [m for m in projects.list() if m.enabled]
+
+
+def test_multi_repo_evidence_requires_text_signal(tmp_path: Path):
+    """工作区绑定两个仓库，但需求只改前端：不算跨仓。"""
+    projects = _projects(tmp_path)
+    candidates = _multi_candidates(projects)
+    item = WorkItem.create(
+        title="按钮文案微调", description="只改前端页面上的文案", kind="feature"
+    )
+    assert len(candidates) == 2
+    assert multi_repo_evidence(item, candidates) == ""
+
+
+def test_multi_repo_evidence_accepts_frontend_and_backend(tmp_path: Path):
+    projects = _projects(tmp_path)
+    item = WorkItem.create(
+        title="会员中心改版",
+        description="前端页面 + 后端接口 + 数据库迁移",
+        kind="feature",
+    )
+    assert "跨仓信号" in multi_repo_evidence(item, _multi_candidates(projects))
+
+
+def test_multi_repo_evidence_ignores_negated_backend(tmp_path: Path):
+    """“不涉及后端接口”不能算提到后端。"""
+    projects = _projects(tmp_path)
+    item = WorkItem.create(
+        title="前端按钮样式", description="只改前端页面，不涉及后端接口", kind="feature"
+    )
+    assert multi_repo_evidence(item, _multi_candidates(projects)) == ""
+
+
+def test_multi_repo_evidence_single_candidate_never_decomposes(tmp_path: Path):
+    projects = _projects(tmp_path)
+    item = WorkItem.create(
+        title="改版", description="前端页面 + 后端接口", kind="feature"
+    )
+    assert multi_repo_evidence(item, _multi_candidates(projects)[:1]) == ""
+
+
+def test_multi_repo_evidence_explicit_wording(tmp_path: Path):
+    projects = _projects(tmp_path)
+    item = WorkItem.create(
+        title="跨仓改造", description="统一两个仓库的配置", kind="feature"
+    )
+    assert "跨仓" in multi_repo_evidence(item, _multi_candidates(projects))
+
+
+async def test_auto_decompose_skipped_for_single_repo_item_in_multi_repo_workspace(
+    tmp_path: Path, monkeypatch
+):
+    """工作区绑定两个仓库，但需求只改前端：不自动拆解，退回单仓规划。"""
+    store = TaskStore(tmp_path / "tasks")
+    projects = _projects(tmp_path)
+    parent = WorkItem.create(
+        title="任务中心按钮文案微调",
+        description="只改前端页面上的按钮文案，不动其他模块",
+        kind="feature",
+        source="tapd",
+        source_ref="tapd:story:43",
+    )
+    parent.tapd_workspace_id = "ws-1"
+    parent.status = ItemStatus.DISCOVERED
+    store.save(parent)
+    scheduler = FakeScheduler(store, projects)
+    engine = AutomationEngine(
+        scheduler=scheduler, store=store, events=EventBus(), settings=FakeSettings()
+    )
+    engine._agent_model = lambda: SimpleNamespace(base_url="http://x", api_key="k")  # type: ignore
+
+    class DecomposeOnlyLLM:
+        last_usage = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def complete(self, *args, **kwargs):
+            return _reply([
+                {"title": "后端接口", "repo": "repo-a", "kind": "feature"},
+                {"title": "前端页面", "repo": "repo-b", "kind": "feature", "depends_on": [0]},
+            ])
+
+    monkeypatch.setattr("taskagent.automation.AgentLLM", DecomposeOnlyLLM)
+    await engine.dispatch([parent.id], trigger="tapd-poll", exec_mode="dry-run")
+
+    saved = store.get(parent.id)
+    assert saved.is_container is False
+    assert saved.children_ids == []
+
 
 # ── 父需求汇总 ───────────────────────────────────────────────────────────────
 def _scheduler_with_children(tmp_path: Path):

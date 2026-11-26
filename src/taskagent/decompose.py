@@ -72,6 +72,74 @@ def candidates_for(scheduler, item: WorkItem) -> list[ProjectMapping]:
     return [m for m in projects.list() if m.enabled][:6]
 
 
+# ── 是否需要拆解：TAPD 绑定多仓只是「可能跨仓」，不构成拆解依据 ────────────────
+# 只有需求文本显式声明跨仓、或同时提到前后端时，才认为这条需求真的跨仓。
+# 否则一个工作区绑定多个仓库会让「只改前端文案」的需求也被拆成子任务。
+EXPLICIT_MULTI_REPO_HINTS: tuple[str, ...] = (
+    "跨仓", "跨仓库", "多仓", "多个仓库", "多仓库", "跨服务", "多个服务", "多个子项目",
+)
+_FRONT_HINTS: tuple[str, ...] = ("前端", "页面", "界面")
+_BACK_HINTS: tuple[str, ...] = ("后端", "接口", "服务端", "数据库")
+# 否定前缀：命中词紧跟在这些词后面时不算数（“只改前端，不涉及后端”）。
+_NEGATIONS: tuple[str, ...] = (
+    "不涉及", "不包含", "不改", "不动", "无需", "不需要", "不用", "不含", "没有", "非",
+)
+
+
+def _mentions(text: str, hint: str) -> bool:
+    """True when ``hint`` appears without a nearby negation."""
+    start = 0
+    while True:
+        index = text.find(hint, start)
+        if index < 0:
+            return False
+        if not any(neg in text[max(0, index - 5):index] for neg in _NEGATIONS):
+            return True
+        start = index + len(hint)
+
+
+def _item_text(item: Any) -> str:
+    """Title + description + spec goal, so a cross-repo requirement declared
+    only in the structured goal still counts."""
+    spec = getattr(item, "spec", None)
+    goal = getattr(spec, "goal", "") if spec is not None else ""
+    return "\n".join(
+        str(part or "")
+        for part in (
+            getattr(item, "title", ""),
+            getattr(item, "description", ""),
+            goal,
+        )
+    )
+
+
+def multi_repo_evidence(item: Any, candidates: list[Any]) -> str:
+    """Human-readable reason when this item is genuinely cross-repo.
+
+    ``candidates`` must be the TAPD-bound enabled repos (``AutomationEngine``
+    already passes exactly that). Empty string means "do not auto-decompose":
+    fall back to normal single-repo planning instead.
+
+    Two evidence sources, both requiring a real signal in the item text:
+    1. explicit wording (跨仓 / 多仓 / 跨服务 …)
+    2. front-end *and* back-end wording together — this is what a typical
+       "接口 + 页面" requirement looks like, while "只改前端按钮" stays single.
+    """
+    if len(candidates) <= 1:
+        return ""
+    lowered = _item_text(item).lower()
+    explicit = [hint for hint in EXPLICIT_MULTI_REPO_HINTS if _mentions(lowered, hint)]
+    front = [hint for hint in _FRONT_HINTS if _mentions(lowered, hint)]
+    back = [hint for hint in _BACK_HINTS if _mentions(lowered, hint)]
+    if not explicit and not (front and back):
+        return ""
+    signals = explicit or [f"{front[0]}+{back[0]}"]
+    return (
+        f"TAPD 工作区绑定 {len(candidates)} 个仓库，需求文本命中跨仓信号："
+        f"{'、'.join(signals[:3])}"
+    )
+
+
 def build_prompt(item: WorkItem, candidates: list[ProjectMapping], *, max_subtasks: int) -> str:
     repos = "\n".join(repo_brief(c) for c in candidates)
     return (
