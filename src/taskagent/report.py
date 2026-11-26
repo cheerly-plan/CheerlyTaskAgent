@@ -560,6 +560,21 @@ def render_report(item: WorkItem, parent_title: str = "") -> str:
             lines += _collapsed("本次注入的跨任务记忆", memory_hint)
         if item.feedback and int(result.rounds or 1) > 1:
             lines += _collapsed("最后一轮反馈（未通过的原因）", item.feedback)
+        if getattr(item, "attempts", None):
+            trace_lines = []
+            for record in item.attempts:
+                label = record.get("label") or f"#{record.get('seq', '?')}"
+                outcome = record.get("outcome", "")
+                kind = record.get("kind") or "-"
+                rounds = record.get("rounds") or 0
+                state = record.get("gate_state") or "-"
+                head = f"- {label} 尝试{record.get('attempt', '?')}：{outcome}（分类 {kind}，轮次 {rounds}，门禁 {state}）"
+                trace_lines.append(head)
+                if record.get("error"):
+                    trace_lines.append(f"   错误：{str(record['error'])[:300]}")
+                if record.get("feedback"):
+                    trace_lines.append(f"   反馈：{str(record['feedback'])[:300]}")
+            lines += _collapsed("执行尝试记录（每次尝试的结果与失败原因）", "\n".join(trace_lines))
 
         # 所有 apply（人工/自动）：门禁通过后由 scheduler 做原子合并。
         if item.hold_merge:

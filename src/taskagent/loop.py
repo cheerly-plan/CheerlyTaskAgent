@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .failure import gate_repairable
 from .models import RunResult, WorkItem
 from .usage import TokenUsage
 
@@ -37,17 +38,8 @@ ShouldCancelFn = Callable[[], bool]
 GateFn = Callable[[WorkItem, RunResult], Awaitable[dict[str, Any]]]
 StageFn = Callable[[str], None]
 
-# 这些门禁状态说明「agent 再改一改就可能过」，值得再来一轮。
-REPAIRABLE_STATES = frozenset({
-    "failed",              # 检查失败
-    "review_blocked",      # LLM 评审 block
-    "test_files_changed",  # 动了测试/快照
-    "protected_files_changed",
-    "too_many_files",
-    "diff_too_large",
-    "no_changes",          # 声称做完了但没有改动
-    "assertion_failed",    # 验收断言可执行但没通过，下一轮有机会修复
-})
+# 门禁可修状态集合已统一到 failure.REPAIRABLE_STATES（此处 re-export 兼容
+# 既有 import）；注释保留：这些状态说明「agent 再改一改就可能过」。
 
 _STATE_HINTS = {
     "test_files_changed": "不要修改或删除已有测试/快照文件；需要补测试请新增测试文件。",
@@ -75,16 +67,8 @@ class LoopOutcome:
 
 
 def repairable(gate: dict[str, Any]) -> bool:
-    """Whether another agent round could plausibly fix this gate verdict.
-
-    断言门禁保留旧 ``state`` 语义，新判定在 ``assertion_state``；两者都看才能
-    在不改写旧字段的前提下继续触发修复轮次。
-    """
-    states = {
-        str(gate.get("state") or ""),
-        str(gate.get("assertion_state") or ""),
-    }
-    return bool(states & REPAIRABLE_STATES)
+    """兼容入口；规则已统一到 failure.gate_repairable（判定等价）。"""
+    return gate_repairable(gate)
 
 
 def _clip(text: str, limit: int) -> str:

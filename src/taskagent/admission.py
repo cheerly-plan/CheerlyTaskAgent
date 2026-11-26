@@ -373,8 +373,11 @@ def outcome_of(item: Any) -> OutcomeRecord:
     verified = not isinstance(verification, dict) or verification.get("ok", True)
     succeeded = getattr(getattr(item, "status", ""), "value", getattr(item, "status", "")) == "succeeded"
     ok = bool(succeeded and getattr(item, "merge_state", "") != "blocked" and verified)
-    scope = str(getattr(result, "failure_scope", "") or "")
-    countable = result is not None and scope in ("", "repo")
+    from .failure import is_countable_scope
+
+    countable = result is not None and is_countable_scope(
+        getattr(result, "failure_scope", "")
+    )
     error = (
         getattr(item, "error", "")
         or getattr(result, "error", "")

@@ -264,8 +264,10 @@ class TaskMemory:
         if result is None or getattr(result, "dry_run", False):
             return None
         # 环境/预算类失败不是仓库的健康信号，不入库（否则一次 CLI 配错会污染
-        # 所有仓库的失败聚类）。
-        if str(getattr(result, "failure_scope", "") or "") not in {"", "repo"}:
+        # 所有仓库的失败聚类）。计数范围已统一到 failure.is_countable_scope。
+        from .failure import is_countable_scope
+
+        if not is_countable_scope(getattr(result, "failure_scope", "")):
             return None
         status = getattr(getattr(item, "status", ""), "value", getattr(item, "status", ""))
         if status not in {"succeeded", "failed"}:

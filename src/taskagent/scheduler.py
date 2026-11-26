@@ -1684,19 +1684,22 @@ class Scheduler:
             }
 
     # ── execution ──────────────────────────────────────────────────────────────
-    async def _execute(self, item_id: str) -> None:
+    async def _execute(self, item_id: str, *, retry_feedback: str = "") -> None:
         """Run one work item under a lease, then report the outcome.
 
         The wrapper owns two cross-cutting concerns so the (long) execution
         body stays untouched: lease heartbeat/release and the automatic-run
         outcome hook used by the circuit breaker.
+
+        ``retry_feedback`` carries the previous CLI failure into a scheduling
+        retry (see ``_execute_inner``): normal starts leave it empty.
         """
         heartbeat = asyncio.create_task(
             self._lease_heartbeat(item_id), name=f"lease-{item_id}"
         )
         self._live_runs.add(item_id)
         try:
-            await self._execute_inner(item_id)
+            await self._execute_inner(item_id, retry_feedback=retry_feedback)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1715,9 +1718,65 @@ class Scheduler:
                 # 心跳自身的意外错误不能阻断收尾（释放租约 / 熔断记账）。
                 logger.warning("租约心跳异常：%s", item_id, exc_info=True)
             self._release_lease(item_id)
+            self._record_attempt_trace(item_id)
             self._notify_auto_outcome(item_id)
             self._record_memory(item_id)
             await self._finalize_parent(item_id)
+
+    def _record_attempt_trace(self, item_id: str) -> None:
+        """Append one structured record for the attempt that just finished.
+
+        Append-only across re-arms so the board/report can answer "which round
+        failed and why". Bounded to the most recent 12 records to avoid an
+        unbounded JSON file on long-lived items.
+        """
+        from .failure import FailureKind, classify_exec_error
+
+        item = self.store.get(item_id)
+        if item is None or item.attempt <= 0:
+            return
+        result = item.result
+        status = getattr(item.status, "value", str(item.status))
+
+        # outcome: terminal state, or a retry scheduled for the next attempt.
+        if status == "succeeded":
+            outcome = "succeeded"
+        elif status == "cancelled":
+            outcome = "cancelled"
+        elif status == "ready":
+            outcome = "retry_scheduled"  # 调度级重试：本轮失败，已排下一轮
+        else:
+            outcome = "failed"
+
+        error = str(
+            item.error
+            or (getattr(result, "error", None) if result is not None else None)
+            or ""
+        ).strip()
+        gate = getattr(result, "verification", None) if result is not None else None
+        gate = gate if isinstance(gate, dict) else {}
+        kind = FailureKind.REPO.value
+        if error:
+            kind = classify_exec_error(error).value
+        elif gate and not gate.get("ok", True):
+            kind = FailureKind.REPO.value
+        if (getattr(result, "failure_scope", "") or "") in {"environment", "budget"}:
+            kind = str(result.failure_scope)
+
+        record = {
+            "seq": len(item.attempts) + 1,
+            "attempt": item.attempt,
+            "at": item.finished_at or item.started_at or _utcnow(),
+            "outcome": outcome,
+            "error": error[:300],
+            "kind": kind,
+            "rounds": int(getattr(result, "rounds", 0) or 0) if result else 0,
+            "gate_state": str(gate.get("assertion_state") or gate.get("state") or ""),
+            "feedback": (item.feedback or "")[:500],
+        }
+        item.attempts.append(record)
+        del item.attempts[:-12]  # 只保留最近 12 条
+        self.store.save(item)
 
     def _mark_crashed(self, item_id: str, exc: BaseException) -> None:
         item = self.store.get(item_id)
@@ -1818,7 +1877,7 @@ class Scheduler:
         except Exception:
             logger.warning("自动执行结果记账失败：%s", item_id, exc_info=True)
 
-    async def _execute_inner(self, item_id: str) -> None:
+    async def _execute_inner(self, item_id: str, *, retry_feedback: str = "") -> None:
         probe = self.store.get(item_id)
         repo_lock = self._repo_lock(probe)
         parent_lock = self._parent_lock(probe)
@@ -1870,7 +1929,9 @@ class Scheduler:
             item.status = ItemStatus.RUNNING
             item.attempt += 1
             item.started_at = item.started_at or _utcnow()
-            item.feedback = ""
+            # 调度级重试（CLI 自身失败）把上一轮的失败原因放进 feedback 注入提示词；
+            # 正常执行 / 人工重新执行仍清空，保持原有「不带历史反馈」语义。
+            item.feedback = (retry_feedback or "").strip()[:4000]
             item.memory = {}
             self._touch_lease(item)
             self.store.save(item)
@@ -2063,8 +2124,42 @@ class Scheduler:
                 else:
                     item.stage = "完成"
                 if verify_failure:
-                    # 验证没过 = 这单没有交付；置 failed 以便留在任务中心可重试，
-                    # 而不是归档进历史。
+                    # 验证没过 = 这单没有交付。自动任务在次数/预算允许、且门禁状态
+                    # 确实可修时，带着结构化诊断再跑一轮；否则置 failed 留在任务
+                    # 中心供人工处理，而不是归档进历史。
+                    from .failure import gate_repairable
+
+                    gate = gate if isinstance(gate, dict) else {}
+                    can_verify_retry = (
+                        item.auto
+                        and not budget_stop
+                        and item.attempt < item.max_attempts
+                        and gate_repairable(gate)
+                    )
+                    if can_verify_retry:
+                        delay = self.settings.retry_delays[
+                            min(item.attempt - 1, len(self.settings.retry_delays) - 1)
+                        ]
+                        retry_feedback = _build_verify_retry_feedback(
+                            gate, attempt=item.attempt, max_attempts=item.max_attempts
+                        )
+                        item.status = ItemStatus.READY
+                        item.stage = (
+                            f"验证未通过，{delay:g}s 后重试"
+                            f"（{item.attempt}/{item.max_attempts}）：{verify_failure}"
+                        )
+                        item.error = f"验证未通过：{verify_failure}"
+                        item.feedback = retry_feedback
+                        self.store.save(item)
+                        self.events.publish(Event("item_retry", item_id, {
+                            "delay": delay, "reason": "verification",
+                        }))
+                        await asyncio.sleep(delay)
+                        self._spawn(
+                            self._execute(item_id, retry_feedback=retry_feedback),
+                            name=f"work-{item_id}-verify-retry",
+                        )
+                        return
                     item.status = ItemStatus.FAILED
                     if budget_stop:
                         item.stage = f"{budget_stop}，已停止重试"
@@ -2079,13 +2174,20 @@ class Scheduler:
                     delay = self.settings.retry_delays[
                         min(item.attempt - 1, len(self.settings.retry_delays) - 1)
                     ]
+                    retry_feedback = _build_retry_feedback(
+                        result.error, attempt=item.attempt, max_attempts=item.max_attempts
+                    )
                     item.status = ItemStatus.READY
                     item.stage = f"重试前等待 {delay:g}s"
                     item.error = result.error
+                    item.feedback = retry_feedback
                     self.store.save(item)
                     self.events.publish(Event("item_retry", item_id, {"delay": delay}))
                     await asyncio.sleep(delay)
-                    self._spawn(self._execute(item_id), name=f"work-{item_id}-retry")
+                    self._spawn(
+                        self._execute(item_id, retry_feedback=retry_feedback),
+                        name=f"work-{item_id}-retry",
+                    )
                     return
                 item.status = ItemStatus.FAILED
                 item.stage = "失败"
@@ -2129,10 +2231,64 @@ class Scheduler:
 
 
 def _is_retryable(error: str | None) -> bool:
-    if not error:
-        return False
-    lowered = error.lower()
-    return any(word in lowered for word in ("timeout", "timed out", "rate", "429", "503", "502"))
+    """兼容入口；规则已统一到 failure.is_retryable（判定等价）。"""
+    from .failure import is_retryable
+
+    return is_retryable(error)
+
+
+def _build_retry_feedback(
+    error: str | None, *, attempt: int, max_attempts: int
+) -> str:
+    """把 CLI 执行失败转成下一轮可操作的反馈，注入提示词。
+
+    与 ``loop.build_feedback``（门禁/评审失败）互补：这里处理的是 agent 进程
+    根本没跑完的情况——超时、限流、服务暂时不可用。这类错误不是代码写错，
+    而是执行环境抖动，所以反馈重点不是「改哪行」，而是告诉 agent 上次做到
+    哪一步、本轮从哪里续上，避免重复劳动或推倒重来。
+    """
+    lowered = (error or "").lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        cause = (
+            "上一轮 CLI 执行超时：任务可能在跑测试/构建时耗时过长。"
+            "本轮优先缩小改动范围、聚焦最小修改，避免触发长时间的全量检查。"
+        )
+    elif any(word in lowered for word in ("rate", "429")):
+        cause = (
+            "上一轮 CLI 遇到调用限流（rate limit）：本轮减少不必要的重复探测，"
+            "直接针对需求改动，避免大量试探性命令。"
+        )
+    else:  # 502 / 503 等服务暂时不可用
+        cause = (
+            "上一轮 CLI 因服务端暂时不可用而中断（502/503）：这不是代码问题。"
+            "本轮继续完成原任务即可；如 worktree 已有部分改动，先检查再续做，不要推倒重来。"
+        )
+    parts = [
+        f"这是第 {attempt}/{max_attempts} 次执行，上一轮 agent 进程未能正常完成（执行失败，非验证不通过）。",
+        cause,
+    ]
+    if error:
+        parts.append(f"原始错误：{error.strip()[:500]}")
+    parts.append("请继续完成原任务；worktree 中的历史改动会保留，先确认现状再动手。")
+    return "\n".join(parts)
+
+
+def _build_verify_retry_feedback(
+    gate: dict, *, attempt: int, max_attempts: int
+) -> str:
+    """把验证/评审未通过的门禁结论转成下一轮可操作的反馈。
+
+    复用 ``loop.build_feedback`` 的结构化诊断（review issues / check diagnostics），
+    而不是把门禁原始输出整段倒给模型。外层加一句"在现有改动上续做"，让调度级
+    重试与 L2 轮次共享同一 worktree 的语义保持一致。
+    """
+    from .loop import build_feedback
+
+    detail = build_feedback(gate, round_no=attempt, max_rounds=max_attempts)
+    return (
+        "上一轮代码已产出，但验证/评审未通过；工作区保留了上一轮的改动，"
+        "请在现有基础上修复，不要推倒重来。\n" + detail
+    )
 
 
 def _utcnow() -> str:

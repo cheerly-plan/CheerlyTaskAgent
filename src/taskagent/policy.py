@@ -310,7 +310,9 @@ def _countable_failure(item: Any) -> bool:
     result = getattr(item, "result", None)
     if result is None or getattr(result, "dry_run", False):
         return False
-    if str(getattr(result, "failure_scope", "") or "") not in {"", "repo"}:
+    from .failure import is_countable_scope
+
+    if not is_countable_scope(getattr(result, "failure_scope", "")):
         return False
     status = getattr(getattr(item, "status", ""), "value", getattr(item, "status", ""))
     if status not in {"succeeded", "failed"}:

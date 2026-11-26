@@ -294,6 +294,9 @@ class WorkItem:
     parent_context: str = ""         # 父需求标题+描述快照，执行时注入子任务提示词
     spec: dict[str, Any] = field(default_factory=dict)  # TaskSpec（目标/验收/约束/风险）
     feedback: str = ""               # 上一轮验证/评审未通过的原因，注入下一轮提示词
+    # 每次执行尝试的结构化记录（append-only，跨重新执行保留，便于复盘"哪轮为何失败"）。
+    # 每条含 seq/attempt/at/outcome/error/kind/rounds/gate_state/feedback。
+    attempts: list[dict[str, Any]] = field(default_factory=list)
     # 跨任务记忆召回：{similar:[...], failures:[...]}，执行前注入提示词/报告。
     memory: dict[str, Any] = field(default_factory=dict)
     # 本次执行的 token 账本（引擎维度聚合）：{cli:{...}, llm:{...}, total_tokens, calls}
@@ -454,6 +457,7 @@ class WorkItem:
             "parent_context": self.parent_context,
             "spec": dict(self.spec),
             "feedback": self.feedback,
+            "attempts": [dict(record) for record in self.attempts],
             "memory": dict(self.memory),
             "usage": dict(self.usage),
             "delivery": dict(self.delivery),
@@ -516,6 +520,11 @@ class WorkItem:
             parent_context=str(data.get("parent_context", "") or ""),
             spec=dict(data.get("spec") or {}),
             feedback=str(data.get("feedback", "") or ""),
+            attempts=[
+                dict(record)
+                for record in (data.get("attempts") or [])
+                if isinstance(record, dict)
+            ],
             memory=dict(data.get("memory") or {}),
             usage=dict(data.get("usage") or {}),
             delivery=dict(data.get("delivery") or {}),
