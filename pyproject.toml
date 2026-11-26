@@ -27,7 +27,9 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--basetemp=.pytest_tmp"
+# 不要把 --basetemp 固定成某个路径：pytest 启动时会清空 basetemp，两个
+# 测试进程并发时互删临时目录，会造成大批 fixture setup ERROR。默认的
+# $TMPDIR/pytest-of-<user>/pytest-N 每次运行唯一，天然并发安全。
 
 [tool.ruff]
 line-length = 100

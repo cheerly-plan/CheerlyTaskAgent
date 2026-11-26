@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,22 @@ from taskagent.executor import CodeBuddyExecutor
 from taskagent.gitmap import GitProjectRegistry
 from taskagent.scheduler import Scheduler, SchedulerSettings
 from taskagent.store import TaskStore
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Give every test process its own basetemp.
+
+    pytest's default parent (``$TMPDIR/pytest-of-<user>``) is shared, so two
+    concurrent runs still race when creating it — in sandboxed environments the
+    brokered ``mkdir`` raises ``FileExistsError`` even with ``exist_ok=True``.
+    A per-PID directory keeps concurrent runs fully independent. An explicit
+    ``--basetemp`` from the command line always wins.
+    """
+    if config.option.basetemp:
+        return
+    config.option.basetemp = str(
+        Path(tempfile.gettempdir()) / f"pytest-taskagent-{os.getpid()}"
+    )
 
 
 @pytest.fixture
