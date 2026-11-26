@@ -15,6 +15,7 @@ import type {
   BackendConfig,
   CircuitRepoState,
   DeliverySettings,
+  ExecutorRoutingSettings,
   MemoryState,
   ModelChoice,
   UISettings,
@@ -45,6 +46,12 @@ const DEFAULT_AUTOMATION: AutomationSettings = {
   max_recoveries: 1,
   decompose: false,
   max_subtasks: 4,
+};
+
+const DEFAULT_EXECUTOR_ROUTING: ExecutorRoutingSettings = {
+  enabled: false,
+  prompt: '',
+  timeout_s: 60,
 };
 
 const AUTOMATION_KINDS = [
@@ -147,6 +154,32 @@ export function SettingsPage() {
         ? {
             ...prev,
             automation: {...DEFAULT_AUTOMATION, ...(prev.automation ?? {}), [key]: value},
+          }
+        : prev,
+    );
+  const executorRouting = {...DEFAULT_EXECUTOR_ROUTING, ...(draft.executor_routing ?? {})};
+  // 路由候选 = 已启用的后端；顺带展示各自的默认模型，规则里就能直接引用。
+  const routingCandidates = Object.entries(draft.backends ?? {})
+    .filter(([, cfg]) => cfg?.enabled)
+    .map(([id, cfg]) => ({
+      id,
+      label: cfg.label || id,
+      model: cfg.model || '后端默认',
+    }));
+  const routingDefault = routingCandidates.find((entry) => entry.id === draft.executor)
+  const patchExecutorRouting = <K extends keyof ExecutorRoutingSettings>(
+    key: K,
+    value: ExecutorRoutingSettings[K],
+  ) =>
+    setDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            executor_routing: {
+              ...DEFAULT_EXECUTOR_ROUTING,
+              ...(prev.executor_routing ?? {}),
+              [key]: value,
+            },
           }
         : prev,
     );
@@ -560,6 +593,62 @@ export function SettingsPage() {
               </Button>
             </>
           ) : null}
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-1.5 text-sm font-medium">
+              <Sparkles className="size-4" />
+              LLM 路由执行后端
+            </div>
+            <p className="mt-1 text-[12px] text-muted-foreground">
+              开启后，用「模型配置」里的后端 Agent 模型，按你写的规则为任务自动选后端与模型；
+              显式指定的后端优先，调用失败自动降级到默认后端。模型不在该后端可用列表里、
+              或该后端不支持覆盖模型时，会自动退回后端默认模型。
+            </p>
+          </div>
+          <Switch
+            checked={executorRouting.enabled}
+            onCheckedChange={(value) => patchExecutorRouting('enabled', value)}
+            aria-label="启用 LLM 路由"
+          />
+        </div>
+        {routingCandidates.length > 0 ? (
+          <div className="mt-3 rounded-md border border-border bg-card px-3 py-2 text-[12px] text-muted-foreground">
+            <span className="text-faint">候选后端：</span>
+            {routingCandidates.map((entry) => (
+              <span key={entry.id} className="mr-3 inline-block">
+                <span className="font-medium text-foreground">{entry.id}</span>
+                <span className="text-faint"> / {entry.model}</span>
+                {routingDefault?.id === entry.id ? (
+                  <span className="ml-1 text-[11px] text-faint">（默认）</span>
+                ) : null}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="mt-4 grid gap-4 md:grid-cols-[1fr_160px]">
+          <Field label="路由规则（自然语言）" className="mb-0">
+            <textarea
+              className="min-h-[120px] w-full rounded-md border border-border bg-card px-3 py-2 text-[13px] text-foreground outline-none focus:ring-1 focus:ring-ring"
+              placeholder={'例如：\n- bug 类且涉及接口/后端 → codebuddy，用强一点的模型\n- feature 页面/样式 → dsh 的 deepseek-v4.1-flash（快、便宜）\n- 简单文案修改 → dsh，model 留空用默认\n- 跨仓拆解的子任务 → codebuddy，保持上下文一致\n- 其他 → 默认后端'}
+              value={executorRouting.prompt}
+              onChange={(event) => patchExecutorRouting('prompt', event.target.value)}
+            />
+          </Field>
+          <Field label="超时（秒）" className="mb-0">
+            <Input
+              type="number"
+              min={5}
+              max={600}
+              value={executorRouting.timeout_s}
+              onChange={(event) =>
+                patchExecutorRouting('timeout_s', Number(event.target.value))
+              }
+            />
+          </Field>
         </div>
       </Card>
         </TabsContent>

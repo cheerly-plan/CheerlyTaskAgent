@@ -294,6 +294,9 @@ def create_children(
         child.git_url = parent.git_url
         child.auto = parent.auto
         child.approved_by = parent.approved_by
+        # 子任务沿用父需求的后端决策：父已路由/用户已指定时，子任务不再
+        # 各自路由，避免同一个需求被拆到不同 CLI 上、上下文割裂。
+        child.executor_locked = parent.executor_locked
         mapping = mappings.get(subtask.repo.strip().lower())
         if mapping is not None:
             child.repo = LocalRepo(path=mapping.path, origin="", name=mapping.name)

@@ -196,6 +196,71 @@ async def test_dispatch_starts_selected_ready_items(tmp_path: Path, real_repo: P
     assert calls == [item.id]
 
 
+async def test_dispatch_routes_backend_before_run_auto(tmp_path: Path, real_repo: Path):
+    """自动派发也要走 LLM 路由：决策在 run_auto 之前落库并被采用。"""
+    scheduler, store, _, _ = _scheduler(tmp_path)
+
+    class RecordingRouter:
+        def __init__(self):
+            self.seen: list[str] = []
+
+        async def maybe_route(self, item, *, explicit: bool = False):
+            self.seen.append(item.id)
+            item.executor = "dsh"
+            item.model = "deepseek-v4.1-flash"
+            item.executor_locked = True
+            store.save(item)
+
+    router = RecordingRouter()
+    engine = AutomationEngine(
+        scheduler=scheduler, store=store, events=scheduler.events, router=router,
+    )
+    item = _ready_item(store, real_repo, "跨仓需求")
+    captured: dict[str, object] = {}
+
+    def fake_run_auto(item_id: str, *, plan: str = "", exec_mode: str = "apply", manual: bool = False):
+        fresh = store.get(item_id)
+        captured["executor"] = fresh.executor
+        captured["model"] = fresh.model
+        fresh.auto_dispatched_at = "2026-01-01T00:00:00+00:00"
+        store.save(fresh)
+
+    scheduler.run_auto = fake_run_auto  # type: ignore[method-assign]
+    result = await engine.dispatch([item.id])
+
+    assert router.seen == [item.id]
+    assert result["started"] == [item.id]
+    assert captured == {"executor": "dsh", "model": "deepseek-v4.1-flash"}
+
+
+async def test_dispatch_hands_locked_item_to_router_without_clobbering(
+    tmp_path: Path, real_repo: Path,
+):
+    """已锁定的任务照样交给路由判定（由路由内部跳过），dispatch 不越权改后端。"""
+    scheduler, store, _, _ = _scheduler(tmp_path)
+
+    class PeekRouter:
+        def __init__(self):
+            self.locked: list[bool] = []
+
+        async def maybe_route(self, item, *, explicit: bool = False):
+            self.locked.append(item.executor_locked)
+
+    router = PeekRouter()
+    engine = AutomationEngine(
+        scheduler=scheduler, store=store, events=scheduler.events, router=router,
+    )
+    item = _ready_item(store, real_repo, "已路由任务")
+    item.executor, item.executor_locked = "dsh", True
+    store.save(item)
+
+    scheduler.run_auto = lambda item_id, **kwargs: None  # type: ignore[method-assign]
+    await engine.dispatch([item.id])
+
+    assert router.locked == [True]
+    assert store.get(item.id).executor == "dsh"
+
+
 async def test_dispatch_ready_item_passes_short_plan(tmp_path: Path, real_repo: Path):
     scheduler, store, _, _ = _scheduler(tmp_path)
     engine = AutomationEngine(scheduler=scheduler, store=store, events=scheduler.events)

@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import executor_route
 from .admission import CircuitBreaker
 from .automation import AutomationEngine
 from .backends import build_registry, describe_backends
@@ -102,7 +103,7 @@ class ManualTaskBody(BaseModel):
     source_ref: str = ""
     git_url_hint: str = ""
     exec_mode: str = "dry-run"
-    executor: str = "codebuddy"
+    executor: str | None = None  # 未指定时走 LLM 路由（若开启）或 scheduler 默认
     model: str | None = None
     run_now: bool = False
     approved: bool = False
@@ -211,6 +212,8 @@ class UISettingsBody(BaseModel):
     delivery: dict[str, Any] = Field(default_factory=dict)
     # 自动执行准入/熔断（系统设置 → 自动执行）。
     automation: dict[str, Any] = Field(default_factory=dict)
+    # LLM 路由：用户提示词 + 开关（系统设置 → 自动执行）。
+    executor_routing: dict[str, Any] = Field(default_factory=dict)
     # 高频失败策略建议（阈值/时间窗/冷却/自动应用开关）。
     policy: dict[str, Any] = Field(default_factory=dict)
 
@@ -460,6 +463,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "启动恢复：自动重排 %d 条、人工任务标记中断 %d 条、待续 CI %d 条",
             len(recovered["requeued"]), recovered["failed"], len(recovered["ci_pending"]),
         )
+    # 执行后端路由：手动执行与自动派发共用同一个实例（规则只有一份）。
+    executor_router = executor_route.ExecutorRouter(
+        settings=settings, store=store, events=events, scheduler=scheduler,
+    )
+
+    async def maybe_route_executor(item, *, explicit_executor: str | None = None) -> None:
+        """LLM 路由：用户提示词驱动地为任务选 backend/model（就地写回 item）。
+
+        只在开关打开、用户未显式指定 executor 时调用；任何失败都降级到默认后端，
+        不影响任务执行。决策理由写进 stage，token 计入账本。
+        """
+        await executor_router.maybe_route(
+            item, explicit=bool((explicit_executor or "").strip()),
+        )
+
     # P0-3: sweep worktrees/backups left by earlier runs so disk use is bounded.
     swept = scheduler.gc_artifacts()
     if swept["worktrees"] or swept["backups"]:
@@ -476,7 +494,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 自动执行引擎：TAPD 定时拉取、任务中心手动勾选、重启/租约回收后重排。
     automation = AutomationEngine(
         scheduler=scheduler, store=store, events=events, settings=settings,
-        circuit=circuit,
+        circuit=circuit, router=executor_router,
     )
 
     # ── TAPD (authoritative source) ────────────────────────────────────────────
@@ -1289,9 +1307,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 model=body.model,
             )
             if body.run_now:
+                await maybe_route_executor(item, explicit_executor=body.executor)
                 item = scheduler.run(
                     item.id, exec_mode=body.exec_mode, approved=body.approved,
                     executor=body.executor, model=body.model,
+                    _model_supplied="model" in body.model_fields_set,
                 )
             return item.to_dict()
         except PlanError as error:
@@ -1727,6 +1747,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # from "model: null" (explicitly reset to the global default).
         supplied = "model" in body.model_fields_set
         try:
+            routing_target = store.get(item_id)
+            if routing_target is not None:
+                await maybe_route_executor(routing_target, explicit_executor=body.executor)
             return scheduler.run(
                 item_id, exec_mode=body.exec_mode, approved=body.approved,
                 executor=body.executor, model=body.model, _model_supplied=supplied,

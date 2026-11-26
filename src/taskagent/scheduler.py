@@ -421,6 +421,7 @@ class Scheduler:
         item.model = model or None
         if executor:
             item.executor = executor
+            item.executor_locked = True
         item.dedupe_key = source_ref.strip() or f"manual:{secrets.token_hex(8)}"
 
         if repo_name:
@@ -810,6 +811,9 @@ class Scheduler:
             # The caller explicitly set the model for this run (None clears it
             # back to the global default); when omitted, keep the stored choice.
             item.model = (model or "").strip() or None
+        if executor:
+            # 人工选了后端：自动路由不得再改。
+            item.executor_locked = True
         if item.exec_mode == "apply" and not approved:
             raise ValueError("apply mode requires explicit approval (approved=true)")
         if item.exec_mode == "apply":

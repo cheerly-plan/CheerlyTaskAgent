@@ -268,6 +268,9 @@ class WorkItem:
     exec_mode: str = "dry-run"      # dry-run | apply
     executor: str = "codebuddy"    # execution backend id; None/legacy -> codebuddy
     model: str | None = None        # per-task model; None = backend default
+    # 执行后端已确定（用户显式指定，或 LLM 路由已落库）。为 True 时自动路由
+    # 不再改写 executor/model，保证"人选的不会被机器冲掉"、"重跑不与上轮漂移"。
+    executor_locked: bool = False
     attempt: int = 0
     max_attempts: int = 2
     stage: str = ""
@@ -401,6 +404,7 @@ class WorkItem:
             "exec_mode": self.exec_mode,
             "executor": self.executor,
             "model": self.model,
+            "executor_locked": self.executor_locked,
             "attempt": self.attempt,
             "stage": self.stage,
             "error": self.error,
@@ -439,6 +443,7 @@ class WorkItem:
             "exec_mode": self.exec_mode,
             "executor": self.executor,
             "model": self.model,
+            "executor_locked": self.executor_locked,
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,
             "stage": self.stage,
@@ -502,6 +507,7 @@ class WorkItem:
             exec_mode=data.get("exec_mode", "dry-run"),
             executor=data.get("executor") or "codebuddy",  # legacy items -> codebuddy
             model=data.get("model") or None,
+            executor_locked=bool(data.get("executor_locked", False)),
             attempt=int(data.get("attempt", 0)),
             max_attempts=int(data.get("max_attempts", 2)),
             stage=data.get("stage", ""),

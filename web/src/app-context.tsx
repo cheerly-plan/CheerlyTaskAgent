@@ -803,6 +803,11 @@ export function AppProvider({
           decompose: next.automation?.decompose === true,
           max_subtasks: Math.max(2, Math.min(5, Number(next.automation?.max_subtasks ?? 4) || 4)),
         },
+        executor_routing: {
+          enabled: next.executor_routing?.enabled === true,
+          prompt: (next.executor_routing?.prompt || '').trim(),
+          timeout_s: Math.max(5, Math.min(600, Number(next.executor_routing?.timeout_s ?? 60) || 60)),
+        },
       };
       try {
         await endpoints.saveSettings(payload);

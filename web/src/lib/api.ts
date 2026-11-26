@@ -266,6 +266,14 @@ export interface AutomationSettings {
   max_subtasks: number;
 }
 
+export interface ExecutorRoutingSettings {
+  /** 用 LLM 按用户规则为任务选执行后端（默认关闭）。 */
+  enabled: boolean;
+  /** 用户写的自然语言规则，作为 system prompt 的最高优先级。 */
+  prompt: string;
+  timeout_s: number;
+}
+
 export interface MemoryCluster {
   repo: string;
   signature: string;
@@ -332,6 +340,7 @@ export interface UISettings {
   data_source: DataSource;
   delivery: DeliverySettings;
   automation: AutomationSettings;
+  executor_routing: ExecutorRoutingSettings;
 }
 
 export interface AutoRunResult {

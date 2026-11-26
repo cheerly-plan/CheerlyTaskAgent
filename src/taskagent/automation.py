@@ -8,7 +8,8 @@
 3. **重启 / 租约回收**：中断的自动任务重新排队后由 `dispatch(trigger="recovery")`
    接回，仍要过准入。
 
-链路：准入（类型/仓库白名单 + 熔断）→ 规划（仅多候选仓库时）→ 隔离 worktree
+链路：准入（类型/仓库白名单 + 熔断）→ 可选的后端路由（LLM 按用户规则选
+backend/model，开关关闭或已指定则跳过）→ 规划（仅多候选仓库时）→ 隔离 worktree
 内 apply → 任务结束后由 scheduler 做**原子合并**：无冲突才写回主仓库工作区
 （不 commit）；有冲突则一个文件都不写，任务留在任务中心，等人工处理后点
 「合并」重试。
@@ -45,7 +46,9 @@ PLANNER_MAX_CANDIDATES = 4
 
 
 class AutomationEngine:
-    def __init__(self, *, scheduler, store, events, settings=None, circuit=None) -> None:
+    def __init__(
+        self, *, scheduler, store, events, settings=None, circuit=None, router=None,
+    ) -> None:
         self.scheduler = scheduler
         self.store = store
         self.events = events
@@ -54,6 +57,8 @@ class AutomationEngine:
         self.settings = settings
         # 熔断状态跨重启持久化；由 api 注入（测试可传内存实现）。
         self.circuit: CircuitBreaker | None = circuit
+        # 执行后端路由（与手动执行共用同一实例）。None = 不路由。
+        self.router = router
         # 任务结束后由 scheduler 调用，用于熔断记账。
         if circuit is not None:
             scheduler.auto_outcome_hook = self.record_outcome
@@ -105,6 +110,10 @@ class AutomationEngine:
                         "code": decision.code,
                     })
                     continue
+            # 执行后端路由：在规划/拆解之前定下来，拆出的子任务会继承这个决策。
+            # 用户显式指定或已锁定的任务直接跳过（路由内部判定）。
+            if self.router is not None:
+                await self.router.maybe_route(item)
             # 所有自动任务都有一份短计划：单仓/已映射任务不需要 LLM，但计划
             # 仍要生成并落库（由 scheduler.run_auto 写入 item.plan）。
             plan_text = build_short_plan(item).to_prompt()

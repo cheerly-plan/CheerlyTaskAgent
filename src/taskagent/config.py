@@ -156,6 +156,20 @@ def _sync_agent_model(data: dict[str, Any]) -> None:
     data["agent_model"] = agent_model if agent_model in known else ""
 
 
+def normalise_executor_routing(value: Any) -> dict[str, Any]:
+    """Sanitise the LLM-routing config; unknown keys are dropped."""
+    data = value if isinstance(value, dict) else {}
+    try:
+        timeout = float(data.get("timeout_s", 60) or 60)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    return {
+        "enabled": bool(data.get("enabled", False)),
+        "prompt": str(data.get("prompt") or "")[:8000],
+        "timeout_s": min(600.0, max(5.0, timeout)),
+    }
+
+
 UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     "executor": "codebuddy",  # default backend for new tasks (legacy key, kept for /api/config)
     "codebuddy_command": "codebuddy",
@@ -168,6 +182,13 @@ UI_SETTINGS_DEFAULTS: dict[str, Any] = {
     # 后端 Agent 实际调用的模型 id；空值表示用第一个启用的模型。
     "agent_model": "",
     "backends": _default_backends(),
+    # LLM 路由：用户写自然语言规则，由后端 Agent 的 LLM 为任务挑 backend/model。
+    # 关闭时任务创建/派发不额外调用 LLM，沿用原有 executor 选择逻辑。
+    "executor_routing": {
+        "enabled": False,
+        "prompt": "",
+        "timeout_s": 60,
+    },
     # 数据源是一个「单一对象、类型不同」的配置：``data_source`` 含
     # type/name/enabled + 类型专属字段。目前仅支持 tapd 类型；其他类型
     # （jira/gitlab/github 等）留待后续接入。默认源为「未启用的 TAPD」，
@@ -484,6 +505,7 @@ class Settings:
             "tapd": dict(UI_SETTINGS_DEFAULTS["tapd"]),
             "automation": normalise_automation(UI_SETTINGS_DEFAULTS["automation"]),
             "plan_layer": normalise_plan_layer(UI_SETTINGS_DEFAULTS["plan_layer"]),
+            "executor_routing": normalise_executor_routing(UI_SETTINGS_DEFAULTS["executor_routing"]),
             "policy": self._policy_defaults(),
             "models": [],
             # 交付的「全局」= 系统设置里的默认值；首次运行时用环境变量播种。
@@ -535,6 +557,8 @@ class Settings:
                             data[key] = normalise_automation(value)
                         elif key == "plan_layer":
                             data[key] = normalise_plan_layer(value)
+                        elif key == "executor_routing":
+                            data[key] = normalise_executor_routing(value)
                         elif key == "policy" and isinstance(value, dict):
                             # 逐字段覆盖：未保存的字段继续取环境变量播种的默认值。
                             data[key] = {**data[key], **value}
@@ -654,6 +678,11 @@ class Settings:
             elif key == "policy" and isinstance(value, dict):
                 # 局部更新合并，保留环境变量播种的其余字段。
                 data["policy"] = {**data.get("policy", {}), **value}
+            elif key == "executor_routing" and isinstance(value, dict):
+                # 局部更新：只改开关不会把用户写的提示词清空。
+                data["executor_routing"] = normalise_executor_routing(
+                    {**data.get("executor_routing", {}), **value}
+                )
             elif key == "data_source" and isinstance(value, dict):
                 # 单一对象：完整接管。空白密码保留旧值（UI 掩码显示）。
                 src = normalise_data_source(value)
